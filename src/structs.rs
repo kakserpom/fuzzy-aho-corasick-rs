@@ -18,10 +18,10 @@ pub(crate) struct State {
 }
 
 /// A single node inside the internal Aho–Corasick automaton.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Node {
     pub(crate) pattern_index: Option<PatternIndex>,
-    //epsilon: Option<usize>,
+    pub(crate) epsilon: Option<usize>,
     /// Outgoing edges keyed by the next character.
     pub(crate) transitions: BTreeMap<String, usize>,
     /// Failure link (classic AC fallback state).
@@ -136,17 +136,25 @@ impl Node {
             parent,
             #[cfg(debug_assertions)]
             grapheme: grapheme.map(|s| s.to_string()),
+            epsilon: None,
         }
     }
 }
 
 pub struct FuzzyAhoCorasick {
+    /// Nodes
     pub(crate) nodes: Vec<Node>,
+    /// Patterns
     pub(crate) patterns: Vec<Pattern>,
+    /// Similarity map
     pub(crate) similarity: &'static BTreeMap<(char, char), f32>,
+    /// Limits of errors
     pub(crate) limits: Option<FuzzyLimits>,
+    /// Weight
     pub(crate) penalties: FuzzyPenalties,
+    /// Non-overlapping matches only
     pub(crate) non_overlapping: bool,
+    /// Case insensitivity
     pub(crate) case_insensitive: bool,
 }
 
@@ -171,21 +179,24 @@ pub struct Pattern {
 }
 
 impl Pattern {
+    /// Set pattern weight. Default is 1.0
     pub fn weight(mut self, weight: f32) -> Self {
         self.weight = weight;
         self
     }
 
+    /// Set Fuzzy limits per-pattern pattern
     pub fn fuzzy(mut self, limits: FuzzyLimits) -> Self {
         self.limits = Some(limits);
         self
     }
 }
+
 impl From<&str> for Pattern {
     fn from(s: &str) -> Self {
         Pattern {
             pattern: s.to_owned(),
-            weight: 1.0,
+            weight: 1.,
             limits: None,
         }
     }
@@ -195,7 +206,7 @@ impl From<String> for Pattern {
     fn from(s: String) -> Self {
         Pattern {
             pattern: s,
-            weight: 1.0,
+            weight: 1.,
             limits: None,
         }
     }
@@ -205,7 +216,7 @@ impl From<&String> for Pattern {
     fn from(s: &String) -> Self {
         Pattern {
             pattern: s.clone(),
-            weight: 1.0,
+            weight: 1.,
             limits: None,
         }
     }
@@ -256,9 +267,13 @@ impl<'a> From<(&'a str, f32, usize)> for Pattern {
 pub struct FuzzyMatch {
     /// Number of insertions.
     pub insertions: NumEdits,
+    /// Number of deletions.
     pub deletions: NumEdits,
+    /// Number of substitutions.
     pub substitutions: NumEdits,
+    /// Number of swaps (transpositions)
     pub swaps: NumEdits,
+    /// Pattern indexed (0-based)
     pub pattern_index: usize,
     /// Inclusive start byte index.
     pub start: usize,

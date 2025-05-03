@@ -12,7 +12,7 @@ use unicode_segmentation::UnicodeSegmentation;
 ///     .non_overlapping(true)
 ///     .build(["hello", "world"]);
 ///
-/// let result = engine.segment_text("HeLLo WoRLd!", 0.9);
+/// let result = engine.segment_text("HeLLo WoRLd!", 1.);
 /// assert_eq!(result, "HeLLo WoRLd !");
 /// ```
 #[derive(Debug, Default)]
@@ -201,6 +201,49 @@ impl FuzzyAhoCorasickBuilder {
 
                 queue.push_back(next);
             }
+        }
+
+        // propagate weights up the fail chain (Horák)
+        for i in (1..nodes.len()).rev() {
+            let f = nodes[i].fail;
+            if nodes[f].weight > nodes[i].weight {
+                nodes[i].weight = nodes[f].weight;
+            }
+        }
+
+        if let Some(lambda) = self.minimize_lambda {
+            let mut classes: Vec<usize> = (0..nodes.len()).collect();
+            let mut reprs: Vec<Node> = Vec::new();
+
+            for (i, node) in nodes.iter().enumerate() {
+                if let Some((j, _)) = reprs.iter().enumerate().find(|(_, rep)| {
+                    (rep.weight - node.weight).abs() <= lambda
+                        && rep.output == node.output
+                        && rep.transitions == node.transitions
+                        && rep.fail == node.fail
+                        && rep.epsilon == node.epsilon
+                }) {
+                    classes[i] = j;
+                } else {
+                    classes[i] = reprs.len();
+                    reprs.push(node.clone());
+                }
+            }
+
+            // remap all internal links
+            for rep in &mut reprs {
+                if let Some(e) = rep.epsilon {
+                    rep.epsilon = Some(classes[e]);
+                }
+                rep.fail = classes[rep.fail];
+                rep.transitions = rep
+                    .transitions
+                    .iter()
+                    .map(|(k, &v)| (k.clone(), classes[v]))
+                    .collect();
+            }
+
+            nodes = reprs;
         }
 
         FuzzyAhoCorasick {
