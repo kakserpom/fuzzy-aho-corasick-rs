@@ -3,6 +3,7 @@
 mod builder;
 mod segment;
 mod structs;
+#[cfg(test)]
 mod tests;
 
 pub use segment::FuzzyReplacer;
