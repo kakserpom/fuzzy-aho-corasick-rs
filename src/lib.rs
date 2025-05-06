@@ -267,8 +267,15 @@ impl FuzzyAhoCorasick {
                 ) {
                     continue;
                 }
-                let sb = grapheme_idx[matched_start].0;
-                let eb = grapheme_idx[matched_end].0;
+                let sb = grapheme_idx
+                    .get(matched_start)
+                    .map(|&(b, _)| b)
+                    .unwrap_or(0);
+                let eb = grapheme_idx
+                    .get(matched_end)
+                    .map(|&(b, _)| b)
+                    .unwrap_or(text.len());
+
                 let key = (sb, eb, p);
                 let cand = sv[i];
                 best.entry(key)

@@ -4,7 +4,7 @@ A high-performance, Unicode-aware Rust implementation of the Aho–Corasick auto
 deletions, substitutions, transpositions) and optional SIMD acceleration.
 
 This library is rooted in the scientific work “Fuzzified Aho–Corasick Search Automata” by Z. Horák, V. Snášel, A.
-Abraham, and A. E. Hassanien (see the [PDF](DOC/ias10_horak.pdf)).
+Abraham, and A. E. Hassanien (see the [PDF](DOCS/ias10_horak.pdf)).
 
 ## Features
 
