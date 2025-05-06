@@ -1,6 +1,7 @@
 use crate::PatternIndex;
 use std::collections::BTreeMap;
 use std::fmt;
+use unicode_segmentation::UnicodeSegmentation;
 
 pub type NumEdits = usize;
 #[derive(Clone)]
@@ -44,11 +45,11 @@ pub(crate) struct Node {
 
 #[derive(Debug, Default)]
 pub struct FuzzyLimits {
-    pub insertions: Option<NumEdits>,
-    pub deletions: Option<NumEdits>,
-    pub substitutions: Option<NumEdits>,
-    pub swaps: Option<NumEdits>,
-    pub edits: Option<NumEdits>,
+    pub(crate) insertions: NumEdits,
+    pub(crate) deletions: NumEdits,
+    pub(crate) substitutions: NumEdits,
+    pub(crate) swaps: NumEdits,
+    pub(crate) edits: Option<NumEdits>,
 }
 
 impl FuzzyLimits {
@@ -57,22 +58,34 @@ impl FuzzyLimits {
     }
 
     pub fn insertions(mut self, num: NumEdits) -> Self {
-        self.insertions = Some(num);
+        self.insertions = num;
+        self
+    }
+
+    pub(crate) fn finalize(mut self) -> Self {
+        if let Some(edits) = self.edits {
+            self.insertions = self.insertions.max(edits);
+            self.deletions = self.deletions.max(edits);
+            self.substitutions = self.substitutions.max(edits);
+            self.swaps = self.swaps.max(edits);
+            println!("Fuzzy limits: {:?}", self);
+            self.edits = Some(edits)
+        }
         self
     }
 
     pub fn deletions(mut self, num: NumEdits) -> Self {
-        self.deletions = Some(num);
+        self.deletions = num;
         self
     }
 
     pub fn substitutions(mut self, num: NumEdits) -> Self {
-        self.substitutions = Some(num);
+        self.substitutions = num;
         self
     }
 
     pub fn swaps(mut self, num: NumEdits) -> Self {
-        self.swaps = Some(num);
+        self.swaps = num;
         self
     }
 
@@ -173,6 +186,7 @@ impl fmt::Debug for FuzzyAhoCorasick {
 
 #[derive(Debug)]
 pub struct Pattern {
+    pub grapheme_len: usize,
     pub pattern: String,
     pub weight: f32,
     pub limits: Option<FuzzyLimits>,
@@ -187,7 +201,7 @@ impl Pattern {
 
     /// Set Fuzzy limits per-pattern pattern
     pub fn fuzzy(mut self, limits: FuzzyLimits) -> Self {
-        self.limits = Some(limits);
+        self.limits = Some(limits.finalize());
         self
     }
 }
@@ -196,6 +210,7 @@ impl From<&str> for Pattern {
     fn from(s: &str) -> Self {
         Pattern {
             pattern: s.to_owned(),
+            grapheme_len: s.graphemes(true).count(),
             weight: 1.,
             limits: None,
         }
@@ -205,6 +220,7 @@ impl From<&str> for Pattern {
 impl From<String> for Pattern {
     fn from(s: String) -> Self {
         Pattern {
+            grapheme_len: s.graphemes(true).count(),
             pattern: s,
             weight: 1.,
             limits: None,
@@ -216,6 +232,7 @@ impl From<&String> for Pattern {
     fn from(s: &String) -> Self {
         Pattern {
             pattern: s.clone(),
+            grapheme_len: s.graphemes(true).count(),
             weight: 1.,
             limits: None,
         }
@@ -226,6 +243,7 @@ impl From<(&str, f32)> for Pattern {
     fn from((s, w): (&str, f32)) -> Self {
         Pattern {
             pattern: s.to_string(),
+            grapheme_len: s.graphemes(true).count(),
             weight: w,
             limits: None,
         }
@@ -235,6 +253,7 @@ impl From<(&str, f32)> for Pattern {
 impl From<(String, f32)> for Pattern {
     fn from((s, w): (String, f32)) -> Self {
         Pattern {
+            grapheme_len: s.graphemes(true).count(),
             pattern: s,
             weight: w,
             limits: None,
@@ -246,6 +265,7 @@ impl From<(&String, f32)> for Pattern {
     fn from((s, w): (&String, f32)) -> Self {
         Pattern {
             pattern: s.clone(),
+            grapheme_len: s.graphemes(true).count(),
             weight: w,
             limits: None,
         }
@@ -256,8 +276,13 @@ impl<'a> From<(&'a str, f32, usize)> for Pattern {
     fn from((s, w, max_edits): (&'a str, f32, usize)) -> Self {
         Pattern {
             pattern: s.to_owned(),
+            grapheme_len: s.graphemes(true).count(),
             weight: w,
-            limits: Some(FuzzyLimits::default().edits(max_edits as NumEdits)),
+            limits: Some(
+                FuzzyLimits::default()
+                    .edits(max_edits as NumEdits)
+                    .finalize(),
+            ),
         }
     }
 }

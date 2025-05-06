@@ -66,7 +66,7 @@ let builder = FuzzyAhoCorasickBuilder::new()
 // Maximum total edits (ins+del+sub+swap) per match
 .fuzzy(FuzzyLimits::new().edits(2))
 // Custom penalties
-.penalties(FuzzyPenalties::default ()
+.penalties(FuzzyPenalties::default())
 .substitution(0.7)
 .insertion(0.9)
 .deletion(0.9)
@@ -82,9 +82,7 @@ let engine = builder.build(["pattern1", "pattern2"]);
 ## Fuzzy Replacer
 
 ```rust
-use fuzzy_aho_corasick::FuzzyReplacer;
-
-let replacer = builder.build_replacer([
+let replacer = FuzzyAhoCorasickBuilder::new().build_replacer([
 ("foo", "bar"),
 ("baz", "qux"),
 ]);

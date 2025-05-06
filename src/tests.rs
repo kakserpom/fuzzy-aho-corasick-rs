@@ -237,3 +237,14 @@ fn test_longer_match_preference() {
     assert!(result.iter().any(|m| m.pattern == "JOINT STOCK COMPANY"));
     assert!(!result.iter().any(|m| m.pattern == "STOCK"));
 }
+
+#[test]
+fn test_readme() {
+    let replacer = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().substitutions(2))
+        .case_insensitive(true)
+        .build_replacer([("foo", "bar"), ("baz", "qux")]);
+
+    let out = replacer.replace("fo0 and BAZ!", 0.5);
+    assert_eq!(out, "bar and qux!");
+}

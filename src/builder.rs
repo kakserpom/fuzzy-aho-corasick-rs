@@ -52,7 +52,7 @@ impl FuzzyAhoCorasickBuilder {
 
     /// Maximum edit operations (ins/del/sub) allowed while searching.
     pub fn fuzzy(mut self, limits: FuzzyLimits) -> Self {
-        self.limits = Some(limits);
+        self.limits = Some(limits.finalize());
         self
     }
 
@@ -279,15 +279,21 @@ fn default_similarity_map() -> &'static BTreeMap<(char, char), f32> {
         // Vowel ↔ vowel similarities.
         for &a in &vowels {
             for &b in &vowels {
-                map.insert((a, b), if a == b { 1.0 } else { 0.8 });
+                if a != b {
+                    map.insert((a, b), 0.8);
+                }
             }
         }
         // Consonant ↔ consonant similarities.
         for &a in &consonants {
             for &b in &consonants {
-                map.insert((a, b), if a == b { 1.0 } else { 0.6 });
+                if a != b {
+                    map.insert((a, b), 0.6);
+                }
             }
         }
+        map.insert(('o', '0'), 0.8);
+        map.insert(('0', 'o'), 0.8);
         map
     })
 }
