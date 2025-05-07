@@ -180,6 +180,17 @@ fn test_adjustable_penalties() {
 }
 
 #[test]
+fn test_regression_1() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build(["CO"]);
+
+    let result = engine.search("CA", 0.8);
+    println!("{:?}", result);
+    assert_eq!(result.iter().count(), 0);
+}
+
+#[test]
 fn test_segment_text() {
     let engine = FuzzyAhoCorasickBuilder::new()
         .non_overlapping(true)

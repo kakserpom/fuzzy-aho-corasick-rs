@@ -68,7 +68,6 @@ impl FuzzyLimits {
             self.deletions = self.deletions.max(edits);
             self.substitutions = self.substitutions.max(edits);
             self.swaps = self.swaps.max(edits);
-            println!("Fuzzy limits: {:?}", self);
             self.edits = Some(edits)
         }
         self

@@ -70,11 +70,10 @@ impl FuzzyAhoCorasick {
         deletions: NumEdits,
     ) -> (bool, bool) {
         if let Some(m) = limits.or(self.limits.as_ref()) {
-            println!("!!m = {m:?}");
-            let edits_ok = m.edits.is_none_or(|max| edits + 1 <= max);
+            let edits_ok = m.edits.is_none_or(|max| edits < max);
             (
-                edits_ok && insertions + 1 <= m.insertions,
-                edits_ok && deletions + 1 <= m.deletions,
+                edits_ok && insertions < m.insertions,
+                edits_ok && deletions < m.deletions,
             )
         } else {
             (false, false)
@@ -89,8 +88,7 @@ impl FuzzyAhoCorasick {
         swaps: NumEdits,
     ) -> bool {
         if let Some(m) = limits.or(self.limits.as_ref()) {
-            println!("!!m = {m:?}");
-            m.edits.is_none_or(|max| edits + 1 <= max) && swaps + 1 <= m.swaps
+            m.edits.is_none_or(|max| edits < max) && swaps < m.swaps
         } else {
             false
         }
@@ -106,14 +104,12 @@ impl FuzzyAhoCorasick {
         swaps: NumEdits,
     ) -> bool {
         if let Some(m) = limits.or(self.limits.as_ref()) {
-            println!("m = {m:?}");
             m.edits.is_none_or(|max| edits <= max)
                 && insertions <= m.insertions
                 && deletions <= m.deletions
                 && substitutions <= m.substitutions
                 && swaps <= m.swaps
         } else {
-            println!("limits none");
             edits == 0 && insertions == 0 && deletions == 0 && substitutions == 0 && swaps == 0
         }
     }
@@ -458,28 +454,51 @@ impl FuzzyAhoCorasick {
                     let tv = Simd::splat(txt_ch as u32);
                     let mask = gv.simd_eq(tv).to_bitmask();
                     for lane in 0..len {
-                        let next = nodes[i + lane];
-                        let new_start = if matched_end == matched_start {
-                            j
+                        let next_node = nodes[i + lane];
+                        let map_sim = sims[i + lane];
+                        if map_sim == 1.0 {
+                            trace!(
+                                "  match   {:>8} ─{:>3}→ node={}  sim=1.00",
+                                std::char::from_u32(chunk[lane]).unwrap_or('?'),
+                                "ok",
+                                next_node
+                            );
+                        } else if map_sim > 0.0 {
+                            trace!(
+                                "  fuzz    {:>8} ─{:>3}→ node={}  sim={:.2}",
+                                std::char::from_u32(chunk[lane]).unwrap_or('?'),
+                                "sub",
+                                next_node,
+                                map_sim
+                            );
                         } else {
-                            matched_start
-                        };
-                        let sim = if (mask & (1 << lane)) != 0 {
-                            sims[i + lane]
+                            trace!(
+                                "  subst   {:>8} ─{:>3}→ node={}  penalty={:.2}",
+                                std::char::from_u32(chunk[lane]).unwrap_or('?'),
+                                "sub",
+                                next_node,
+                                self.penalties.substitution
+                            );
+                        }
+
+                        let (sim_val, ed, subs) = if map_sim == 1.0 {
+                            (1.0, edits, substitutions)
+                        } else if map_sim > 0.0 {
+                            (map_sim, edits + 1, substitutions + 1)
                         } else {
-                            self.penalties.substitution
+                            (self.penalties.substitution, edits + 1, substitutions + 1)
                         };
-                        let (ed, subs) = if (mask & (1 << lane)) != 0 {
-                            (edits, substitutions)
-                        } else {
-                            (edits + 1, substitutions + 1)
-                        };
+
                         queue.push(State {
-                            node: next,
+                            node: next_node,
                             j: j + 1,
-                            matched_start: new_start,
+                            matched_start: if matched_end == matched_start {
+                                j
+                            } else {
+                                matched_start
+                            },
                             matched_end: j + 1,
-                            score: score * sim,
+                            score: score * sim_val,
                             edits: ed,
                             insertions,
                             deletions,
@@ -672,61 +691,54 @@ impl FuzzyAhoCorasick {
 
                 // 1)  Same or similar symbol
                 for (edge_g, &next_node) in transitions {
-                    let sim = if edge_g == txt {
+                    // compute raw similarity-map score
+                    let g_ch = edge_g.chars().next().unwrap_or('\0');
+                    let map_sim = if edge_g == txt {
                         1.0
                     } else {
-                        let g_ch = edge_g.chars().next().unwrap_or('\0');
-                        if g_ch == txt_ch {
-                            1.0
-                        } else {
-                            *self.similarity.get(&(g_ch, txt_ch)).unwrap_or(&0.0)
-                        }
+                        *self.similarity.get(&(g_ch, txt_ch)).unwrap_or(&0.0)
                     };
 
-                    if sim > 0.0 {
+                    let (next_score, next_edits, next_subs) = if map_sim == 1.0 {
                         trace!(
-                            "  match   {:>8} ─{:>3}→ node={}  sim={:.2}",
-                            edge_g, "ok", next_node, sim
+                            "  match   {:>8} ─{:>3}→ node={}  sim=1.00",
+                            edge_g, "ok", next_node
                         );
-
-                        let new_start = if matched_end == matched_start {
-                            j
-                        } else {
-                            matched_start
-                        };
-
-                        queue.push(State {
-                            node: next_node,
-                            j: j + 1,
-                            matched_start: new_start,
-                            matched_end: j + 1,
-                            score: score * sim,
-                            edits,
-                            insertions,
-                            substitutions,
-                            deletions,
-                            swaps,
-                        });
+                        (score * 1.0, edits, substitutions)
+                    } else if map_sim > 0.0 {
+                        trace!(
+                            "  fuzz    {:>8} ─{:>3}→ node={}  sim={:.2}",
+                            edge_g, "sub", next_node, map_sim
+                        );
+                        (score * map_sim, edits + 1, substitutions + 1)
                     } else {
-                        // substitution allowed by Max
-
                         trace!(
                             "  subst   {:>8} ─{:>3}→ node={}  penalty={:.2}",
                             edge_g, "sub", next_node, self.penalties.substitution
                         );
-                        queue.push(State {
-                            node: next_node,
-                            j: j + 1,
-                            matched_start,
-                            matched_end: j + 1,
-                            score: score * self.penalties.substitution,
-                            edits: edits + 1,
-                            insertions,
-                            deletions,
-                            substitutions: substitutions + 1,
-                            swaps,
-                        });
-                    }
+                        (
+                            score * self.penalties.substitution,
+                            edits + 1,
+                            substitutions + 1,
+                        )
+                    };
+
+                    queue.push(State {
+                        node: next_node,
+                        j: j + 1,
+                        matched_start: if matched_end == matched_start {
+                            j
+                        } else {
+                            matched_start
+                        },
+                        matched_end: j + 1,
+                        score: next_score,
+                        edits: next_edits,
+                        insertions,
+                        deletions,
+                        substitutions: next_subs,
+                        swaps,
+                    });
                 }
 
                 // Swap (transposition of two neighboring graphemes)
