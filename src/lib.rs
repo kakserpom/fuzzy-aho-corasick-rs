@@ -227,11 +227,15 @@ impl FuzzyAhoCorasick {
                     let sb = grapheme_idx[matched_start].0;
                     let eb = grapheme_idx[matched_end].0;
                     let key = (sb, eb, p);
-                    let cand = sv[i];
+                    let base = score * sv[i];
+                    let matched = (matched_end - matched_start) as f32;
+                    let total = self.patterns[pat_idx].grapheme_len as f32;
+                    let coverage = (matched / total).clamp(0.0, 1.0);
+                    let cand_score = base * coverage;
                     best.entry(key)
                         .and_modify(|m| {
-                            if cand > m.similarity {
-                                m.similarity = cand;
+                            if cand_score > m.similarity {
+                                m.similarity = cand_score;
                             }
                         })
                         .or_insert_with(|| FuzzyMatch {
@@ -243,7 +247,7 @@ impl FuzzyAhoCorasick {
                             start: sb,
                             end: eb,
                             pattern: self.patterns[p].pattern.clone(),
-                            similarity: cand,
+                            similarity: cand_score,
                             text: text[sb..eb].to_string(),
                         });
                 }
