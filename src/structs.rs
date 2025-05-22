@@ -16,6 +16,7 @@ pub(crate) struct State {
     pub(crate) deletions: NumEdits,
     pub(crate) substitutions: NumEdits,
     pub(crate) swaps: NumEdits,
+    #[cfg(debug_assertions)]
     pub(crate) notes: Vec<String>,
 }
 
@@ -312,6 +313,7 @@ pub struct FuzzyMatch {
     pub similarity: f32,
     /// Slice of the original text that produced the match.
     pub text: String,
+    #[cfg(debug_assertions)]
     pub notes: Vec<String>,
 }
 
