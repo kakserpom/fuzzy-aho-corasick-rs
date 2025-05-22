@@ -57,12 +57,12 @@ impl FuzzyAhoCorasick {
     }
 }
 
-pub struct FuzzyReplacer<'a> {
+pub struct FuzzyReplacer {
     pub(crate) engine: FuzzyAhoCorasick,
-    pub(crate) replacements: Vec<&'a str>,
+    pub(crate) replacements: Vec<String>,
 }
 
-impl<'a> FuzzyReplacer<'a> {
+impl FuzzyReplacer {
     /// Performs a **fuzzy** find‑and‑replace using a list of `(pattern →
     /// replacement)` pairs.  Replacements are applied left‑to‑right, the longest
     /// non‑overlapping match wins.
@@ -78,9 +78,8 @@ impl<'a> FuzzyReplacer<'a> {
                 let replacement = self
                     .replacements
                     .get(m.pattern_index)
-                    .copied()
-                    .unwrap_or(m.text.as_str());
-                result.push_str(replacement);
+                    .unwrap_or(&m.text);
+                result.push_str(&replacement);
                 last = m.end;
             }
         }

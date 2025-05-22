@@ -81,15 +81,16 @@ impl FuzzyAhoCorasickBuilder {
         weight * ((word_len - prefix_len + 1) as f32 / word_len as f32)
     }
 
-    pub fn build_replacer<'a, T>(
+    pub fn build_replacer<'a, T, R>(
         self,
-        pairs: impl IntoIterator<Item = (T, &'a str)>,
-    ) -> FuzzyReplacer<'a>
+        pairs: impl IntoIterator<Item = (T, R)>,
+    ) -> FuzzyReplacer
     where
         T: Into<Pattern>,
+        R: Into<String>,
     {
         let (patterns, replacements): (Vec<_>, Vec<_>) =
-            pairs.into_iter().map(|(p, r)| (p.into(), r)).unzip();
+            pairs.into_iter().map(|(p, r)| (p.into(), r.into())).unzip();
 
         FuzzyReplacer {
             engine: self.non_overlapping(true).build(patterns),
