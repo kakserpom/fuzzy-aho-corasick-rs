@@ -10,12 +10,13 @@ pub(crate) struct State {
     pub(crate) j: usize,
     pub(crate) matched_start: usize,
     pub(crate) matched_end: usize,
-    pub(crate) score: f32,
+    pub(crate) penalties: f32,
     pub(crate) edits: NumEdits,
     pub(crate) insertions: NumEdits,
     pub(crate) deletions: NumEdits,
     pub(crate) substitutions: NumEdits,
     pub(crate) swaps: NumEdits,
+    pub(crate) notes: Vec<String>,
 }
 
 /// A single node inside the internal Aho–Corasick automaton.
@@ -105,10 +106,10 @@ pub struct FuzzyPenalties {
 impl Default for FuzzyPenalties {
     fn default() -> Self {
         Self {
-            substitution: 0.6,
-            insertion: 0.9,
-            deletion: 0.9,
-            swap: 0.9,
+            substitution: 0.8,
+            insertion: 0.6,
+            deletion: 0.7,
+            swap: 0.4,
         }
     }
 }
@@ -297,6 +298,8 @@ pub struct FuzzyMatch {
     pub substitutions: NumEdits,
     /// Number of swaps (transpositions)
     pub swaps: NumEdits,
+    /// Total number of edits
+    pub edits: NumEdits,
     /// Pattern indexed (0-based)
     pub pattern_index: usize,
     /// Inclusive start byte index.
@@ -309,6 +312,7 @@ pub struct FuzzyMatch {
     pub similarity: f32,
     /// Slice of the original text that produced the match.
     pub text: String,
+    pub notes: Vec<String>,
 }
 
 /// Result of [`FuzzyAhoCorasick::segment_iter`]: either a successful match or
