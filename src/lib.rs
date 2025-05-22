@@ -8,7 +8,7 @@ pub use segment::FuzzyReplacer;
 
 pub use builder::FuzzyAhoCorasickBuilder;
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
 pub use structs::*;
@@ -309,27 +309,26 @@ impl FuzzyAhoCorasick {
                     let a = &text_chars[j];
                     let b = &text_chars[j + 1];
                     // check if the node has B-transition and then A-transition
-                    if let Some(&n1) = transitions.get(b.as_ref()) {
-                        if let Some(&n2) = self.nodes[n1].transitions.get(a.as_ref()) {
-                            // Checking swap
-                            // Correct option
-                            if self.within_limits_swap_ahead(self.get_node_limits(n2), edits, swaps)
-                            {
-                                queue.push(State {
-                                    node: n2,
-                                    j: j + 2,
-                                    matched_start,
-                                    matched_end: j + 2,
-                                    penalties: penalties + self.penalties.swap,
-                                    edits: edits + 1,
-                                    insertions,
-                                    deletions,
-                                    substitutions,
-                                    swaps: swaps + 1,
-                                    #[cfg(debug_assertions)]
-                                    notes: notes.clone(),
-                                });
-                            }
+                    if let Some(&n1) = transitions.get(b.as_ref())
+                        && let Some(&n2) = self.nodes[n1].transitions.get(a.as_ref())
+                    {
+                        // Checking swap
+                        // Correct option
+                        if self.within_limits_swap_ahead(self.get_node_limits(n2), edits, swaps) {
+                            queue.push(State {
+                                node: n2,
+                                j: j + 2,
+                                matched_start,
+                                matched_end: j + 2,
+                                penalties: penalties + self.penalties.swap,
+                                edits: edits + 1,
+                                insertions,
+                                deletions,
+                                substitutions,
+                                swaps: swaps + 1,
+                                #[cfg(debug_assertions)]
+                                notes: notes.clone(),
+                            });
                         }
                     }
                 }
@@ -399,13 +398,20 @@ impl FuzzyAhoCorasick {
             });
 
             let mut chosen = Vec::new();
-            let mut occupied = BTreeSet::new();
+            let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
             for m in matches {
-                if (m.start..m.end).any(|pos| occupied.contains(&pos)) {
-                    continue;
+                if occupied_intervals
+                    .range(..=m.start)
+                    .next_back()
+                    .is_none_or(|(_, &e)| e <= m.start)
+                    && occupied_intervals
+                        .range(m.start..)
+                        .next()
+                        .is_none_or(|(&s, _)| s >= m.end)
+                {
+                    occupied_intervals.insert(m.start, m.end);
+                    chosen.push(m);
                 }
-                occupied.extend(m.start..m.end);
-                chosen.push(m);
             }
 
             chosen.sort_by_key(|m| m.start);

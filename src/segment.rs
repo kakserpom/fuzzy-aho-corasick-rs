@@ -75,11 +75,7 @@ impl FuzzyReplacer {
         for m in matches {
             if m.start >= last {
                 result.push_str(&text[last..m.start]);
-                let replacement = self
-                    .replacements
-                    .get(m.pattern_index)
-                    .unwrap_or(&m.text);
-                result.push_str(&replacement);
+                result.push_str(self.replacements.get(m.pattern_index).unwrap_or(&m.text));
                 last = m.end;
             }
         }

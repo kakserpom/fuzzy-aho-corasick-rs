@@ -81,7 +81,7 @@ impl FuzzyAhoCorasickBuilder {
         weight * ((word_len - prefix_len + 1) as f32 / word_len as f32)
     }
 
-    pub fn build_replacer<'a, T, R>(
+    pub fn build_replacer<T, R>(
         self,
         pairs: impl IntoIterator<Item = (T, R)>,
     ) -> FuzzyReplacer
