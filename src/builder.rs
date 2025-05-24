@@ -27,6 +27,7 @@ pub struct FuzzyAhoCorasickBuilder {
 
 impl FuzzyAhoCorasickBuilder {
     /// Start with sensible defaults (borrowed similarity map, 2 edits, etc.)
+    #[must_use]
     pub fn new() -> Self {
         Self {
             minimize_lambda: None,
@@ -39,23 +40,28 @@ impl FuzzyAhoCorasickBuilder {
     }
 
     /// Enables λ-minimisation with given tolerance.
+    #[must_use]
     pub fn minimize(mut self, lambda: f32) -> Self {
         self.minimize_lambda = Some(lambda);
         self
     }
 
     /// Provide a custom similarity map.
+    #[must_use]
     pub fn similarity(mut self, map: &'static BTreeMap<(char, char), f32>) -> Self {
         self.similarity = Some(map);
         self
     }
 
     /// Maximum edit operations (ins/del/sub) allowed while searching.
+    #[must_use]
     pub fn fuzzy(mut self, limits: FuzzyLimits) -> Self {
         self.limits = Some(limits.finalize());
         self
     }
 
+    /// Set custom penalty weights (see `FuzzyPenalties`)
+    #[must_use]
     pub fn penalties(mut self, penalties: FuzzyPenalties) -> Self {
         self.penalties = penalties;
         self
@@ -63,12 +69,14 @@ impl FuzzyAhoCorasickBuilder {
 
     /// Disallow overlapping matches (the engine will greedily choose the
     /// longest non‑overlapping matches from left to right).
+    #[must_use]
     pub fn non_overlapping(mut self, value: bool) -> Self {
         self.non_overlapping = value;
         self
     }
 
     /// Enable Unicode‑aware *case‑insensitive* matching.
+    #[must_use]
     pub fn case_insensitive(mut self, value: bool) -> Self {
         self.case_insensitive = value;
         self
@@ -81,10 +89,7 @@ impl FuzzyAhoCorasickBuilder {
         weight * ((word_len - prefix_len + 1) as f32 / word_len as f32)
     }
 
-    pub fn build_replacer<T, R>(
-        self,
-        pairs: impl IntoIterator<Item = (T, R)>,
-    ) -> FuzzyReplacer
+    pub fn build_replacer<T, R>(self, pairs: impl IntoIterator<Item = (T, R)>) -> FuzzyReplacer
     where
         T: Into<Pattern>,
         R: Into<String>,
@@ -128,11 +133,11 @@ impl FuzzyAhoCorasickBuilder {
             let mut current = 0;
             let word_iter: Vec<String> = if self.case_insensitive {
                 UnicodeSegmentation::graphemes(pattern.pattern.as_str(), true)
-                    .map(|g| g.to_lowercase())
+                    .map(str::to_lowercase)
                     .collect()
             } else {
                 UnicodeSegmentation::graphemes(pattern.pattern.as_str(), true)
-                    .map(|g| g.to_string())
+                    .map(str::to_string)
                     .collect()
             };
 

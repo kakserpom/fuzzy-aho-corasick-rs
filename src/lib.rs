@@ -1,3 +1,4 @@
+#![warn(clippy::pedantic)]
 mod builder;
 mod segment;
 mod structs;
@@ -115,17 +116,14 @@ impl FuzzyAhoCorasick {
             ) {
                 continue;
             }
-            let start_byte = grapheme_idx
-                .get(matched_start)
-                .map(|&(b, _)| b)
-                .unwrap_or(0);
+            let start_byte = grapheme_idx.get(matched_start).map_or(0, |&(b, _)| b);
             let end_byte = grapheme_idx
                 .get(matched_end)
-                .map(|&(b, _)| b)
-                .unwrap_or(text.len());
+                .map_or_else(|| text.len(), |&(b, _)| b);
             let key = (start_byte, end_byte, pat_idx);
 
             let total = self.patterns[pat_idx].grapheme_len as f32;
+
             let similarity = (total - penalties) / total * self.patterns[pat_idx].weight;
 
             if similarity < similarity_threshold {
@@ -135,7 +133,21 @@ impl FuzzyAhoCorasick {
             best.entry(key)
                 .and_modify(|entry| {
                     if similarity > entry.similarity {
-                        entry.similarity = similarity;
+                        *entry = FuzzyMatch {
+                            insertions,
+                            deletions,
+                            substitutions,
+                            edits,
+                            swaps,
+                            pattern_index: pat_idx,
+                            start: start_byte,
+                            end: end_byte,
+                            pattern: self.patterns[pat_idx].pattern.clone(),
+                            similarity,
+                            text: text[start_byte..end_byte].to_string(),
+                            #[cfg(debug_assertions)]
+                            notes: notes.clone(),
+                        };
                     }
                 })
                 .or_insert_with(|| FuzzyMatch {
@@ -143,7 +155,7 @@ impl FuzzyAhoCorasick {
                     deletions,
                     substitutions,
                     edits,
-                    swaps: 0,
+                    swaps,
                     pattern_index: pat_idx,
                     start: start_byte,
                     end: end_byte,
@@ -157,6 +169,7 @@ impl FuzzyAhoCorasick {
     }
 
     #[inline]
+    #[must_use]
     pub fn search(&self, text: &str, similarity_threshold: f32) -> Vec<FuzzyMatch> {
         if text.is_empty() {
             return Vec::new();
@@ -217,7 +230,7 @@ impl FuzzyAhoCorasick {
                     ..
                 } = queue[q_idx];
                 #[cfg(debug_assertions)]
-                let notes = queue[q_idx].notes.clone();
+                let mut notes = queue[q_idx].notes.clone();
                 q_idx += 1;
 
                 /*trace!(
@@ -255,31 +268,35 @@ impl FuzzyAhoCorasick {
                     continue;
                 }
 
-                let txt = text_chars[j].as_ref();
-                let txt_ch = txt.chars().next().unwrap_or('\0');
+                let current_grapheme = text_chars[j].as_ref();
+                let current_grapheme_first_char = current_grapheme.chars().next().unwrap_or('\0');
 
                 // 1)  Same or similar symbol
                 for (edge_g, &next_node) in transitions {
                     #[cfg(debug_assertions)]
                     let mut notes = notes.clone();
                     let g_ch = edge_g.chars().next().unwrap_or('\0');
-                    let (next_penalties, next_edits, next_subs) = if edge_g == txt {
+                    let (next_penalties, next_edits, next_subs) = if edge_g == current_grapheme {
                         trace!(
                             "  match   {:>8} ─{:>3}→ node={}  sim=1.00",
                             edge_g, "ok", next_node
                         );
                         (penalties, edits, substitutions)
                     } else {
-                        let sim = *self.similarity.get(&(g_ch, txt_ch)).unwrap_or(&0.);
-                        let penalty = 1. - self.penalties.substitution * (1. - sim);
+                        let sim = *self
+                            .similarity
+                            .get(&(g_ch, current_grapheme_first_char))
+                            .unwrap_or(&0.);
+                        let penalty = self.penalties.substitution * (1. - sim);
                         trace!(
-                            "  subst   {:?} ─{:>3}→ {txt:?} node={:?}  base_penalty={:.2} sim={:.2} penalty={:.2}",
+                            "  subst {:?} ─{:>3}→ {current_grapheme:?} node={:?}  base_penalty={:.2} sim={:.2} penalty={:.2}",
                             edge_g, "sub", next_node, self.penalties.substitution, sim, penalty
                         );
                         #[cfg(debug_assertions)]
                         notes.push(format!(
-                            "subst {edge_g:?} -> {txt:?} (substitutions + 1) = {:?}",
-                            substitutions + 1
+                            "sub {edge_g:?} -> {current_grapheme:?} (sub+1={:?}, edits+1={:?})",
+                            substitutions + 1,
+                            edits + 1,
                         ));
                         (penalties + penalty, edits + 1, substitutions + 1)
                     };
@@ -315,6 +332,12 @@ impl FuzzyAhoCorasick {
                         // Checking swap
                         // Correct option
                         if self.within_limits_swap_ahead(self.get_node_limits(n2), edits, swaps) {
+                            #[cfg(debug_assertions)]
+                            notes.push(format!(
+                                "swap a:{a:?} b:{b:?} (swaps+1={:?}, edits+1={:?})",
+                                substitutions + 1,
+                                edits + 1,
+                            ));
                             queue.push(State {
                                 node: n2,
                                 j: j + 2,
@@ -396,7 +419,6 @@ impl FuzzyAhoCorasick {
                     .then_with(|| (b.end - b.start).cmp(&(a.end - a.start)))
                     .then_with(|| a.start.cmp(&b.start))
             });
-
             let mut chosen = Vec::new();
             let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
             for m in matches {

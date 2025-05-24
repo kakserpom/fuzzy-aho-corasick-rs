@@ -30,6 +30,7 @@ impl FuzzyAhoCorasick {
     }
 
     /// Convenience wrapper around [`segment_iter`](Self::segment_iter).
+    #[must_use]
     pub fn segment_text(&self, haystack: &str, threshold: f32) -> String {
         let mut result = String::new();
         let mut prev_matched = false;
@@ -42,14 +43,14 @@ impl FuzzyAhoCorasick {
                         result.push(' ');
                     }
                     prev_matched = true;
-                    result.push_str(&m.text)
+                    result.push_str(&m.text);
                 }
                 Segment::Unmatched(s) => {
                     if prev_matched {
                         result.push(' ');
                     }
                     prev_matched = false;
-                    result.push_str(s.trim())
+                    result.push_str(s.trim());
                 }
             }
         }
@@ -66,6 +67,7 @@ impl FuzzyReplacer {
     /// Performs a **fuzzy** find‑and‑replace using a list of `(pattern →
     /// replacement)` pairs.  Replacements are applied left‑to‑right, the longest
     /// non‑overlapping match wins.
+    #[must_use]
     pub fn replace(&self, text: &str, threshold: f32) -> String {
         let mut matches = self.engine.search(text, threshold);
         matches.sort_by_key(|m| m.start);
@@ -83,6 +85,7 @@ impl FuzzyReplacer {
         result
     }
 
+    #[must_use]
     pub fn engine(&self) -> &FuzzyAhoCorasick {
         &self.engine
     }

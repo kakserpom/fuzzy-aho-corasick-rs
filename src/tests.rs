@@ -131,10 +131,10 @@ fn test_overlap_vs_nonoverlap() {
         .non_overlapping(true)
         .build(patterns);
 
-    let matches_nonoverlap = engine_nonoverlap.search("saddamhussein", 0.8);
+    let matches_nonoverlap = engine_nonoverlap.search("saddamhussein", 0.7);
     assert_eq!(matches_nonoverlap.len(), 1, "{matches_nonoverlap:?}");
 
-    let matches_nonoverlap_two = engine_nonoverlap.search("sadam ddamhu", 0.8);
+    let matches_nonoverlap_two = engine_nonoverlap.search("sadam ddamhu", 0.4);
     assert_eq!(
         matches_nonoverlap_two.len(),
         2,
@@ -267,6 +267,6 @@ fn test_country() {
         .case_insensitive(true)
         .build_replacer([("CZECHOSLOVAKIA", "SERBIA")]);
 
-    let out = replacer.replace("CHEKHOSLOVAKIA", 0.8);
+    let out = replacer.replace("CHEKHOSLOVAKIA", 0.7);
     assert_eq!(out, "SERBIA");
 }

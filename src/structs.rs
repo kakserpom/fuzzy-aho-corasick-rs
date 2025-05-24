@@ -55,41 +55,43 @@ pub struct FuzzyLimits {
 }
 
 impl FuzzyLimits {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
-
+    #[must_use]
     pub fn insertions(mut self, num: NumEdits) -> Self {
         self.insertions = num;
         self
     }
-
+    #[must_use]
     pub(crate) fn finalize(mut self) -> Self {
         if let Some(edits) = self.edits {
             self.insertions = self.insertions.max(edits);
             self.deletions = self.deletions.max(edits);
             self.substitutions = self.substitutions.max(edits);
             self.swaps = self.swaps.max(edits);
-            self.edits = Some(edits)
+            self.edits = Some(edits);
         }
         self
     }
-
+    #[must_use]
     pub fn deletions(mut self, num: NumEdits) -> Self {
         self.deletions = num;
         self
     }
-
+    #[must_use]
     pub fn substitutions(mut self, num: NumEdits) -> Self {
         self.substitutions = num;
         self
     }
-
+    #[must_use]
     pub fn swaps(mut self, num: NumEdits) -> Self {
         self.swaps = num;
         self
     }
 
+    #[must_use]
     pub fn edits(mut self, num: NumEdits) -> Self {
         self.edits = Some(num);
         self
@@ -106,28 +108,33 @@ pub struct FuzzyPenalties {
 
 impl Default for FuzzyPenalties {
     fn default() -> Self {
+        let m = 1.;
         Self {
-            substitution: 0.8,
-            insertion: 0.6,
-            deletion: 0.7,
-            swap: 0.4,
+            substitution: 0.8 * m,
+            insertion: 0.6 * m,
+            deletion: 0.7 * m,
+            swap: 0.4 * m,
         }
     }
 }
 
 impl FuzzyPenalties {
+    #[must_use]
     pub fn insertion(mut self, penalty: f32) -> Self {
         self.insertion = penalty;
         self
     }
+    #[must_use]
     pub fn deletion(mut self, penalty: f32) -> Self {
         self.deletion = penalty;
         self
     }
+    #[must_use]
     pub fn substitution(mut self, penalty: f32) -> Self {
         self.substitution = penalty;
         self
     }
+    #[must_use]
     pub fn swap(mut self, penalty: f32) -> Self {
         self.swap = penalty;
         self
@@ -149,7 +156,7 @@ impl Node {
             #[cfg(debug_assertions)]
             parent,
             #[cfg(debug_assertions)]
-            grapheme: grapheme.map(|s| s.to_string()),
+            grapheme: grapheme.map(str::to_string),
             epsilon: None,
         }
     }
@@ -181,6 +188,9 @@ impl fmt::Debug for FuzzyAhoCorasick {
         if self.case_insensitive {
             s = s.field("case_insensitive", &self.case_insensitive);
         }
+        if self.non_overlapping {
+            s = s.field("non_overlapping", &self.non_overlapping);
+        }
         s.field("patterns", &self.patterns).finish()
     }
 }
@@ -195,12 +205,14 @@ pub struct Pattern {
 
 impl Pattern {
     /// Set pattern weight. Default is 1.0
+    #[must_use]
     pub fn weight(mut self, weight: f32) -> Self {
         self.weight = weight;
         self
     }
 
     /// Set Fuzzy limits per-pattern pattern
+    #[must_use]
     pub fn fuzzy(mut self, limits: FuzzyLimits) -> Self {
         self.limits = Some(limits.finalize());
         self
