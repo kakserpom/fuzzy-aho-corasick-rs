@@ -57,36 +57,3 @@ impl FuzzyAhoCorasick {
         result
     }
 }
-
-pub struct FuzzyReplacer {
-    pub(crate) engine: FuzzyAhoCorasick,
-    pub(crate) replacements: Vec<String>,
-}
-
-impl FuzzyReplacer {
-    /// Performs a **fuzzy** find‑and‑replace using a list of `(pattern →
-    /// replacement)` pairs.  Replacements are applied left‑to‑right, the longest
-    /// non‑overlapping match wins.
-    #[must_use]
-    pub fn replace(&self, text: &str, threshold: f32) -> String {
-        let mut matches = self.engine.search(text, threshold);
-        matches.sort_by_key(|m| m.start);
-
-        let mut result = String::new();
-        let mut last = 0;
-        for m in matches {
-            if m.start >= last {
-                result.push_str(&text[last..m.start]);
-                result.push_str(self.replacements.get(m.pattern_index).unwrap_or(&m.text));
-                last = m.end;
-            }
-        }
-        result.push_str(&text[last..]);
-        result
-    }
-
-    #[must_use]
-    pub fn engine(&self) -> &FuzzyAhoCorasick {
-        &self.engine
-    }
-}

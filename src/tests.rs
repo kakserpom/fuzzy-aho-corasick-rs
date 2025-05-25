@@ -240,6 +240,27 @@ fn test_fuzzy_replace() {
 }
 
 #[test]
+fn test_fuzzy_replace_fn() {
+    assert_eq!(
+        FuzzyAhoCorasickBuilder::new()
+            .case_insensitive(true)
+            .build_replacer_fn(["hair", "bear", "wuzzy"])
+            .replace(
+                "Fuzzy Wuzzy was a hair. Fuzzy Wuzzy had no bear.",
+                |m| {
+                    match m.text.as_str() {
+                        "bear" => Some("hair".into()),
+                        "hair" => Some("bear".into()),
+                        _ => None,
+                    }
+                },
+                0.8,
+            ),
+        "Fuzzy Wuzzy was a bear. Fuzzy Wuzzy had no hair."
+    );
+}
+
+#[test]
 fn test_longer_match_preference() {
     let engine = FuzzyAhoCorasickBuilder::new()
         .non_overlapping(true)

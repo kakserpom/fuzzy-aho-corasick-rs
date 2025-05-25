@@ -103,6 +103,13 @@ impl FuzzyAhoCorasickBuilder {
         }
     }
 
+    pub fn build_replacer_fn<T>(self, patterns: impl IntoIterator<Item = T>) -> FuzzyAhoCorasick
+    where
+        T: Into<Pattern>,
+    {
+        self.non_overlapping(true).build(patterns)
+    }
+
     /// Builds an immutable [`FuzzyAhoCorasick`] engine from pattern list.
     ///
     /// ```rust

@@ -1,11 +1,12 @@
 #![warn(clippy::pedantic)]
 mod builder;
+mod replacer;
 mod segment;
 mod structs;
 #[cfg(test)]
 mod tests;
 
-pub use segment::FuzzyReplacer;
+pub use replacer::FuzzyReplacer;
 
 pub use builder::FuzzyAhoCorasickBuilder;
 use std::borrow::Cow;
@@ -448,5 +449,29 @@ impl FuzzyAhoCorasick {
             }
             matches
         }
+    }
+
+    /// Performs a **fuzzy** find‑and‑replace using a list of `(pattern →
+    /// replacement)` pairs.  Replacements are applied left‑to‑right, the longest
+    /// non‑overlapping match wins.
+    #[must_use]
+    pub fn replace<F>(&self, text: &str, callback: F, threshold: f32) -> String
+    where
+        F: Fn(&FuzzyMatch) -> Option<String>,
+    {
+        let mut matches = self.search(text, threshold);
+        matches.sort_by_key(|m| m.start);
+
+        let mut result = String::new();
+        let mut last = 0;
+        for m in matches {
+            if m.start >= last {
+                result.push_str(&text[last..m.start]);
+                last = m.end;
+                result.push_str(&callback(&m).unwrap_or(m.text));
+            }
+        }
+        result.push_str(&text[last..]);
+        result
     }
 }
