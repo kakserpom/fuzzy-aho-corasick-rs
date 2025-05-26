@@ -1,5 +1,6 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use fuzzy_aho_corasick::{FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits};
+use criterion::{Criterion, criterion_group, criterion_main};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use std::hint::black_box;
 
 fn benchmark_search(c: &mut Criterion) {
     let automaton = FuzzyAhoCorasickBuilder::new()
