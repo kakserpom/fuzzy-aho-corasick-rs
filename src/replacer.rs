@@ -10,10 +10,10 @@ impl FuzzyReplacer {
     /// replacement)` pairs.  Replacements are applied left‑to‑right, the longest
     /// non‑overlapping match wins.
     #[must_use]
-    pub fn replace(&self, text: &str, threshold: f32) -> String {
+    pub fn replace<'a>(&self, text: &str, threshold: f32) -> String {
         self.engine.replace(
             text,
-            |m| self.replacements.get(m.pattern_index).cloned(),
+            |m| self.replacements.get(m.pattern_index).map(String::as_str),
             threshold,
         )
     }

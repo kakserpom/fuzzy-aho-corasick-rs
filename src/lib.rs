@@ -455,9 +455,9 @@ impl FuzzyAhoCorasick {
     /// replacement)` pairs.  Replacements are applied left‑to‑right, the longest
     /// non‑overlapping match wins.
     #[must_use]
-    pub fn replace<F>(&self, text: &str, callback: F, threshold: f32) -> String
+    pub fn replace<'a, F>(&self, text: &str, callback: F, threshold: f32) -> String
     where
-        F: Fn(&FuzzyMatch) -> Option<String>,
+        F: Fn(&FuzzyMatch) -> Option<&'a str>,
     {
         let mut matches = self.search(text, threshold);
         matches.sort_by_key(|m| m.start);
@@ -468,7 +468,7 @@ impl FuzzyAhoCorasick {
             if m.start >= last {
                 result.push_str(&text[last..m.start]);
                 last = m.end;
-                result.push_str(&callback(&m).unwrap_or(m.text));
+                result.push_str(&callback(&m).unwrap_or(m.text.as_str()));
             }
         }
         result.push_str(&text[last..]);
