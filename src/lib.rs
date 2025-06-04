@@ -1,5 +1,5 @@
 #![warn(clippy::pedantic)]
-#![allow(clippy::too_many_lines)]
+#![allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 mod builder;
 mod replacer;
 mod segment;
@@ -105,7 +105,7 @@ impl FuzzyAhoCorasick {
         text: &str,
         best: &mut BTreeMap<(usize, usize, usize), FuzzyMatch>,
         similarity_threshold: f32,
-        #[cfg(debug_assertions)] notes: Vec<String>,
+        #[cfg(debug_assertions)] notes: &Vec<String>,
     ) {
         for &pat_idx in output {
             if !self.within_limits(
@@ -148,7 +148,7 @@ impl FuzzyAhoCorasick {
                             similarity,
                             text: text[start_byte..end_byte].to_string(),
                             #[cfg(debug_assertions)]
-                            notes: notes.clone(),
+                            notes: notes.to_owned(),
                         };
                     }
                 })
@@ -262,7 +262,7 @@ impl FuzzyAhoCorasick {
                         &mut best,
                         similarity_threshold,
                         #[cfg(debug_assertions)]
-                        notes.clone(),
+                        &notes,
                     );
                 }
 
