@@ -23,7 +23,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fuzzy-aho-corasick = "0.1"
+fuzzy-aho-corasick = "0.2"
 ```
 
 Enable SIMD acceleration (optional, off by default):
