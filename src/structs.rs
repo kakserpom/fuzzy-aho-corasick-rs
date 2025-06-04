@@ -179,6 +179,7 @@ pub struct FuzzyAhoCorasick {
     pub(crate) case_insensitive: bool,
 }
 
+#[allow(clippy::missing_fields_in_debug)]
 impl fmt::Debug for FuzzyAhoCorasick {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut s = &mut f.debug_struct("FuzzyAhoCorasick");
