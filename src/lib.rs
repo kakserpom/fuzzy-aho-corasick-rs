@@ -328,33 +328,33 @@ impl FuzzyAhoCorasick {
                     let a = &text_chars[j];
                     let b = &text_chars[j + 1];
                     // check if the node has B-transition and then A-transition
-                    if let Some(&n1) = transitions.get(b.as_ref()) {
-                        if let Some(&n2) = self.nodes[n1].transitions.get(a.as_ref()) {
-                            // Checking swap
-                            // Correct option
-                            if self.within_limits_swap_ahead(self.get_node_limits(n2), edits, swaps)
-                            {
+                    if let Some(&node) = transitions
+                        .get(b.as_ref())
+                        .and_then(|&x| self.nodes[x].transitions.get(a.as_ref()))
+                    {
+                        // Checking swap
+                        // Correct option
+                        if self.within_limits_swap_ahead(self.get_node_limits(node), edits, swaps) {
+                            #[cfg(debug_assertions)]
+                            notes.push(format!(
+                                "swap a:{a:?} b:{b:?} (swaps+1={:?}, edits+1={:?})",
+                                substitutions + 1,
+                                edits + 1,
+                            ));
+                            queue.push(State {
+                                node,
+                                j: j + 2,
+                                matched_start,
+                                matched_end: j + 2,
+                                penalties: penalties + self.penalties.swap,
+                                edits: edits + 1,
+                                insertions,
+                                deletions,
+                                substitutions,
+                                swaps: swaps + 1,
                                 #[cfg(debug_assertions)]
-                                notes.push(format!(
-                                    "swap a:{a:?} b:{b:?} (swaps+1={:?}, edits+1={:?})",
-                                    substitutions + 1,
-                                    edits + 1,
-                                ));
-                                queue.push(State {
-                                    node: n2,
-                                    j: j + 2,
-                                    matched_start,
-                                    matched_end: j + 2,
-                                    penalties: penalties + self.penalties.swap,
-                                    edits: edits + 1,
-                                    insertions,
-                                    deletions,
-                                    substitutions,
-                                    swaps: swaps + 1,
-                                    #[cfg(debug_assertions)]
-                                    notes: notes.clone(),
-                                });
-                            }
+                                notes: notes.clone(),
+                            });
                         }
                     }
                 }
