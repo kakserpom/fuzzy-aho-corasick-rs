@@ -81,10 +81,9 @@ fn test_substitution() {
 fn test_swap() {
     let fac = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().edits(2))
-        .non_overlapping(true)
         .case_insensitive(true)
         .build(["ALI", "KONY"]);
-    let result = fac.search("ALIKOYN", 0.6);
+    let result = fac.search_non_overlapping("ALIKOYN", 0.6);
     assert!(
         result
             .iter()
@@ -97,10 +96,9 @@ fn test_big() {
     let fac = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().edits(1))
         .case_insensitive(true)
-        .non_overlapping(true)
         .build(["tincidunt", "porta"]);
     let text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vestibulum eros ipsum, tincidutn eu metus ut, commodo accumsan mi. Vestibulum porta, orci nec ullamcorper posuere, eros tortor pharetra est, at porttitor mi leo a velit. Aenean sollicitudin mauris elit, ultricies congue dui vulputate in. In hac habitasse platea dictumst. Nam iaculis sagittis justo a condimentum. Curabitur sed rhoncus dolor. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus egestas congue lorem, in convallis magna viverra quis. Maecenas fringilla mollis arcu quis maximus. Maecenas tincidunt semper vestibulum. Donec aliquet leo at molestie elementum. Nulla venenatis iaculis gravida. Phasellus at pulvinar odio. Etiam bibendum tempor purus at dignissim. Nam a turpis ante. Etiam imperdiet justo sit amet quam tristique porttitor. Cras ultrices tellus et dolor lobortis tempor. Suspendisse eu mi nec nisi sollicitudin pharetra. Proin imperdiet elementum ullamcorper. Nam imperdiet quis mi at vulputate. Vivamus pulvinar, quam et tempus sollicitudin, justo dolor venenatis lacus, sit amet dignissim ex quam ut est. Suspendisse feugiat libero a augue malesuada sagittis. Curabitur vel magna neque. Praesent eu nulla faucibus, egestas eros sit amet, elementum quam. Fusce porttitor et lacus vitae maximus. Ut viverra eu sem sed lobortis. Fusce feugiat vestibulum posuere. Integer erat mauris, tempor eu magna vitae, varius rutrum elit. Proin mattis, nunc at porta commodo, erat urna viverra ante, vitae feugiat velit dolor ac quam. Nulla semper elit in neque mollis molestie. Aenean a augue scelerisque, tincidunt odio ut, finibus erat. Integer feugiat eros ac dolor tempus, sed varius lectus ullamcorper. Orci varius natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus.";
-    let result = fac.search(text, 0.8);
+    let result = fac.search_non_overlapping(text, 0.8);
     assert!(result.iter().any(|x| x.text == "tincidutn"), "{result:?}");
     assert!(result.iter().any(|x| x.text == "tincidunt"), "{result:?}");
     assert!(result.iter().any(|x| x.text == "porta"), "{result:?}");
@@ -108,10 +106,7 @@ fn test_big() {
 
 #[test]
 fn test_overlap_vs_nonoverlap() {
-    let patterns = ["saddam", "ddamhu"];
-    let engine = FuzzyAhoCorasickBuilder::new()
-        .non_overlapping(false)
-        .build([("saddam", 1.0, 2), ("ddamhu", 1.0, 2)]);
+    let engine = FuzzyAhoCorasickBuilder::new().build([("saddam", 1.0, 2), ("ddamhu", 1.0, 2)]);
 
     let matches = engine.search("saddamddamhu", 0.5);
     assert!(
@@ -126,15 +121,10 @@ fn test_overlap_vs_nonoverlap() {
         "{matches:?}"
     );
 
-    let engine_nonoverlap = FuzzyAhoCorasickBuilder::new()
-        .fuzzy(FuzzyLimits::default().edits(2))
-        .non_overlapping(true)
-        .build(patterns);
-
-    let matches_nonoverlap = engine_nonoverlap.search("saddamhussein", 0.7);
+    let matches_nonoverlap = engine.search_non_overlapping("saddamhussein", 0.7);
     assert_eq!(matches_nonoverlap.len(), 1, "{matches_nonoverlap:?}");
 
-    let matches_nonoverlap_two = engine_nonoverlap.search("sadam ddamhu", 0.4);
+    let matches_nonoverlap_two = engine.search_non_overlapping("sadam ddamhu", 0.4);
     assert_eq!(
         matches_nonoverlap_two.len(),
         2,
@@ -194,7 +184,6 @@ fn test_regression_1() {
 #[test]
 fn test_segment_text() {
     let engine = FuzzyAhoCorasickBuilder::new()
-        .non_overlapping(true)
         .fuzzy(FuzzyLimits::new().edits(3))
         .build(["saddam", "hussein"]);
     assert_eq!(engine.segment_text("sadamhusein", 0.8), "sadam husein");
@@ -207,7 +196,6 @@ fn test_segment_text() {
 #[test]
 fn test_segment_text2() {
     let engine = FuzzyAhoCorasickBuilder::new()
-        .non_overlapping(true)
         .case_insensitive(true)
         .build(["HASAN", "JAMAL", "HUSSEIN", "ZEINIYE"]);
     assert_eq!(
@@ -218,9 +206,7 @@ fn test_segment_text2() {
 
 #[test]
 fn test_fail() {
-    let engine = FuzzyAhoCorasickBuilder::new()
-        .non_overlapping(true)
-        .build(["saddam", "hussein"]);
+    let engine = FuzzyAhoCorasickBuilder::new().build(["saddam", "hussein"]);
     assert_eq!(engine.segment_text("sadam husein", 0.8), "sadam husein");
 }
 
@@ -244,7 +230,7 @@ fn test_fuzzy_replace_fn() {
     assert_eq!(
         FuzzyAhoCorasickBuilder::new()
             .case_insensitive(true)
-            .build_replacer_fn(["hair", "bear", "wuzzy"])
+            .build(["hair", "bear", "wuzzy"])
             .replace(
                 "Fuzzy Wuzzy was a hair. Fuzzy Wuzzy had no bear.",
                 |m| {
@@ -262,10 +248,8 @@ fn test_fuzzy_replace_fn() {
 
 #[test]
 fn test_longer_match_preference() {
-    let engine = FuzzyAhoCorasickBuilder::new()
-        .non_overlapping(true)
-        .build(["JOINT STOCK COMPANY", "STOCK"]);
-    let result = engine.search("JOINT STOCK COMPANY GAZPROM", 0.8);
+    let engine = FuzzyAhoCorasickBuilder::new().build(["JOINT STOCK COMPANY", "STOCK"]);
+    let result = engine.search_non_overlapping("JOINT STOCK COMPANY GAZPROM", 0.8);
     assert!(result.iter().any(|m| m.pattern == "JOINT STOCK COMPANY"));
     assert!(!result.iter().any(|m| m.pattern == "STOCK"));
 }

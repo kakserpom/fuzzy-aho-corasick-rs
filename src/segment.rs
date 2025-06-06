@@ -8,7 +8,7 @@ impl FuzzyAhoCorasick {
         haystack: &'b str,
         threshold: f32,
     ) -> impl Iterator<Item = Segment<'b>> {
-        let mut matches = self.search(haystack, threshold);
+        let mut matches = self.search_non_overlapping(haystack, threshold);
         #[cfg(test)]
         println!("matches: {:?}", matches);
         matches.sort_by_key(|m| m.start);

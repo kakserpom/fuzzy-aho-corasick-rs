@@ -9,7 +9,6 @@ use unicode_segmentation::UnicodeSegmentation;
 ///
 /// let engine = FuzzyAhoCorasickBuilder::new()
 ///     .case_insensitive(true)
-///     .non_overlapping(true)
 ///     .build(["hello", "world"]);
 ///
 /// let result = engine.segment_text("HeLLo WoRLd!", 1.);
@@ -21,7 +20,6 @@ pub struct FuzzyAhoCorasickBuilder {
     similarity: Option<&'static BTreeMap<(char, char), f32>>,
     limits: Option<FuzzyLimits>,
     penalties: FuzzyPenalties,
-    non_overlapping: bool,
     case_insensitive: bool,
 }
 
@@ -34,7 +32,6 @@ impl FuzzyAhoCorasickBuilder {
             similarity: None,
             limits: None,
             penalties: FuzzyPenalties::default(),
-            non_overlapping: false,
             case_insensitive: false,
         }
     }
@@ -67,14 +64,6 @@ impl FuzzyAhoCorasickBuilder {
         self
     }
 
-    /// Disallow overlapping matches (the engine will greedily choose the
-    /// longest non‑overlapping matches from left to right).
-    #[must_use]
-    pub fn non_overlapping(mut self, value: bool) -> Self {
-        self.non_overlapping = value;
-        self
-    }
-
     /// Enable Unicode‑aware *case‑insensitive* matching.
     #[must_use]
     pub fn case_insensitive(mut self, value: bool) -> Self {
@@ -98,16 +87,9 @@ impl FuzzyAhoCorasickBuilder {
             pairs.into_iter().map(|(p, r)| (p.into(), r.into())).unzip();
 
         FuzzyReplacer {
-            engine: self.non_overlapping(true).build(patterns),
+            engine: self.build(patterns),
             replacements,
         }
-    }
-
-    pub fn build_replacer_fn<T>(self, patterns: impl IntoIterator<Item = T>) -> FuzzyAhoCorasick
-    where
-        T: Into<Pattern>,
-    {
-        self.non_overlapping(true).build(patterns)
     }
 
     /// Builds an immutable [`FuzzyAhoCorasick`] engine from pattern list.
@@ -265,7 +247,6 @@ impl FuzzyAhoCorasickBuilder {
             similarity,
             limits: self.limits,
             penalties: self.penalties,
-            non_overlapping: self.non_overlapping,
             case_insensitive: self.case_insensitive,
         }
     }

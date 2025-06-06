@@ -172,12 +172,11 @@ impl FuzzyAhoCorasick {
 
     #[inline]
     #[must_use]
-    pub fn search(&self, text: &str, similarity_threshold: f32) -> Vec<FuzzyMatch> {
-        if text.is_empty() {
-            return Vec::new();
+    pub fn search(&self, haystack: &str, similarity_threshold: f32) -> Vec<FuzzyMatch> {
+        let grapheme_idx: Vec<(usize, &str)> = haystack.grapheme_indices(true).collect();
+        if grapheme_idx.is_empty() {
+            return vec![];
         }
-
-        let grapheme_idx: Vec<(usize, &str)> = text.grapheme_indices(true).collect();
         let text_chars: Vec<Cow<str>> = grapheme_idx
             .iter()
             .map(|(_, g)| {
@@ -193,7 +192,9 @@ impl FuzzyAhoCorasick {
 
         let mut queue: Vec<State> = Vec::with_capacity(64);
 
-        trace!("=== fuzzy_search on {text:?} (similarity_threshold {similarity_threshold:.2}) ===",);
+        trace!(
+            "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
+        );
         for start in 0..text_chars.len() {
             trace!(
                 "=== new window at grapheme #{start} ({:?}) ===",
@@ -258,7 +259,7 @@ impl FuzzyAhoCorasick {
                         matched_start,
                         matched_end,
                         &grapheme_idx,
-                        text,
+                        haystack,
                         &mut best,
                         similarity_threshold,
                         #[cfg(debug_assertions)]
@@ -413,45 +414,45 @@ impl FuzzyAhoCorasick {
             }
         }
 
-        let mut matches: Vec<FuzzyMatch> = best.into_values().collect();
-        if self.non_overlapping {
-            matches.sort_by(|left, right| {
-                right
-                    .similarity
-                    .partial_cmp(&left.similarity)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| (right.end - right.start).cmp(&(left.end - left.start)))
-                    .then_with(|| left.start.cmp(&right.start))
-            });
-            let mut chosen = Vec::new();
-            let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
-            for matched in matches {
-                if occupied_intervals
-                    .range(..=matched.start)
-                    .next_back()
-                    .is_none_or(|(_, &end)| end <= matched.start)
-                    && occupied_intervals
-                        .range(matched.start..)
-                        .next()
-                        .is_none_or(|(&start, _)| start >= matched.end)
-                {
-                    occupied_intervals.insert(matched.start, matched.end);
-                    chosen.push(matched);
-                }
-            }
+        best.into_values().collect()
+    }
 
-            chosen.sort_by_key(|m| m.start);
-            chosen
-        } else {
-            #[cfg(test)]
+    /// Search without overlapping matches (the engine will greedily choose the
+    /// longest non‑overlapping matches from left to right).
+    #[must_use]
+    pub fn search_non_overlapping(
+        &self,
+        haystack: &str,
+        similarity_threshold: f32,
+    ) -> Vec<FuzzyMatch> {
+        let mut matches = self.search(haystack, similarity_threshold);
+        matches.sort_by(|left, right| {
+            right
+                .similarity
+                .partial_cmp(&left.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| (right.end - right.start).cmp(&(left.end - left.start)))
+                .then_with(|| left.start.cmp(&right.start))
+        });
+        let mut chosen = Vec::new();
+        let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
+        for matched in matches {
+            if occupied_intervals
+                .range(..=matched.start)
+                .next_back()
+                .is_none_or(|(_, &end)| end <= matched.start)
+                && occupied_intervals
+                    .range(matched.start..)
+                    .next()
+                    .is_none_or(|(&start, _)| start >= matched.end)
             {
-                trace!("*** raw matches ***");
-                for m in &matches {
-                    trace!("{:?}", m);
-                }
+                occupied_intervals.insert(matched.start, matched.end);
+                chosen.push(matched);
             }
-            matches
         }
+
+        chosen.sort_by_key(|m| m.start);
+        chosen
     }
 
     /// Performs a **fuzzy** find‑and‑replace using a list of `(pattern →
@@ -464,7 +465,7 @@ impl FuzzyAhoCorasick {
     {
         let mut result = String::new();
         let mut last = 0;
-        for matched in self.search(text, threshold) {
+        for matched in self.search_non_overlapping(text, threshold) {
             if matched.start >= last {
                 result.push_str(&text[last..matched.start]);
                 last = matched.end;

@@ -173,8 +173,6 @@ pub struct FuzzyAhoCorasick {
     pub(crate) limits: Option<FuzzyLimits>,
     /// Weight
     pub(crate) penalties: FuzzyPenalties,
-    /// Non-overlapping matches only
-    pub(crate) non_overlapping: bool,
     /// Case insensitivity
     pub(crate) case_insensitive: bool,
 }
@@ -188,9 +186,6 @@ impl fmt::Debug for FuzzyAhoCorasick {
         }
         if self.case_insensitive {
             s = s.field("case_insensitive", &self.case_insensitive);
-        }
-        if self.non_overlapping {
-            s = s.field("non_overlapping", &self.non_overlapping);
         }
         s.field("patterns", &self.patterns).finish()
     }
