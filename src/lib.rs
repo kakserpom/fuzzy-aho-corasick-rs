@@ -415,27 +415,28 @@ impl FuzzyAhoCorasick {
 
         let mut matches: Vec<FuzzyMatch> = best.into_values().collect();
         if self.non_overlapping {
-            matches.sort_by(|a, b| {
-                b.similarity
-                    .partial_cmp(&a.similarity)
+            matches.sort_by(|left, right| {
+                right
+                    .similarity
+                    .partial_cmp(&left.similarity)
                     .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| (b.end - b.start).cmp(&(a.end - a.start)))
-                    .then_with(|| a.start.cmp(&b.start))
+                    .then_with(|| (right.end - right.start).cmp(&(left.end - left.start)))
+                    .then_with(|| left.start.cmp(&right.start))
             });
             let mut chosen = Vec::new();
             let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
-            for m in matches {
+            for matched in matches {
                 if occupied_intervals
-                    .range(..=m.start)
+                    .range(..=matched.start)
                     .next_back()
-                    .is_none_or(|(_, &e)| e <= m.start)
+                    .is_none_or(|(_, &end)| end <= matched.start)
                     && occupied_intervals
-                        .range(m.start..)
+                        .range(matched.start..)
                         .next()
-                        .is_none_or(|(&s, _)| s >= m.end)
+                        .is_none_or(|(&start, _)| start >= matched.end)
                 {
-                    occupied_intervals.insert(m.start, m.end);
-                    chosen.push(m);
+                    occupied_intervals.insert(matched.start, matched.end);
+                    chosen.push(matched);
                 }
             }
 
@@ -461,16 +462,13 @@ impl FuzzyAhoCorasick {
     where
         F: Fn(&FuzzyMatch) -> Option<&'a str>,
     {
-        let mut matches = self.search(text, threshold);
-        matches.sort_by_key(|m| m.start);
-
         let mut result = String::new();
         let mut last = 0;
-        for m in matches {
-            if m.start >= last {
-                result.push_str(&text[last..m.start]);
-                last = m.end;
-                result.push_str(callback(&m).unwrap_or(m.text.as_str()));
+        for matched in self.search(text, threshold) {
+            if matched.start >= last {
+                result.push_str(&text[last..matched.start]);
+                last = matched.end;
+                result.push_str(callback(&matched).unwrap_or(&matched.text));
             }
         }
         result.push_str(&text[last..]);
