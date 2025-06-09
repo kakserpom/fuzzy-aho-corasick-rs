@@ -429,8 +429,7 @@ impl FuzzyAhoCorasick {
         matches.sort_by(|left, right| {
             right
                 .similarity
-                .partial_cmp(&left.similarity)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&left.similarity)
                 .then_with(|| (right.end - right.start).cmp(&(left.end - left.start)))
                 .then_with(|| left.start.cmp(&right.start))
         });
