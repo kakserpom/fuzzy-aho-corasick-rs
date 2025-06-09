@@ -5,13 +5,12 @@ use std::hint::black_box;
 fn benchmark_search(c: &mut Criterion) {
     let automaton = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().edits(2))
-        .non_overlapping(true)
         .build(["saddam", "ddamhu"]);
     let input = "this is a saddamhu example with multiple saddam matches and ddamhu too";
 
     c.bench_function("search", |b| {
         b.iter(|| {
-            let _ = automaton.search(black_box(input), 0.8);
+            let _ = automaton.search_non_overlapping(black_box(input), 0.8);
         });
     });
 }
