@@ -193,13 +193,15 @@ fn test_segment_text() {
     );
 }
 
-
 #[test]
 fn test_segment_name() {
     let engine = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().edits(3))
         .build(["SHANE", "DOMINIC", "CRAWFORD"]);
-    assert_eq!(engine.segment_text("SHANE DOM INIC CRAWFORD", 0.8), "SHANE DOM INIC CRAWFORD");
+    assert_eq!(
+        engine.segment_text("SHANEDOM INICCRAWFORD", 0.8),
+        "SHANE DOM INIC CRAWFORD"
+    );
 }
 
 #[test]

@@ -297,7 +297,7 @@ impl FuzzyAhoCorasick {
                         );
                         #[cfg(debug_assertions)]
                         notes.push(format!(
-                            "sub {edge_g:?} -> {current_grapheme:?} (sub+1={:?}, edits+1={:?})",
+                            "sub {edge_g:?} -> {current_grapheme:?} (sim={sim:?}, penalty={penalty:?}) (sub+1={:?}, edits+1={:?})",
                             substitutions + 1,
                             edits + 1,
                         ));
@@ -385,7 +385,7 @@ impl FuzzyAhoCorasick {
                             j: j + 1,
                             matched_start,
                             matched_end,
-                            penalties: penalties * self.penalties.insertion,
+                            penalties: penalties + self.penalties.insertion,
                             edits: edits + 1,
                             insertions: insertions + 1,
                             deletions,
@@ -435,6 +435,8 @@ impl FuzzyAhoCorasick {
         similarity_threshold: f32,
     ) -> Vec<FuzzyMatch> {
         let mut matches = self.search(haystack, similarity_threshold);
+        #[cfg(test)]
+        trace!("raw matches: {:?}", matches);
         matches.sort_by(|left, right| {
             right
                 .similarity
