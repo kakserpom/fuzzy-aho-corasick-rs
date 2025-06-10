@@ -360,7 +360,7 @@ impl FuzzyAhoCorasick {
                     }
                 }
 
-                // 3)  Insertion
+                // 3)  Insertion / Deletion
                 let (ins_ex, del_ex) = self.within_limits_ins_del_ahead(
                     self.get_node_limits(node),
                     edits,
@@ -373,6 +373,13 @@ impl FuzzyAhoCorasick {
                         text_chars[j], self.penalties.insertion
                     );
                     if ins_ex && matched_start != matched_end || matched_start != j {
+                        #[cfg(debug_assertions)]
+                        notes.push(format!(
+                            "ins {:?} (sub+1={:?}, edits+1={:?})",
+                            text_chars[j],
+                            substitutions + 1,
+                            edits + 1,
+                        ));
                         queue.push(State {
                             node,
                             j: j + 1,
@@ -389,11 +396,13 @@ impl FuzzyAhoCorasick {
                         });
                     }
                     if del_ex {
-                        for &next_node in transitions.values() {
+                        for (edge_g, &next_node) in transitions {
                             trace!(
-                                "  delete  to node={}  penalty={:.2}",
-                                next_node, self.penalties.deletion
+                                "  delete to node={next_node} penalty={:.2}",
+                                self.penalties.deletion
                             );
+                            #[cfg(debug_assertions)]
+                            notes.push(format!("del {:?} (del+1={:?})", edge_g, deletions + 1,));
                             queue.push(State {
                                 node: next_node,
                                 j,
