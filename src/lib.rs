@@ -43,11 +43,11 @@ impl FuzzyAhoCorasick {
         insertions: NumEdits,
         deletions: NumEdits,
     ) -> (bool, bool) {
-        if let Some(m) = limits.or(self.limits.as_ref()) {
-            let edits_ok = m.edits.is_none_or(|max| edits < max);
+        if let Some(max) = limits.or(self.limits.as_ref()) {
+            let edits_ok = max.edits.is_none_or(|max| edits < max);
             (
-                edits_ok && insertions < m.insertions,
-                edits_ok && deletions < m.deletions,
+                edits_ok && max.insertions.is_none_or(|max| insertions < max),
+                edits_ok && max.deletions.is_none_or(|max| deletions < max),
             )
         } else {
             (false, false)
@@ -61,8 +61,8 @@ impl FuzzyAhoCorasick {
         edits: NumEdits,
         swaps: NumEdits,
     ) -> bool {
-        if let Some(m) = limits.or(self.limits.as_ref()) {
-            m.edits.is_none_or(|max| edits < max) && swaps < m.swaps
+        if let Some(max) = limits.or(self.limits.as_ref()) {
+            max.edits.is_none_or(|max| edits < max) && max.swaps.is_none_or(|max| swaps < max)
         } else {
             false
         }
@@ -77,12 +77,12 @@ impl FuzzyAhoCorasick {
         substitutions: NumEdits,
         swaps: NumEdits,
     ) -> bool {
-        if let Some(m) = limits.or(self.limits.as_ref()) {
-            m.edits.is_none_or(|max| edits <= max)
-                && insertions <= m.insertions
-                && deletions <= m.deletions
-                && substitutions <= m.substitutions
-                && swaps <= m.swaps
+        if let Some(max) = limits.or(self.limits.as_ref()) {
+            max.edits.is_none_or(|max| edits <= max)
+                && max.insertions.is_none_or(|max| insertions <= max)
+                && max.deletions.is_none_or(|max| deletions <= max)
+                && max.substitutions.is_none_or(|max| substitutions <= max)
+                && max.swaps.is_none_or(|max| swaps <= max)
         } else {
             edits == 0 && insertions == 0 && deletions == 0 && substitutions == 0 && swaps == 0
         }

@@ -266,6 +266,17 @@ fn test_longer_match_preference() {
 }
 
 #[test]
+fn test_regression_0() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2).substitutions(1))
+        .case_insensitive(true)
+        .build(["zavod"]);
+
+    let result = engine.search_non_overlapping("NARODNY", 0.8);
+    assert!(result.is_empty());
+}
+
+#[test]
 fn test_readme() {
     let replacer = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().substitutions(1))
