@@ -15,6 +15,7 @@ Abraham, and A. E. Hassanien (see the [PDF](DOCS/ias10_horak.pdf)).
 - **Fine‐Grained Limits**: Per‐pattern caps on insertions, deletions, substitutions, swaps, or total edits.
 - **Non‐Overlapping Option**: Greedily choose longest non‐overlapping matches from left to right.
 - **Fuzzy Replacer**: Perform fuzzy find‐and‐replace, preserving unmatched segments.
+- **Text segmentation API**: use `segment_iter()`/`segment_text()` to split a string using your automaton.
 
 ## Installation
 
@@ -58,10 +59,10 @@ let builder = FuzzyAhoCorasickBuilder::new()
 .fuzzy(FuzzyLimits::new().edits(2))
 // Custom penalties
 .penalties(FuzzyPenalties::default ()
-    .substitution(0.7)
-    .insertion(0.9)
-    .deletion(0.9)
-    .swap(1)
+.substitution(0.7)
+.insertion(0.9)
+.deletion(0.9)
+.swap(1)
 )
 // Unicode case folding
 .case_insensitive(true)
