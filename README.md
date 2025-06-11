@@ -35,11 +35,10 @@ fn main() {
     let engine = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().edits(1))
         .case_insensitive(true)
-        .non_overlapping(true)
         .build(["hello", "world"]);
 
     let text = "H3llo W0rld!";
-    let matches = engine.search(text, 0.8);
+    let matches = engine.search_non_overlapping(text, 0.8);
 
     for m in matches {
         println!(
@@ -58,15 +57,14 @@ let builder = FuzzyAhoCorasickBuilder::new()
 // Maximum total edits (ins+del+sub+swap) per match
 .fuzzy(FuzzyLimits::new().edits(2))
 // Custom penalties
-.penalties(FuzzyPenalties::default ())
-.substitution(0.7)
-.insertion(0.9)
-.deletion(0.9)
-.swap(1))
+.penalties(FuzzyPenalties::default ()
+    .substitution(0.7)
+    .insertion(0.9)
+    .deletion(0.9)
+    .swap(1)
+)
 // Unicode case folding
 .case_insensitive(true)
-// No overlapping matches
-.non_overlapping(true);
 
 let engine = builder.build(["pattern1", "pattern2"]);
 ```
