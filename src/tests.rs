@@ -1,7 +1,7 @@
 /* -------------------------------------------------------------------------
  *  Tests
  * ---------------------------------------------------------------------- */
-use crate::{FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties};
+use crate::{FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, Pattern};
 
 fn make_engine() -> FuzzyAhoCorasick {
     FuzzyAhoCorasickBuilder::new()
@@ -185,6 +185,18 @@ fn test_regression_1() {
     let result = engine.search("CA", 0.8);
     println!("{:?}", result);
     assert_eq!(result.iter().count(), 0);
+}
+
+//Pattern::from("HOSSEYN").fuzzy(FuzzyLimits::new().edits(3)),
+
+#[test]
+fn test_regression_2() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .build([Pattern::from("TOLA").fuzzy(FuzzyLimits::new().edits(2))]);
+
+    let result = engine.search_non_overlapping("TOL", 0.5);
+    println!("\nResult: {:?}", result);
+    assert_eq!(result.iter().any(|x| x.text == "TOL"), true);
 }
 
 #[test]

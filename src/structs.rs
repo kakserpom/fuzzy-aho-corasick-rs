@@ -294,7 +294,11 @@ impl<'a> From<(&'a str, f32, usize)> for Pattern {
             pattern: s.to_owned(),
             grapheme_len: s.graphemes(true).count(),
             weight: w,
-            limits: Some(FuzzyLimits::default().edits(max_edits as NumEdits)),
+            limits: Some(
+                FuzzyLimits::default()
+                    .edits(max_edits as NumEdits)
+                    .finalize(),
+            ),
         }
     }
 }

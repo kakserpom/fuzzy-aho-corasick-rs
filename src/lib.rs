@@ -36,21 +36,32 @@ impl FuzzyAhoCorasick {
             .and_then(|i| self.patterns.get(i).and_then(|p| p.limits.as_ref()))
     }
     #[inline]
-    fn within_limits_ins_del_ahead(
+    fn within_limits_insertion_ahead(
         &self,
         limits: Option<&FuzzyLimits>,
         edits: NumEdits,
         insertions: NumEdits,
-        deletions: NumEdits,
-    ) -> (bool, bool) {
+    ) -> bool {
         if let Some(max) = limits.or(self.limits.as_ref()) {
-            let edits_ok = max.edits.is_none_or(|max| edits < max);
-            (
-                edits_ok && max.insertions.is_none_or(|max| insertions < max),
-                edits_ok && max.deletions.is_none_or(|max| deletions < max),
-            )
+            max.edits.is_none_or(|max| edits < max)
+                && max.insertions.is_none_or(|max| insertions < max)
         } else {
-            (false, false)
+            false
+        }
+    }
+
+    #[inline]
+    fn within_limits_deletion_ahead(
+        &self,
+        limits: Option<&FuzzyLimits>,
+        edits: NumEdits,
+        deletions: NumEdits,
+    ) -> bool {
+        if let Some(max) = limits.or(self.limits.as_ref()) {
+            max.edits.is_none_or(|max| edits < max)
+                && max.deletions.is_none_or(|max| deletions < max)
+        } else {
+            false
         }
     }
 
@@ -62,13 +73,11 @@ impl FuzzyAhoCorasick {
         swaps: NumEdits,
     ) -> bool {
         if let Some(max) = limits.or(self.limits.as_ref()) {
-            let result =
-                max.edits.is_none_or(|max| edits < max) && max.swaps.is_none_or(|max| swaps < max);
             /*println!(
                 "within_limits_swap_ahead() -- max: {max:?} edits: {edits:?} swaps: {swaps:?}\
-                \nresult = {result:?}\n"
-            );*/
-            result
+                \nresult = {:?}\n"
+            , max.edits.is_none_or(|max| edits < max) && max.swaps.is_none_or(|max| swaps < max))*/
+            max.edits.is_none_or(|max| edits < max) && max.swaps.is_none_or(|max| swaps < max)
         } else {
             false
         }
@@ -82,13 +91,12 @@ impl FuzzyAhoCorasick {
         substitutions: NumEdits,
     ) -> bool {
         if let Some(max) = limits.or(self.limits.as_ref()) {
-            let result = max.edits.is_none_or(|max| edits <= max)
-                && max.substitutions.is_none_or(|max| substitutions <= max);
             /*println!(
                 "within_limits_subst_ahead() -- max: {max:?} edits: {edits:?} substitutions: {substitutions:?}\
                 \nresult = {result:?}\n"
             );*/
-            result
+            max.edits.is_none_or(|max| edits <= max)
+                && max.substitutions.is_none_or(|max| substitutions <= max)
         } else {
             edits == 0 && substitutions == 0
         }
@@ -105,16 +113,15 @@ impl FuzzyAhoCorasick {
         swaps: NumEdits,
     ) -> bool {
         if let Some(max) = limits.or(self.limits.as_ref()) {
-            let result = max.edits.is_none_or(|max| edits <= max)
-                && max.insertions.is_none_or(|max| insertions <= max)
-                && max.deletions.is_none_or(|max| deletions <= max)
-                && max.substitutions.is_none_or(|max| substitutions <= max)
-                && max.swaps.is_none_or(|max| swaps <= max);
             /*println!(
                 "within_limits() -- max: {max:?} edits: {edits:?} insertions: {insertions:?} deletions: {deletions:?} substitutions: {substitutions:?} swaps: {swaps:?}\
                 \nresult = {result:?}\n"
             );*/
-            result
+            max.edits.is_none_or(|max| edits <= max)
+                && max.insertions.is_none_or(|max| insertions <= max)
+                && max.deletions.is_none_or(|max| deletions <= max)
+                && max.substitutions.is_none_or(|max| substitutions <= max)
+                && max.swaps.is_none_or(|max| swaps <= max)
         } else {
             edits == 0 && insertions == 0 && deletions == 0 && substitutions == 0 && swaps == 0
         }
@@ -197,7 +204,7 @@ impl FuzzyAhoCorasick {
                     similarity,
                     text: text[start_byte..end_byte].to_string(),
                     #[cfg(debug_assertions)]
-                    notes: notes.clone(),
+                    notes: notes.to_owned(),
                 });
         }
     }
@@ -265,7 +272,7 @@ impl FuzzyAhoCorasick {
                     ..
                 } = queue[q_idx];
                 #[cfg(debug_assertions)]
-                let mut notes = queue[q_idx].notes.clone();
+                let notes = queue[q_idx].notes.clone();
                 q_idx += 1;
 
                 /*trace!(
@@ -299,133 +306,142 @@ impl FuzzyAhoCorasick {
                     );
                 }
 
-                if j == text_chars.len() {
-                    continue;
-                }
+                //
+                // 1) Same or similar symbol — только внутри текста
+                //
+                if j < text_chars.len() {
+                    let current_grapheme = text_chars[j].as_ref();
+                    let current_ch = current_grapheme.chars().next().unwrap_or('\0');
 
-                let current_grapheme = text_chars[j].as_ref();
-                let current_grapheme_first_char = current_grapheme.chars().next().unwrap_or('\0');
+                    for (edge_g, &next_node) in transitions {
+                        #[cfg(debug_assertions)]
+                        let notes = notes.clone();
 
-                // 1)  Same or similar symbol
-                for (edge_g, &next_node) in transitions {
-                    #[cfg(debug_assertions)]
-                    let mut notes = notes.clone();
-                    let g_ch = edge_g.chars().next().unwrap_or('\0');
-                    let (next_penalties, next_edits, next_subs) = if edge_g == current_grapheme {
-                        trace!(
-                            "  match   {:>8} ─{:>3}→ node={}  sim=1.00",
-                            edge_g, "ok", next_node
-                        );
-                        (penalties, edits, substitutions)
-                    } else {
-                        let sim = *self
-                            .similarity
-                            .get(&(g_ch, current_grapheme_first_char))
-                            .unwrap_or(&0.);
-                        let penalty = self.penalties.substitution * (1. - sim);
-
-                        if !self.within_limits_subst(
+                        let g_ch = edge_g.chars().next().unwrap_or('\0');
+                        if edge_g == current_grapheme {
+                            // exact match
+                            trace!("  match   {:>8} ─ok→ node={}  sim=1.00", edge_g, next_node);
+                            queue.push(State {
+                                node: next_node,
+                                j: j + 1,
+                                matched_start: if matched_end == matched_start {
+                                    j
+                                } else {
+                                    matched_start
+                                },
+                                matched_end: j + 1,
+                                penalties,
+                                edits,
+                                insertions,
+                                deletions,
+                                substitutions,
+                                swaps,
+                                #[cfg(debug_assertions)]
+                                notes,
+                            });
+                        } else if self.within_limits_subst(
                             self.get_node_limits(node),
                             edits,
                             substitutions,
                         ) {
-                            continue;
-                        }
+                            // substitution
+                            let sim = *self.similarity.get(&(g_ch, current_ch)).unwrap_or(&0.);
+                            let penalty = self.penalties.substitution * (1.0 - sim);
 
-                        trace!(
-                            "  subst {:?} ─{:>3}→ {current_grapheme:?} node={:?}  base_penalty={:.2} sim={:.2} penalty={:.2} edits+1={:?}",
-                            edge_g,
-                            "sub",
-                            next_node,
-                            self.penalties.substitution,
-                            sim,
-                            penalty,
-                            edits + 1
-                        );
-                        #[cfg(debug_assertions)]
-                        notes.push(format!(
-                            "sub {edge_g:?} -> {current_grapheme:?} (sim={sim:?}, penalty={penalty:?}) (sub+1={:?}, edits+1={:?})",
-                            substitutions + 1,
-                            edits + 1,
-                        ));
-                        (penalties + penalty, edits + 1, substitutions + 1)
-                    };
-
-                    queue.push(State {
-                        node: next_node,
-                        j: j + 1,
-                        matched_start: if matched_end == matched_start {
-                            j
-                        } else {
-                            matched_start
-                        },
-                        matched_end: j + 1,
-                        penalties: next_penalties,
-                        edits: next_edits,
-                        insertions,
-                        deletions,
-                        substitutions: next_subs,
-                        swaps,
-                        #[cfg(debug_assertions)]
-                        notes,
-                    });
-                }
-
-                // Swap (transposition of two neighboring graphemes)
-                if j + 1 < text_chars.len() {
-                    let a = &text_chars[j];
-                    let b = &text_chars[j + 1];
-                    // check if the node has B-transition and then A-transition
-                    if let Some(&node) = transitions
-                        .get(b.as_ref())
-                        .and_then(|&x| self.nodes[x].transitions.get(a.as_ref()))
-                    {
-                        // Checking swap
-                        // Correct option
-                        if self.within_limits_swap_ahead(self.get_node_limits(node), edits, swaps) {
+                            trace!(
+                                "  subst {:>8?} ─sub→ {current_grapheme:?} \
+                                 node={}  sim={:.2} pen={:.2} edits->{}",
+                                edge_g,
+                                next_node,
+                                sim,
+                                penalty,
+                                edits + 1
+                            );
                             #[cfg(debug_assertions)]
-                            notes.push(format!(
-                                "swap a:{a:?} b:{b:?} (swaps+1={:?}, edits+1={:?})",
-                                swaps + 1,
-                                edits + 1,
-                            ));
+                            let mut notes = notes.clone();
+                            #[cfg(debug_assertions)]
+                            notes.push(format!("sub {edge_g:?} -> {current_grapheme:?} (sim={sim:.2}, pen={penalty:.2}) (subst->{}, edits->{})", substitutions + 1, edits + 1));
+
                             queue.push(State {
-                                node,
-                                j: j + 2,
-                                matched_start,
-                                matched_end: j + 2,
-                                penalties: penalties + self.penalties.swap,
+                                node: next_node,
+                                j: j + 1,
+                                matched_start: if matched_end == matched_start {
+                                    j
+                                } else {
+                                    matched_start
+                                },
+                                matched_end: j + 1,
+                                penalties: penalties + penalty,
                                 edits: edits + 1,
                                 insertions,
                                 deletions,
-                                substitutions,
-                                swaps: swaps + 1,
+                                substitutions: substitutions + 1,
+                                swaps,
                                 #[cfg(debug_assertions)]
-                                notes: notes.clone(),
+                                notes,
                             });
                         }
                     }
-                }
 
-                // 3)  Insertion / Deletion
-                let (ins_ex, del_ex) = self.within_limits_ins_del_ahead(
-                    self.get_node_limits(node),
-                    edits,
-                    insertions,
-                    deletions,
-                );
-                if ins_ex || del_ex {
-                    trace!(
-                        "  insert  (skip {:?})  penalty={:.2}",
-                        text_chars[j], self.penalties.insertion
-                    );
-                    if ins_ex && (matched_start != matched_end || matched_start != j) {
+                    //
+                    // 2) Swap (transposition of two neighboring graphemes)
+                    //
+                    if j + 1 < text_chars.len() {
+                        let a = &text_chars[j];
+                        let b = &text_chars[j + 1];
+                        if let Some(&node2) = transitions
+                            .get(b.as_ref())
+                            .and_then(|&x| self.nodes[x].transitions.get(a.as_ref()))
+                        {
+                            if self.within_limits_swap_ahead(
+                                self.get_node_limits(node2),
+                                edits,
+                                swaps,
+                            ) {
+                                #[cfg(debug_assertions)]
+                                let mut notes = notes.clone();
+                                #[cfg(debug_assertions)]
+                                notes.push(format!(
+                                    "swap a:{a:?} b:{b:?} (swaps->{}, edits->{})",
+                                    swaps + 1,
+                                    edits + 1
+                                ));
+                                queue.push(State {
+                                    node: node2,
+                                    j: j + 2,
+                                    matched_start,
+                                    matched_end: j + 2,
+                                    penalties: penalties + self.penalties.swap,
+                                    edits: edits + 1,
+                                    insertions,
+                                    deletions,
+                                    substitutions,
+                                    swaps: swaps + 1,
+                                    #[cfg(debug_assertions)]
+                                    notes,
+                                });
+                            }
+                        }
+                    }
+
+                    //
+                    // 3a) Insertion (skip a haystack character)
+                    //
+                    if (matched_start != matched_end || matched_start != j)
+                        && self.within_limits_insertion_ahead(
+                            self.get_node_limits(node),
+                            edits,
+                            insertions,
+                        )
+                    {
+                        #[cfg(debug_assertions)]
+                        let mut notes = notes.clone();
                         #[cfg(debug_assertions)]
                         notes.push(format!(
-                            "ins {:?} (sub+1={:?}, edits+1={:?})",
+                            "ins {:?} (ins->{} , edits->{})",
                             text_chars[j],
-                            substitutions + 1,
-                            edits + 1,
+                            insertions + 1,
+                            edits + 1
                         ));
                         queue.push(State {
                             node,
@@ -439,32 +455,38 @@ impl FuzzyAhoCorasick {
                             substitutions,
                             swaps,
                             #[cfg(debug_assertions)]
-                            notes: notes.clone(),
+                            notes,
                         });
                     }
-                    if del_ex {
-                        for (edge_g, &next_node) in transitions {
-                            trace!(
-                                "  delete to node={next_node} penalty={:.2}",
-                                self.penalties.deletion
-                            );
+                }
+
+                //
+                // 3b) Deletion (skip a pattern character) — always, even if j == len
+                //
+                if self.within_limits_deletion_ahead(self.get_node_limits(node), edits, deletions) {
+                    for (edge_g2, &next_node2) in transitions {
+                        trace!(
+                            "  delete to node={next_node2} penalty={:.2}",
+                            self.penalties.deletion
+                        );
+                        #[cfg(debug_assertions)]
+                        let mut notes = notes.clone();
+                        #[cfg(debug_assertions)]
+                        notes.push(format!("edge_g2 {edge_g2:?} (del->{:?})", deletions + 1));
+                        queue.push(State {
+                            node: next_node2,
+                            j,
+                            matched_start,
+                            matched_end,
+                            penalties: penalties + self.penalties.deletion,
+                            edits: edits + 1,
+                            insertions,
+                            deletions: deletions + 1,
+                            substitutions,
+                            swaps,
                             #[cfg(debug_assertions)]
-                            notes.push(format!("del {:?} (del+1={:?})", edge_g, deletions + 1,));
-                            queue.push(State {
-                                node: next_node,
-                                j,
-                                matched_start,
-                                matched_end,
-                                penalties: penalties + self.penalties.deletion,
-                                edits: edits + 1,
-                                insertions,
-                                deletions: deletions + 1,
-                                substitutions,
-                                swaps,
-                                #[cfg(debug_assertions)]
-                                notes: notes.clone(),
-                            });
-                        }
+                            notes,
+                        });
                     }
                 }
             }
@@ -483,7 +505,13 @@ impl FuzzyAhoCorasick {
     ) -> Vec<FuzzyMatch> {
         let mut matches = self.search(haystack, similarity_threshold);
         #[cfg(test)]
-        trace!("raw matches: {:?}", matches);
+        {
+            trace!("\nraw matches:");
+            for m in &matches {
+                trace!("\t{:?}", m);
+            }
+            trace!();
+        }
         matches.sort_by(|left, right| {
             right
                 .similarity
