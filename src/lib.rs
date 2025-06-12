@@ -62,11 +62,38 @@ impl FuzzyAhoCorasick {
         swaps: NumEdits,
     ) -> bool {
         if let Some(max) = limits.or(self.limits.as_ref()) {
-            max.edits.is_none_or(|max| edits < max) && max.swaps.is_none_or(|max| swaps < max)
+            let result =
+                max.edits.is_none_or(|max| edits < max) && max.swaps.is_none_or(|max| swaps < max);
+            /*println!(
+                "within_limits_swap_ahead() -- max: {max:?} edits: {edits:?} swaps: {swaps:?}\
+                \nresult = {result:?}\n"
+            );*/
+            result
         } else {
             false
         }
     }
+
+    #[inline]
+    fn within_limits_subst(
+        &self,
+        limits: Option<&FuzzyLimits>,
+        edits: NumEdits,
+        substitutions: NumEdits,
+    ) -> bool {
+        if let Some(max) = limits.or(self.limits.as_ref()) {
+            let result = max.edits.is_none_or(|max| edits <= max)
+                && max.substitutions.is_none_or(|max| substitutions <= max);
+            /*println!(
+                "within_limits_subst_ahead() -- max: {max:?} edits: {edits:?} substitutions: {substitutions:?}\
+                \nresult = {result:?}\n"
+            );*/
+            result
+        } else {
+            edits == 0 && substitutions == 0
+        }
+    }
+
     #[inline]
     fn within_limits(
         &self,
@@ -78,11 +105,16 @@ impl FuzzyAhoCorasick {
         swaps: NumEdits,
     ) -> bool {
         if let Some(max) = limits.or(self.limits.as_ref()) {
-            max.edits.is_none_or(|max| edits <= max)
+            let result = max.edits.is_none_or(|max| edits <= max)
                 && max.insertions.is_none_or(|max| insertions <= max)
                 && max.deletions.is_none_or(|max| deletions <= max)
                 && max.substitutions.is_none_or(|max| substitutions <= max)
-                && max.swaps.is_none_or(|max| swaps <= max)
+                && max.swaps.is_none_or(|max| swaps <= max);
+            /*println!(
+                "within_limits() -- max: {max:?} edits: {edits:?} insertions: {insertions:?} deletions: {deletions:?} substitutions: {substitutions:?} swaps: {swaps:?}\
+                \nresult = {result:?}\n"
+            );*/
+            result
         } else {
             edits == 0 && insertions == 0 && deletions == 0 && substitutions == 0 && swaps == 0
         }
@@ -291,9 +323,24 @@ impl FuzzyAhoCorasick {
                             .get(&(g_ch, current_grapheme_first_char))
                             .unwrap_or(&0.);
                         let penalty = self.penalties.substitution * (1. - sim);
+
+                        if !self.within_limits_subst(
+                            self.get_node_limits(node),
+                            edits,
+                            substitutions,
+                        ) {
+                            continue;
+                        }
+
                         trace!(
-                            "  subst {:?} ─{:>3}→ {current_grapheme:?} node={:?}  base_penalty={:.2} sim={:.2} penalty={:.2}",
-                            edge_g, "sub", next_node, self.penalties.substitution, sim, penalty
+                            "  subst {:?} ─{:>3}→ {current_grapheme:?} node={:?}  base_penalty={:.2} sim={:.2} penalty={:.2} edits+1={:?}",
+                            edge_g,
+                            "sub",
+                            next_node,
+                            self.penalties.substitution,
+                            sim,
+                            penalty,
+                            edits + 1
                         );
                         #[cfg(debug_assertions)]
                         notes.push(format!(
@@ -339,7 +386,7 @@ impl FuzzyAhoCorasick {
                             #[cfg(debug_assertions)]
                             notes.push(format!(
                                 "swap a:{a:?} b:{b:?} (swaps+1={:?}, edits+1={:?})",
-                                substitutions + 1,
+                                swaps + 1,
                                 edits + 1,
                             ));
                             queue.push(State {
@@ -372,7 +419,7 @@ impl FuzzyAhoCorasick {
                         "  insert  (skip {:?})  penalty={:.2}",
                         text_chars[j], self.penalties.insertion
                     );
-                    if ins_ex && matched_start != matched_end || matched_start != j {
+                    if ins_ex && (matched_start != matched_end || matched_start != j) {
                         #[cfg(debug_assertions)]
                         notes.push(format!(
                             "ins {:?} (sub+1={:?}, edits+1={:?})",

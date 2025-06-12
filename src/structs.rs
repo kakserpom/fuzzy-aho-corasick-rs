@@ -65,6 +65,24 @@ impl FuzzyLimits {
         self
     }
     #[must_use]
+    pub(crate) fn finalize(mut self) -> Self {
+        if self.edits.is_none() {
+            if self.insertions.is_none() {
+                self.insertions = Some(0);
+            }
+            if self.deletions.is_none() {
+                self.deletions = Some(0);
+            }
+            if self.substitutions.is_none() {
+                self.substitutions = Some(0);
+            }
+            if self.swaps.is_none() {
+                self.swaps = Some(0);
+            }
+        }
+        self
+    }
+    #[must_use]
     pub fn deletions(mut self, num: NumEdits) -> Self {
         self.deletions = Some(num);
         self
@@ -199,7 +217,7 @@ impl Pattern {
     /// Set Fuzzy limits per-pattern pattern
     #[must_use]
     pub fn fuzzy(mut self, limits: FuzzyLimits) -> Self {
-        self.limits = Some(limits);
+        self.limits = Some(limits.finalize());
         self
     }
 }

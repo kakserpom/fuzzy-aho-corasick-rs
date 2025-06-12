@@ -53,7 +53,7 @@ impl FuzzyAhoCorasickBuilder {
     /// Maximum edit operations (ins/del/sub) allowed while searching.
     #[must_use]
     pub fn fuzzy(mut self, limits: FuzzyLimits) -> Self {
-        self.limits = Some(limits);
+        self.limits = Some(limits.finalize());
         self
     }
 

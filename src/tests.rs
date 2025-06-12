@@ -59,6 +59,7 @@ fn test_extra_letter() {
 fn test_missing_letter() {
     let fac = make_engine();
     let result = fac.search("saddmhussein", 0.3);
+    println!("{:?}", result);
     assert!(
         result
             .iter()
@@ -109,11 +110,16 @@ fn test_overlap_vs_nonoverlap() {
     let engine = FuzzyAhoCorasickBuilder::new().build([("saddam", 1.0, 2), ("ddamhu", 1.0, 2)]);
 
     let matches = engine.search("saddamddamhu", 0.5);
+    println!();
+    println!("{:?}", matches[0]);
+    println!();
+    println!("{:?}", matches[1]);
     assert!(
         matches
             .iter()
             .any(|m| m.pattern == "saddam" && m.text == "saddam")
     );
+    //assert!(false);
     assert!(
         matches
             .iter()
