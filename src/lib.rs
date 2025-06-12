@@ -464,6 +464,7 @@ impl FuzzyAhoCorasick {
                 // 3b) Deletion (skip a pattern character) — always, even if j == len
                 //
                 if self.within_limits_deletion_ahead(self.get_node_limits(node), edits, deletions) {
+                    #[allow(unused_variables)]
                     for (edge_g2, &next_node2) in transitions {
                         trace!(
                             "  delete to node={next_node2} penalty={:.2}",
