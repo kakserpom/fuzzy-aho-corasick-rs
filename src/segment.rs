@@ -1,5 +1,6 @@
 use crate::{FuzzyAhoCorasick, Segment};
-
+const SPACE: [char; 2] = ['\x20', '\t'];
+const NO_LEADING_SPACE_PUNCTUATION: [char; 9] = [',', '.', '?', '!', ';', ':', '—', '-', '…'];
 impl FuzzyAhoCorasick {
     /// Returns an **iterator** that yields interleaving [`Segment::Matched`]
     /// [`Segment::Unmatched`] items for the given text.
@@ -39,14 +40,14 @@ impl FuzzyAhoCorasick {
             println!("segment: {:?}", segment);
             match segment {
                 Segment::Matched(m) => {
-                    if prev_matched || (!result.is_empty() && !result.ends_with(['\x20', '\t'])) {
+                    if prev_matched || (!result.is_empty() && !result.ends_with(SPACE)) {
                         result.push(' ');
                     }
                     prev_matched = true;
                     result.push_str(&m.text);
                 }
                 Segment::Unmatched(s) => {
-                    if prev_matched && !s.starts_with([',', '.', '?', '!']) {
+                    if prev_matched && !s.starts_with(NO_LEADING_SPACE_PUNCTUATION) {
                         result.push(' ');
                     }
                     prev_matched = false;
