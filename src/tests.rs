@@ -187,8 +187,6 @@ fn test_regression_1() {
     assert_eq!(result.iter().count(), 0);
 }
 
-//Pattern::from("HOSSEYN").fuzzy(FuzzyLimits::new().edits(3)),
-
 #[test]
 fn test_regression_2() {
     let engine = FuzzyAhoCorasickBuilder::new()
