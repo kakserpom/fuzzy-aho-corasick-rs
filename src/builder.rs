@@ -1,5 +1,6 @@
 use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyPenalties, FuzzyReplacer, Node, Pattern};
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::LazyLock;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Builder for [`FuzzyAhoCorasick`].
@@ -11,8 +12,8 @@ use unicode_segmentation::UnicodeSegmentation;
 ///     .case_insensitive(true)
 ///     .build(["hello", "world"]);
 ///
-/// let result = engine.segment_text("HeLLo WoRLd!", 1.);
-/// assert_eq!(result, "HeLLo WoRLd !");
+/// let result = engine.segment_text("justheLLowOrLd!", 1.);
+/// assert_eq!(result, "just heLLo wOrLd!");
 /// ```
 #[derive(Debug, Default)]
 pub struct FuzzyAhoCorasickBuilder {
@@ -109,7 +110,7 @@ impl FuzzyAhoCorasickBuilder {
     {
         let patterns: Vec<Pattern> = inputs.into_iter().map(Into::into).collect();
         let similarity: &'static BTreeMap<(_, _), _> =
-            self.similarity.unwrap_or_else(|| default_similarity_map());
+            self.similarity.unwrap_or(&DEFAULT_SIMILARITY_MAP);
 
         let mut nodes = vec![Node::new(
             #[cfg(debug_assertions)]
@@ -257,37 +258,31 @@ impl FuzzyAhoCorasickBuilder {
  * ---------------------------------------------------------------------- */
 
 /// Singleton that stores the lazily‑initialised vowel/consonant similarity map.
-static DEFAULT_SIMILARITY_MAP: std::sync::OnceLock<BTreeMap<(char, char), f32>> =
-    std::sync::OnceLock::new();
+static DEFAULT_SIMILARITY_MAP: LazyLock<BTreeMap<(char, char), f32>> = LazyLock::new(|| {
+    let mut map = BTreeMap::new();
+    let vowels = ['a', 'e', 'i', 'o', 'u'];
+    let consonants = (b'a'..=b'z')
+        .map(|b| b as char)
+        .filter(|c| !vowels.contains(c))
+        .collect::<Vec<_>>();
 
-/// Returns the default similarity map (vowels ≈ vowels, consonants ≈ consonants).
-fn default_similarity_map() -> &'static BTreeMap<(char, char), f32> {
-    DEFAULT_SIMILARITY_MAP.get_or_init(|| {
-        let mut map = BTreeMap::new();
-        let vowels = ['a', 'e', 'i', 'o', 'u'];
-        let consonants = (b'a'..=b'z')
-            .map(|b| b as char)
-            .filter(|c| !vowels.contains(c))
-            .collect::<Vec<_>>();
-
-        // Vowel ↔ vowel similarities.
-        for &a in &vowels {
-            for &b in &vowels {
-                if a != b {
-                    map.insert((a, b), 0.8);
-                }
+    // Vowel ↔ vowel similarities.
+    for &a in &vowels {
+        for &b in &vowels {
+            if a != b {
+                map.insert((a, b), 0.8);
             }
         }
-        // Consonant ↔ consonant similarities.
-        for &a in &consonants {
-            for &b in &consonants {
-                if a != b {
-                    map.insert((a, b), 0.6);
-                }
+    }
+    // Consonant ↔ consonant similarities.
+    for &a in &consonants {
+        for &b in &consonants {
+            if a != b {
+                map.insert((a, b), 0.6);
             }
         }
-        map.insert(('o', '0'), 0.8);
-        map.insert(('0', 'o'), 0.8);
-        map
-    })
-}
+    }
+    map.insert(('o', '0'), 0.8);
+    map.insert(('0', 'o'), 0.8);
+    map
+});

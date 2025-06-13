@@ -39,18 +39,18 @@ impl FuzzyAhoCorasick {
             println!("segment: {:?}", segment);
             match segment {
                 Segment::Matched(m) => {
-                    if prev_matched {
+                    if prev_matched || (!result.is_empty() && !result.ends_with(['\x20', '\t'])) {
                         result.push(' ');
                     }
                     prev_matched = true;
                     result.push_str(&m.text);
                 }
                 Segment::Unmatched(s) => {
-                    if prev_matched {
+                    if prev_matched && !s.starts_with([',', '.', '?', '!']) {
                         result.push(' ');
                     }
                     prev_matched = false;
-                    result.push_str(s.trim());
+                    result.push_str(s);
                 }
             }
         }
