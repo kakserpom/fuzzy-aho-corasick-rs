@@ -45,7 +45,7 @@ pub(crate) struct Node {
     pub(crate) grapheme: Option<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FuzzyLimits {
     pub(crate) insertions: Option<NumEdits>,
     pub(crate) deletions: Option<NumEdits>,
@@ -105,7 +105,7 @@ impl FuzzyLimits {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct FuzzyPenalties {
     pub insertion: f32,
     pub deletion: f32,
@@ -169,6 +169,7 @@ impl Node {
     }
 }
 
+#[derive(Clone)]
 pub struct FuzzyAhoCorasick {
     /// Nodes
     pub(crate) nodes: Vec<Node>,
@@ -198,7 +199,7 @@ impl fmt::Debug for FuzzyAhoCorasick {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Pattern {
     pub grapheme_len: usize,
     pub pattern: String,
