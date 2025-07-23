@@ -24,6 +24,22 @@ fn test_non_overlapping_regression_0() {
     );
 }
 
+
+#[test]
+fn test_non_overlapping_regression_2() {
+    let fac = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["KO", "KO", "LWIN"]);
+    let result = fac.search_non_overlapping("KWO KO LWIN", 0.6);
+    println!("Result: {:#?}", result);
+    assert!(
+        result
+            .iter()
+            .any(|m| m.pattern == "KO" && m.text == "KWO")
+    );
+}
+
 #[test]
 fn test_case_insensitive_ascii() {
     let engine = FuzzyAhoCorasickBuilder::new()
