@@ -10,6 +10,21 @@ fn make_engine() -> FuzzyAhoCorasick {
 }
 
 #[test]
+fn test_non_overlapping_regression_0() {
+    let fac = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2))
+        .case_insensitive(true)
+        .build(["NA", "MENA"]);
+    let result = fac.search_non_overlapping("NA MENA", 0.6);
+    println!("Result: {:?}", result);
+    assert!(
+        result
+            .iter()
+            .any(|m| m.pattern == "MENA" && m.text == "MENA")
+    );
+}
+
+#[test]
 fn test_case_insensitive_ascii() {
     let engine = FuzzyAhoCorasickBuilder::new()
         .case_insensitive(true)
@@ -26,6 +41,11 @@ fn test_unicode_cyrillic() {
     let res = engine.search("ЮРИЙ ГАГАРИН", 0.9);
     println!("{:?}", res);
     assert!(res.iter().any(|m| m.text.to_lowercase() == "юрий"));
+
+    let res = engine.segment_text("ЮРИЙГАГАРИН", 0.9);
+    println!("{:?}", res);
+
+    assert_eq!(res, "ЮРИЙ ГАГАРИН");
 }
 
 #[test]

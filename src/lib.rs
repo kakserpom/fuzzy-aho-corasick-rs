@@ -7,9 +7,8 @@ mod structs;
 #[cfg(test)]
 mod tests;
 
-pub use replacer::FuzzyReplacer;
-
 pub use builder::FuzzyAhoCorasickBuilder;
+pub use replacer::FuzzyReplacer;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use unicode_segmentation::UnicodeSegmentation;
@@ -517,7 +516,8 @@ impl FuzzyAhoCorasick {
             right
                 .similarity
                 .total_cmp(&left.similarity)
-                .then_with(|| (right.end - right.start).cmp(&(left.end - left.start)))
+                .then_with(|| right.pattern.len().cmp(&left.pattern.len()))
+                .then_with(|| right.text.len().cmp(&left.text.len()))
                 .then_with(|| left.start.cmp(&right.start))
         });
         let mut chosen = Vec::new();
