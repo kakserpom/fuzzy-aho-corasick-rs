@@ -209,15 +209,15 @@ fn test_adjustable_penalties() {
             .any(|m| m.pattern == "hussein" && m.text == "huzein")
     );
 
-    let loose = FuzzyAhoCorasickBuilder::new()
+    let engine = FuzzyAhoCorasickBuilder::new()
         .penalties(
             FuzzyPenalties::default()
                 .substitution(0.8)
                 .insertion(0.95)
                 .deletion(0.95),
         )
-        .build([("hussein", 1.0, 3)])
-        .search("huzein", 0.2);
+        .build([("hussein", 1.0, 3)]);
+    let loose = engine.search("huzein", 0.2);
     assert!(
         loose
             .iter()

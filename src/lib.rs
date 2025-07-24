@@ -181,7 +181,7 @@ impl FuzzyAhoCorasick {
                             pattern_index: pat_idx,
                             start: start_byte,
                             end: end_byte,
-                            pattern: self.patterns[pat_idx].pattern.clone(),
+                            pattern: "",
                             similarity,
                             text: "",
                             #[cfg(debug_assertions)]
@@ -198,7 +198,7 @@ impl FuzzyAhoCorasick {
                     pattern_index: pat_idx,
                     start: start_byte,
                     end: end_byte,
-                    pattern: self.patterns[pat_idx].pattern.clone(),
+                    pattern: "",
                     similarity,
                     text: "",
                     #[cfg(debug_assertions)]
@@ -214,7 +214,7 @@ impl FuzzyAhoCorasick {
 
     #[inline]
     #[must_use]
-    pub fn search<'a>(&self, haystack: &'a str, similarity_threshold: f32) -> FuzzyMatches<'a> {
+    pub fn search<'a>(&'a self, haystack: &'a str, similarity_threshold: f32) -> FuzzyMatches<'a> {
         let grapheme_idx: Vec<(usize, &str)> = haystack.grapheme_indices(true).collect();
         /*        if grapheme_idx.is_empty() {
             return FuzzyMatches {
@@ -505,6 +505,7 @@ impl FuzzyAhoCorasick {
                 .into_values()
                 .map(|mut m| {
                     m.text = &haystack[m.start..m.end];
+                    m.pattern = self.patterns[m.pattern_index].pattern.as_str();
                     m
                 })
                 .collect(),
@@ -515,7 +516,7 @@ impl FuzzyAhoCorasick {
     /// longest non‑overlapping matches from left to right).
     #[must_use]
     pub fn search_non_overlapping<'a>(
-        &self,
+        &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
     ) -> FuzzyMatches<'a> {
@@ -555,7 +556,7 @@ impl FuzzyAhoCorasick {
 
     #[must_use]
     pub fn search_non_overlapping_unique<'a>(
-        &self,
+        &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
     ) -> FuzzyMatches<'a> {

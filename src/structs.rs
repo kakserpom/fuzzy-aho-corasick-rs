@@ -324,7 +324,7 @@ pub struct FuzzyMatch<'a> {
     /// Exclusive end byte index.
     pub end: usize,
     /// Pattern that has been matched.
-    pub pattern: String,
+    pub pattern: &'a str,
     /// Final similarity score ∈ `[0,1]`.
     pub similarity: f32,
     /// Slice of the original text that produced the match.

@@ -58,7 +58,7 @@ impl FuzzyAhoCorasick {
     /// Returns an **iterator** that yields interleaving [`Segment::Matched`]
     /// [`Segment::Unmatched`] items for the given text.
     pub fn segment_iter<'a>(
-        &self,
+        &'a self,
         haystack: &'a str,
         threshold: f32,
     ) -> impl Iterator<Item = Segment<'a>> {
