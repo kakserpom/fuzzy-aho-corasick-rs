@@ -216,12 +216,12 @@ impl FuzzyAhoCorasick {
     #[must_use]
     pub fn search<'a>(&'a self, haystack: &'a str, similarity_threshold: f32) -> FuzzyMatches<'a> {
         let grapheme_idx: Vec<(usize, &str)> = haystack.grapheme_indices(true).collect();
-        /*        if grapheme_idx.is_empty() {
+        if grapheme_idx.is_empty() {
             return FuzzyMatches {
                 haystack,
                 inner: vec![],
             };
-        }*/
+        }
         let text_chars: Vec<Cow<str>> = grapheme_idx
             .iter()
             .map(|(_, g)| {
@@ -498,18 +498,25 @@ impl FuzzyAhoCorasick {
                 }
             }
         }
+        let mut inner: Vec<_> = best
+            .into_values()
+            .map(|mut m| {
+                m.text = &haystack[m.start..m.end];
+                m.pattern = self.patterns[m.pattern_index].pattern.as_str();
+                m
+            })
+            .collect();
 
-        FuzzyMatches {
-            haystack,
-            inner: best
-                .into_values()
-                .map(|mut m| {
-                    m.text = &haystack[m.start..m.end];
-                    m.pattern = self.patterns[m.pattern_index].pattern.as_str();
-                    m
-                })
-                .collect(),
-        }
+        inner.sort_by(|left, right| {
+            right
+                .similarity
+                .total_cmp(&left.similarity)
+                .then_with(|| right.pattern.len().cmp(&left.pattern.len()))
+                .then_with(|| right.text.len().cmp(&left.text.len()))
+                .then_with(|| left.start.cmp(&right.start))
+        });
+
+        FuzzyMatches { haystack, inner }
     }
 
     /// Search without overlapping matches (the engine will greedily choose the
@@ -521,14 +528,6 @@ impl FuzzyAhoCorasick {
         similarity_threshold: f32,
     ) -> FuzzyMatches<'a> {
         let mut matches = self.search(haystack, similarity_threshold);
-        matches.inner.sort_by(|left, right| {
-            right
-                .similarity
-                .total_cmp(&left.similarity)
-                .then_with(|| right.pattern.len().cmp(&left.pattern.len()))
-                .then_with(|| right.text.len().cmp(&left.text.len()))
-                .then_with(|| left.start.cmp(&right.start))
-        });
         let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
         matches.inner.retain(|m| {
             if occupied_intervals
@@ -561,14 +560,6 @@ impl FuzzyAhoCorasick {
         similarity_threshold: f32,
     ) -> FuzzyMatches<'a> {
         let mut matches = self.search(haystack, similarity_threshold);
-        matches.inner.sort_by(|left, right| {
-            right
-                .similarity
-                .total_cmp(&left.similarity)
-                .then_with(|| right.pattern.len().cmp(&left.pattern.len()))
-                .then_with(|| right.text.len().cmp(&left.text.len()))
-                .then_with(|| left.start.cmp(&right.start))
-        });
         let mut used_patterns = BTreeSet::new();
         let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
         matches.inner.retain(|m| {
