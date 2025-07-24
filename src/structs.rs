@@ -373,7 +373,7 @@ impl<'a> std::ops::Deref for FuzzyMatches<'a> {
         &self.inner
     }
 }
-impl<'a> std::ops::DerefMut for FuzzyMatches<'a> {
+impl std::ops::DerefMut for FuzzyMatches<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
@@ -388,10 +388,12 @@ impl<'a> FuzzyMatches<'a> {
         self.inner.iter_mut()
     }
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
     }

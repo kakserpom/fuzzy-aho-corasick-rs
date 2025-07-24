@@ -610,7 +610,7 @@ impl FuzzyAhoCorasick {
             if matched.start >= last {
                 result.push_str(&text[last..matched.start]);
                 last = matched.end;
-                result.push_str(callback(&matched).unwrap_or(&matched.text));
+                result.push_str(callback(matched).unwrap_or(matched.text));
             }
         }
         result.push_str(&text[last..]);

@@ -1,10 +1,7 @@
 /* -------------------------------------------------------------------------
  *  Tests
  * ---------------------------------------------------------------------- */
-use crate::{
-    FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, Pattern
-    ,
-};
+use crate::{FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, Pattern};
 
 fn make_engine() -> FuzzyAhoCorasick {
     FuzzyAhoCorasickBuilder::new()

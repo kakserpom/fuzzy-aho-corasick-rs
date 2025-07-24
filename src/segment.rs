@@ -40,7 +40,7 @@ impl<'a> FuzzyMatches<'a> {
                         result.push(' ');
                     }
                     prev_matched = true;
-                    result.push_str(&m.text);
+                    result.push_str(m.text);
                 }
                 Segment::Unmatched(s) => {
                     if prev_matched && !s.starts_with(NO_LEADING_SPACE_PUNCTUATION) {
