@@ -1,7 +1,10 @@
 /* -------------------------------------------------------------------------
  *  Tests
  * ---------------------------------------------------------------------- */
-use crate::{FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, Pattern};
+use crate::{
+    FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, Pattern
+    ,
+};
 
 fn make_engine() -> FuzzyAhoCorasick {
     FuzzyAhoCorasickBuilder::new()
@@ -24,7 +27,6 @@ fn test_non_overlapping_regression_0() {
     );
 }
 
-
 #[test]
 fn test_non_overlapping_regression_2() {
     let fac = FuzzyAhoCorasickBuilder::new()
@@ -33,10 +35,25 @@ fn test_non_overlapping_regression_2() {
         .build(["KO", "KO", "LWIN"]);
     let result = fac.search_non_overlapping("KWO KO LWIN", 0.6);
     println!("Result: {:#?}", result);
+    assert!(result.iter().any(|m| m.pattern == "KO" && m.text == "KWO"));
+}
+#[test]
+fn test_non_overlapping_regression_3() {
+    let fac = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["AL", "WASEL", "AND", "BABEL", "GENERAL", "TRADING", "LLC"]);
+    let result = fac.search_non_overlapping_unique("AL WASL ANT BBEL GNERAL TRATING LC", 0.6);
+    println!("Result: {:#?}", result);
     assert!(
         result
             .iter()
-            .any(|m| m.pattern == "KO" && m.text == "KWO")
+            .any(|m| m.pattern == "WASEL" && m.text == "WASL")
+    );
+    assert!(
+        result
+            .iter()
+            .any(|m| m.pattern == "BABEL" && m.text == "BBEL")
     );
 }
 
@@ -155,7 +172,6 @@ fn test_overlap_vs_nonoverlap() {
             .iter()
             .any(|m| m.pattern == "saddam" && m.text == "saddam")
     );
-    //assert!(false);
     assert!(
         matches
             .iter()
@@ -297,7 +313,7 @@ fn test_fuzzy_replace_fn() {
             .replace(
                 "Fuzzy Wuzzy was a hair. Fuzzy Wuzzy had no bear.",
                 |m| {
-                    match m.text.as_str() {
+                    match m.text {
                         "bear" => Some("hair".into()),
                         "hair" => Some("bear".into()),
                         _ => None,

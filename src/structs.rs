@@ -306,7 +306,7 @@ impl<'a> From<(&'a str, f32, usize)> for Pattern {
 
 /// Result returned by [`FuzzyAhoCorasick::search`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct FuzzyMatch {
+pub struct FuzzyMatch<'a> {
     /// Number of insertions.
     pub insertions: NumEdits,
     /// Number of deletions.
@@ -328,7 +328,7 @@ pub struct FuzzyMatch {
     /// Final similarity score ∈ `[0,1]`.
     pub similarity: f32,
     /// Slice of the original text that produced the match.
-    pub text: String,
+    pub text: &'a str,
     #[cfg(debug_assertions)]
     pub notes: Vec<String>,
 }
@@ -337,6 +337,62 @@ pub struct FuzzyMatch {
 /// an "unmatched" gap between them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Segment<'a> {
-    Matched(FuzzyMatch),
+    Matched(FuzzyMatch<'a>),
     Unmatched(&'a str),
+}
+
+#[derive(Debug)]
+pub struct FuzzyMatches<'a> {
+    pub(crate) haystack: &'a str,
+    pub(crate) inner: Vec<FuzzyMatch<'a>>,
+}
+impl<'a, 'b> IntoIterator for &'b FuzzyMatches<'a> {
+    type Item = &'b FuzzyMatch<'a>;
+    type IntoIter = std::slice::Iter<'b, FuzzyMatch<'a>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.iter()
+    }
+}
+impl<'a, 'b> IntoIterator for &'b mut FuzzyMatches<'a> {
+    type Item = &'b mut FuzzyMatch<'a>;
+    type IntoIter = std::slice::IterMut<'b, FuzzyMatch<'a>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.iter_mut()
+    }
+}
+impl<'a> IntoIterator for FuzzyMatches<'a> {
+    type Item = FuzzyMatch<'a>;
+    type IntoIter = std::vec::IntoIter<FuzzyMatch<'a>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.into_iter()
+    }
+}
+impl<'a> std::ops::Deref for FuzzyMatches<'a> {
+    type Target = [FuzzyMatch<'a>];
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+impl<'a> std::ops::DerefMut for FuzzyMatches<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+impl<'a> FuzzyMatches<'a> {
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &FuzzyMatch<'a>> {
+        self.inner.iter()
+    }
+    #[inline]
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut FuzzyMatch<'a>> {
+        self.inner.iter_mut()
+    }
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
 }

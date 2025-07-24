@@ -1,41 +1,37 @@
-use crate::{FuzzyAhoCorasick, Segment};
+use crate::{FuzzyAhoCorasick, FuzzyMatches, Segment};
 const SPACE: [char; 2] = ['\x20', '\t'];
 const NO_LEADING_SPACE_PUNCTUATION: [char; 9] = [',', '.', '?', '!', ';', ':', '—', '-', '…'];
-impl FuzzyAhoCorasick {
+
+impl<'a> FuzzyMatches<'a> {
     /// Returns an **iterator** that yields interleaving [`Segment::Matched`]
     /// [`Segment::Unmatched`] items for the given text.
-    pub fn segment_iter<'b>(
-        &self,
-        haystack: &'b str,
-        threshold: f32,
-    ) -> impl Iterator<Item = Segment<'b>> {
-        let mut matches = self.search_non_overlapping(haystack, threshold);
+    pub fn segment_iter(mut self) -> impl Iterator<Item = Segment<'a>> {
         #[cfg(test)]
-        println!("matches: {:?}", matches);
-        matches.sort_by_key(|m| m.start);
+        println!("matches: {:?}", self.inner);
+        self.inner.sort_by_key(|m| m.start);
         let mut segments = Vec::new();
         let mut last = 0;
-        for m in matches {
+        for m in self.inner {
             if m.start >= last {
                 if m.start > last {
-                    segments.push(Segment::Unmatched(&haystack[last..m.start]));
+                    segments.push(Segment::Unmatched(&self.haystack[last..m.start]));
                 }
                 last = m.end;
                 segments.push(Segment::Matched(m));
             }
         }
-        if last < haystack.len() {
-            segments.push(Segment::Unmatched(&haystack[last..]));
+        if last < self.haystack.len() {
+            segments.push(Segment::Unmatched(&self.haystack[last..]));
         }
         segments.into_iter()
     }
 
     /// Convenience wrapper around [`segment_iter`](Self::segment_iter).
     #[must_use]
-    pub fn segment_text(&self, haystack: &str, threshold: f32) -> String {
+    pub fn segment_text(self) -> String {
         let mut result = String::new();
         let mut prev_matched = false;
-        for segment in self.segment_iter(haystack, threshold) {
+        for segment in self.segment_iter() {
             #[cfg(test)]
             println!("segment: {:?}", segment);
             match segment {
@@ -56,5 +52,23 @@ impl FuzzyAhoCorasick {
             }
         }
         result
+    }
+}
+impl FuzzyAhoCorasick {
+    /// Returns an **iterator** that yields interleaving [`Segment::Matched`]
+    /// [`Segment::Unmatched`] items for the given text.
+    pub fn segment_iter<'a>(
+        &self,
+        haystack: &'a str,
+        threshold: f32,
+    ) -> impl Iterator<Item = Segment<'a>> {
+        self.search_non_overlapping(haystack, threshold)
+            .segment_iter()
+    }
+    /// Convenience wrapper around [`segment_iter`](Self::segment_iter).
+    #[must_use]
+    pub fn segment_text(&self, haystack: &str, threshold: f32) -> String {
+        self.search_non_overlapping(haystack, threshold)
+            .segment_text()
     }
 }

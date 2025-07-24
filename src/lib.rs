@@ -3,14 +3,14 @@
 mod builder;
 mod replacer;
 mod segment;
-mod structs;
+pub mod structs;
 #[cfg(test)]
 mod tests;
 
 pub use builder::FuzzyAhoCorasickBuilder;
 pub use replacer::FuzzyReplacer;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
 pub use structs::*;
@@ -25,7 +25,6 @@ macro_rules! trace {
 macro_rules! trace {
     ($($arg:tt)*) => {};
 }
-
 /// Fuzzy Aho—Corasick engine
 impl FuzzyAhoCorasick {
     #[inline]
@@ -184,7 +183,7 @@ impl FuzzyAhoCorasick {
                             end: end_byte,
                             pattern: self.patterns[pat_idx].pattern.clone(),
                             similarity,
-                            text: text[start_byte..end_byte].to_string(),
+                            text: "",
                             #[cfg(debug_assertions)]
                             notes: notes.to_owned(),
                         };
@@ -201,20 +200,28 @@ impl FuzzyAhoCorasick {
                     end: end_byte,
                     pattern: self.patterns[pat_idx].pattern.clone(),
                     similarity,
-                    text: text[start_byte..end_byte].to_string(),
+                    text: "",
                     #[cfg(debug_assertions)]
                     notes: notes.to_owned(),
                 });
         }
     }
 
+    #[must_use]
+    pub fn patterns(&self) -> &Vec<Pattern> {
+        &self.patterns
+    }
+
     #[inline]
     #[must_use]
-    pub fn search(&self, haystack: &str, similarity_threshold: f32) -> Vec<FuzzyMatch> {
+    pub fn search<'a>(&self, haystack: &'a str, similarity_threshold: f32) -> FuzzyMatches<'a> {
         let grapheme_idx: Vec<(usize, &str)> = haystack.grapheme_indices(true).collect();
-        if grapheme_idx.is_empty() {
-            return vec![];
-        }
+        /*        if grapheme_idx.is_empty() {
+            return FuzzyMatches {
+                haystack,
+                inner: vec![],
+            };
+        }*/
         let text_chars: Vec<Cow<str>> = grapheme_idx
             .iter()
             .map(|(_, g)| {
@@ -492,27 +499,28 @@ impl FuzzyAhoCorasick {
             }
         }
 
-        best.into_values().collect()
+        FuzzyMatches {
+            haystack,
+            inner: best
+                .into_values()
+                .map(|mut m| {
+                    m.text = &haystack[m.start..m.end];
+                    m
+                })
+                .collect(),
+        }
     }
 
     /// Search without overlapping matches (the engine will greedily choose the
     /// longest non‑overlapping matches from left to right).
     #[must_use]
-    pub fn search_non_overlapping(
+    pub fn search_non_overlapping<'a>(
         &self,
-        haystack: &str,
+        haystack: &'a str,
         similarity_threshold: f32,
-    ) -> Vec<FuzzyMatch> {
+    ) -> FuzzyMatches<'a> {
         let mut matches = self.search(haystack, similarity_threshold);
-        #[cfg(test)]
-        {
-            trace!("\nraw matches:");
-            for m in &matches {
-                trace!("\t{:?}", m);
-            }
-            trace!();
-        }
-        matches.sort_by(|left, right| {
+        matches.inner.sort_by(|left, right| {
             right
                 .similarity
                 .total_cmp(&left.similarity)
@@ -520,25 +528,72 @@ impl FuzzyAhoCorasick {
                 .then_with(|| right.text.len().cmp(&left.text.len()))
                 .then_with(|| left.start.cmp(&right.start))
         });
-        let mut chosen = Vec::new();
         let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
-        for matched in matches {
+        matches.inner.retain(|m| {
             if occupied_intervals
-                .range(..=matched.start)
+                .range(..=m.start)
                 .next_back()
-                .is_none_or(|(_, &end)| end <= matched.start)
+                .is_none_or(|(_, &end)| end <= m.start)
                 && occupied_intervals
-                    .range(matched.start..)
+                    .range(m.start..)
                     .next()
-                    .is_none_or(|(&start, _)| start >= matched.end)
+                    .is_none_or(|(&start, _)| start >= m.end)
             {
-                occupied_intervals.insert(matched.start, matched.end);
-                chosen.push(matched);
+                occupied_intervals.insert(m.start, m.end);
+                #[cfg(test)]
+                trace!("ACCEPTING: \t{:?}", m);
+                true
+            } else {
+                #[cfg(test)]
+                trace!("DISCARDING OVERLAPPING: {m:?}");
+                false
             }
-        }
+        });
+        matches.inner.sort_by_key(|m| m.start);
+        matches
+    }
 
-        chosen.sort_by_key(|m| m.start);
-        chosen
+    #[must_use]
+    pub fn search_non_overlapping_unique<'a>(
+        &self,
+        haystack: &'a str,
+        similarity_threshold: f32,
+    ) -> FuzzyMatches<'a> {
+        let mut matches = self.search(haystack, similarity_threshold);
+        matches.inner.sort_by(|left, right| {
+            right
+                .similarity
+                .total_cmp(&left.similarity)
+                .then_with(|| right.pattern.len().cmp(&left.pattern.len()))
+                .then_with(|| right.text.len().cmp(&left.text.len()))
+                .then_with(|| left.start.cmp(&right.start))
+        });
+        let mut used_patterns = BTreeSet::new();
+        let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
+        matches.inner.retain(|m| {
+            if !used_patterns.contains(&m.pattern_index)
+                && occupied_intervals
+                    .range(..=m.start)
+                    .next_back()
+                    .is_none_or(|(_, &end)| end <= m.start)
+                && occupied_intervals
+                    .range(m.start..)
+                    .next()
+                    .is_none_or(|(&start, _)| start >= m.end)
+            {
+                used_patterns.insert(m.pattern_index);
+                occupied_intervals.insert(m.start, m.end);
+                #[cfg(test)]
+                trace!("ACCEPTING: \t{:?}", m);
+                true
+            } else {
+                #[cfg(test)]
+                trace!("DISCARDING OVERLAPPING: {m:?}");
+                false
+            }
+        });
+        matches.inner.sort_by_key(|m| m.start);
+        matches
     }
 
     /// Performs a **fuzzy** find‑and‑replace using a list of `(pattern →
@@ -551,7 +606,7 @@ impl FuzzyAhoCorasick {
     {
         let mut result = String::new();
         let mut last = 0;
-        for matched in self.search_non_overlapping(text, threshold) {
+        for matched in &self.search_non_overlapping(text, threshold) {
             if matched.start >= last {
                 result.push_str(&text[last..matched.start]);
                 last = matched.end;
