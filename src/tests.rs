@@ -20,7 +20,7 @@ fn test_non_overlapping_regression_0() {
     assert!(
         result
             .iter()
-            .any(|m| m.pattern == "MENA" && m.text == "MENA")
+            .any(|m| m.pattern.as_str() == "MENA" && m.text == "MENA")
     );
 }
 
@@ -32,7 +32,11 @@ fn test_non_overlapping_regression_2() {
         .build(["KO", "KO", "LWIN"]);
     let result = fac.search_non_overlapping("KWO KO LWIN", 0.6);
     println!("Result: {:#?}", result);
-    assert!(result.iter().any(|m| m.pattern == "KO" && m.text == "KWO"));
+    assert!(
+        result
+            .iter()
+            .any(|m| m.pattern.as_str() == "KO" && m.text == "KWO")
+    );
 }
 #[test]
 fn test_non_overlapping_regression_3() {
@@ -45,12 +49,12 @@ fn test_non_overlapping_regression_3() {
     assert!(
         result
             .iter()
-            .any(|m| m.pattern == "WASEL" && m.text == "WASL")
+            .any(|m| m.pattern.as_str() == "WASEL" && m.text == "WASL")
     );
     assert!(
         result
             .iter()
-            .any(|m| m.pattern == "BABEL" && m.text == "BBEL")
+            .any(|m| m.pattern.as_str() == "BABEL" && m.text == "BBEL")
     );
 }
 
@@ -85,12 +89,12 @@ fn test_exact_match() {
     assert!(
         result
             .iter()
-            .any(|m| m.pattern == "saddam" && m.text == "saddam")
+            .any(|m| m.pattern.as_str() == "saddam" && m.text == "saddam")
     );
     assert!(
         result
             .iter()
-            .any(|m| m.pattern == "hussein" && m.text == "hussein")
+            .any(|m| m.pattern.as_str() == "hussein" && m.text == "hussein")
     );
 }
 
@@ -101,7 +105,7 @@ fn test_extra_letter() {
     assert!(
         result
             .iter()
-            .any(|m| m.pattern == "saddam" && m.text == "saddam")
+            .any(|m| m.pattern.as_str() == "saddam" && m.text == "saddam")
     );
 }
 
@@ -113,7 +117,7 @@ fn test_missing_letter() {
     assert!(
         result
             .iter()
-            .any(|m| m.pattern == "saddam" && m.text == "saddm")
+            .any(|m| m.pattern.as_str() == "saddam" && m.text == "saddm")
     );
 }
 
@@ -124,7 +128,7 @@ fn test_substitution() {
     assert!(
         result
             .iter()
-            .any(|m| m.pattern == "hussein" && m.text == "huzein")
+            .any(|m| m.pattern.as_str() == "hussein" && m.text == "huzein")
     );
 }
 
@@ -138,7 +142,7 @@ fn test_swap() {
     assert!(
         result
             .iter()
-            .any(|m| m.pattern == "KONY" && m.text == "KOYN")
+            .any(|m| m.pattern.as_str() == "KONY" && m.text == "KOYN")
     );
 }
 
@@ -167,12 +171,12 @@ fn test_overlap_vs_nonoverlap() {
     assert!(
         matches
             .iter()
-            .any(|m| m.pattern == "saddam" && m.text == "saddam")
+            .any(|m| m.pattern.as_str() == "saddam" && m.text == "saddam")
     );
     assert!(
         matches
             .iter()
-            .any(|m| m.pattern == "ddamhu" && m.text == "ddamhu"),
+            .any(|m| m.pattern.as_str() == "ddamhu" && m.text == "ddamhu"),
         "{matches:?}"
     );
 
@@ -188,13 +192,13 @@ fn test_overlap_vs_nonoverlap() {
     assert!(
         matches_nonoverlap_two
             .iter()
-            .any(|m| m.pattern == "saddam" && m.text == "sadam"),
+            .any(|m| m.pattern.as_str() == "saddam" && m.text == "sadam"),
         "{matches_nonoverlap_two:?}"
     );
     assert!(
         matches_nonoverlap_two
             .iter()
-            .any(|m| m.pattern == "ddamhu" && m.text == "ddamhu"),
+            .any(|m| m.pattern.as_str() == "ddamhu" && m.text == "ddamhu"),
         "{matches_nonoverlap_two:?}"
     );
 }
@@ -206,7 +210,7 @@ fn test_adjustable_penalties() {
     assert!(
         strict
             .iter()
-            .any(|m| m.pattern == "hussein" && m.text == "huzein")
+            .any(|m| m.pattern.as_str() == "hussein" && m.text == "huzein")
     );
 
     let engine = FuzzyAhoCorasickBuilder::new()
@@ -221,7 +225,7 @@ fn test_adjustable_penalties() {
     assert!(
         loose
             .iter()
-            .any(|m| m.pattern == "hussein" && m.text == "huzein")
+            .any(|m| m.pattern.as_str() == "hussein" && m.text == "huzein")
     );
 }
 
@@ -326,8 +330,12 @@ fn test_fuzzy_replace_fn() {
 fn test_longer_match_preference() {
     let engine = FuzzyAhoCorasickBuilder::new().build(["JOINT STOCK COMPANY", "STOCK"]);
     let result = engine.search_non_overlapping("JOINT STOCK COMPANY GAZPROM", 0.8);
-    assert!(result.iter().any(|m| m.pattern == "JOINT STOCK COMPANY"));
-    assert!(!result.iter().any(|m| m.pattern == "STOCK"));
+    assert!(
+        result
+            .iter()
+            .any(|m| m.pattern.as_str() == "JOINT STOCK COMPANY")
+    );
+    assert!(!result.iter().any(|m| m.pattern.as_str() == "STOCK"));
 }
 
 #[test]

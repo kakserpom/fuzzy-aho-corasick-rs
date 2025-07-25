@@ -125,88 +125,6 @@ impl FuzzyAhoCorasick {
         }
     }
 
-    #[inline]
-    #[allow(clippy::too_many_arguments)]
-    fn scalar_output_handling(
-        &self,
-        output: &[usize],
-        penalties: f32,
-        edits: usize,
-        insertions: usize,
-        deletions: usize,
-        substitutions: usize,
-        swaps: usize,
-        matched_start: usize,
-        matched_end: usize,
-        grapheme_idx: &[(usize, &str)],
-        text: &str,
-        best: &mut BTreeMap<(usize, usize, usize), FuzzyMatch>,
-        similarity_threshold: f32,
-        #[cfg(debug_assertions)] notes: &Vec<String>,
-    ) {
-        for &pat_idx in output {
-            if !self.within_limits(
-                self.patterns[pat_idx].limits.as_ref(),
-                edits,
-                insertions,
-                deletions,
-                substitutions,
-                swaps,
-            ) {
-                continue;
-            }
-            let start_byte = grapheme_idx.get(matched_start).map_or(0, |&(b, _)| b);
-            let end_byte = grapheme_idx
-                .get(matched_end)
-                .map_or_else(|| text.len(), |&(b, _)| b);
-            let key = (start_byte, end_byte, pat_idx);
-
-            let total = self.patterns[pat_idx].grapheme_len as f32;
-
-            let similarity = (total - penalties) / total * self.patterns[pat_idx].weight;
-
-            if similarity < similarity_threshold {
-                continue;
-            }
-
-            best.entry(key)
-                .and_modify(|entry| {
-                    if similarity > entry.similarity {
-                        *entry = FuzzyMatch {
-                            insertions,
-                            deletions,
-                            substitutions,
-                            edits,
-                            swaps,
-                            pattern_index: pat_idx,
-                            start: start_byte,
-                            end: end_byte,
-                            pattern: "",
-                            similarity,
-                            text: "",
-                            #[cfg(debug_assertions)]
-                            notes: notes.to_owned(),
-                        };
-                    }
-                })
-                .or_insert_with(|| FuzzyMatch {
-                    insertions,
-                    deletions,
-                    substitutions,
-                    edits,
-                    swaps,
-                    pattern_index: pat_idx,
-                    start: start_byte,
-                    end: end_byte,
-                    pattern: "",
-                    similarity,
-                    text: "",
-                    #[cfg(debug_assertions)]
-                    notes: notes.to_owned(),
-                });
-        }
-    }
-
     #[must_use]
     pub fn patterns(&self) -> &Vec<Pattern> {
         &self.patterns
@@ -293,23 +211,68 @@ impl FuzzyAhoCorasick {
                 } = &self.nodes[node];
 
                 if !output.is_empty() {
-                    self.scalar_output_handling(
-                        output,
-                        penalties,
-                        edits,
-                        insertions,
-                        deletions,
-                        substitutions,
-                        swaps,
-                        matched_start,
-                        matched_end,
-                        &grapheme_idx,
-                        haystack,
-                        &mut best,
-                        similarity_threshold,
-                        #[cfg(debug_assertions)]
-                        &notes,
-                    );
+                    for &pattern_index in output {
+                        if !self.within_limits(
+                            self.patterns[pattern_index].limits.as_ref(),
+                            edits,
+                            insertions,
+                            deletions,
+                            substitutions,
+                            swaps,
+                        ) {
+                            continue;
+                        }
+                        let start_byte = grapheme_idx.get(matched_start).map_or(0, |&(b, _)| b);
+                        let end_byte = grapheme_idx
+                            .get(matched_end)
+                            .map_or_else(|| haystack.len(), |&(b, _)| b);
+                        let key = (start_byte, end_byte, pattern_index);
+
+                        let total = self.patterns[pattern_index].grapheme_len as f32;
+
+                        let similarity =
+                            (total - penalties) / total * self.patterns[pattern_index].weight;
+
+                        if similarity < similarity_threshold {
+                            continue;
+                        }
+
+                        best.entry(key)
+                            .and_modify(|entry| {
+                                if similarity > entry.similarity {
+                                    *entry = FuzzyMatch {
+                                        insertions,
+                                        deletions,
+                                        substitutions,
+                                        edits,
+                                        swaps,
+                                        pattern_index,
+                                        start: start_byte,
+                                        end: end_byte,
+                                        pattern: &self.patterns[pattern_index],
+                                        similarity,
+                                        text: &haystack[start_byte..end_byte],
+                                        #[cfg(debug_assertions)]
+                                        notes: notes.to_owned(),
+                                    };
+                                }
+                            })
+                            .or_insert_with(|| FuzzyMatch {
+                                insertions,
+                                deletions,
+                                substitutions,
+                                edits,
+                                swaps,
+                                pattern_index,
+                                start: start_byte,
+                                end: end_byte,
+                                pattern: &self.patterns[pattern_index],
+                                similarity,
+                                text: &haystack[start_byte..end_byte],
+                                #[cfg(debug_assertions)]
+                                notes: notes.to_owned(),
+                            });
+                    }
                 }
 
                 //
@@ -502,7 +465,6 @@ impl FuzzyAhoCorasick {
             .into_values()
             .map(|mut m| {
                 m.text = &haystack[m.start..m.end];
-                m.pattern = self.patterns[m.pattern_index].pattern.as_str();
                 m
             })
             .collect();
@@ -563,7 +525,13 @@ impl FuzzyAhoCorasick {
         let mut used_patterns = BTreeSet::new();
         let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
         matches.inner.retain(|m| {
-            if !used_patterns.contains(&m.pattern_index)
+            let unique_id =
+                if let Some(custom_unique_id) = self.patterns[m.pattern_index].custom_unique_id {
+                    UniqueId::Custom(custom_unique_id)
+                } else {
+                    UniqueId::Automatic(m.pattern_index)
+                };
+            if !used_patterns.contains(&unique_id)
                 && occupied_intervals
                     .range(..=m.start)
                     .next_back()
@@ -573,7 +541,7 @@ impl FuzzyAhoCorasick {
                     .next()
                     .is_none_or(|(&start, _)| start >= m.end)
             {
-                used_patterns.insert(m.pattern_index);
+                used_patterns.insert(unique_id);
                 occupied_intervals.insert(m.start, m.end);
                 #[cfg(test)]
                 trace!("ACCEPTING: \t{:?}", m);

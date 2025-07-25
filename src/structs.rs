@@ -45,7 +45,7 @@ pub(crate) struct Node {
     pub(crate) grapheme: Option<String>,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct FuzzyLimits {
     pub(crate) insertions: Option<NumEdits>,
     pub(crate) deletions: Option<NumEdits>,
@@ -199,15 +199,32 @@ impl fmt::Debug for FuzzyAhoCorasick {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
+pub enum UniqueId {
+    Automatic(usize),
+    Custom(usize),
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Pattern {
     pub grapheme_len: usize,
     pub pattern: String,
+    pub custom_unique_id: Option<usize>,
     pub weight: f32,
     pub limits: Option<FuzzyLimits>,
 }
 
 impl Pattern {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.pattern.as_str()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.pattern.len()
+    }
+
     /// Set pattern weight. Default is 1.0
     #[must_use]
     pub fn weight(mut self, weight: f32) -> Self {
@@ -221,6 +238,12 @@ impl Pattern {
         self.limits = Some(limits.finalize());
         self
     }
+
+    #[must_use]
+    pub fn custom_unique_id(mut self, id: usize) -> Self {
+        self.custom_unique_id = Some(id);
+        self
+    }
 }
 
 impl From<&str> for Pattern {
@@ -230,6 +253,7 @@ impl From<&str> for Pattern {
             grapheme_len: s.graphemes(true).count(),
             weight: 1.,
             limits: None,
+            custom_unique_id: None,
         }
     }
 }
@@ -239,6 +263,7 @@ impl From<String> for Pattern {
         Pattern {
             grapheme_len: s.graphemes(true).count(),
             pattern: s,
+            custom_unique_id: None,
             weight: 1.,
             limits: None,
         }
@@ -252,6 +277,7 @@ impl From<&String> for Pattern {
             grapheme_len: s.graphemes(true).count(),
             weight: 1.,
             limits: None,
+            custom_unique_id: None,
         }
     }
 }
@@ -263,6 +289,7 @@ impl From<(&str, f32)> for Pattern {
             grapheme_len: s.graphemes(true).count(),
             weight: w,
             limits: None,
+            custom_unique_id: None,
         }
     }
 }
@@ -272,6 +299,7 @@ impl From<(String, f32)> for Pattern {
         Pattern {
             grapheme_len: s.graphemes(true).count(),
             pattern: s,
+            custom_unique_id: None,
             weight: w,
             limits: None,
         }
@@ -285,6 +313,7 @@ impl From<(&String, f32)> for Pattern {
             grapheme_len: s.graphemes(true).count(),
             weight: w,
             limits: None,
+            custom_unique_id: None,
         }
     }
 }
@@ -300,6 +329,7 @@ impl<'a> From<(&'a str, f32, usize)> for Pattern {
                     .edits(max_edits as NumEdits)
                     .finalize(),
             ),
+            custom_unique_id: None,
         }
     }
 }
@@ -319,12 +349,12 @@ pub struct FuzzyMatch<'a> {
     pub edits: NumEdits,
     /// Pattern indexed (0-based)
     pub pattern_index: usize,
+    /// Pattern that has been matched.
+    pub pattern: &'a Pattern,
     /// Inclusive start byte index.
     pub start: usize,
     /// Exclusive end byte index.
     pub end: usize,
-    /// Pattern that has been matched.
-    pub pattern: &'a str,
     /// Final similarity score ∈ `[0,1]`.
     pub similarity: f32,
     /// Slice of the original text that produced the match.
