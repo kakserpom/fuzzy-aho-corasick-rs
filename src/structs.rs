@@ -409,19 +409,35 @@ impl std::ops::DerefMut for FuzzyMatches<'_> {
     }
 }
 impl<'a> FuzzyMatches<'a> {
+    /// Returns an iterator over immutable references to the contained [`FuzzyMatch`] items.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &FuzzyMatch<'a>> {
         self.inner.iter()
     }
+
+    /// Returns an iterator over mutable references to the contained [`FuzzyMatch`] items.
     #[inline]
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut FuzzyMatch<'a>> {
         self.inner.iter_mut()
     }
+
+    /// Returns a mutable reference to the underlying vector of [`FuzzyMatch`] items.
+    ///
+    /// This can be used to manipulate the contents directly (e.g. push or remove elements), which
+    /// is useful before calling `segment_iter()`
+    #[inline]
+    pub fn inner_mut(&mut self) -> &mut Vec<FuzzyMatch<'a>> {
+        &mut self.inner
+    }
+
+    /// Returns the number of matches stored in this collection.
     #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
+
+    /// Returns `true` if the collection contains no matches.
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
