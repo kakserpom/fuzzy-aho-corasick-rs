@@ -368,7 +368,33 @@ pub struct FuzzyMatch<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Segment<'a> {
     Matched(FuzzyMatch<'a>),
-    Unmatched(&'a str),
+    Unmatched(UnmatchedSegment<'a>),
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnmatchedSegment<'a> {
+    /// Inclusive start byte index.
+    pub start: usize,
+    /// Exclusive end byte index.
+    pub end: usize,
+    /// Slice of the original text
+    pub text: &'a str,
+}
+
+impl Segment<'_> {
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match self {
+            Segment::Matched(m) => m.text.len(),
+            Segment::Unmatched(u) => u.text.len(),
+        }
+    }
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Segment::Matched(m) => m.text,
+            Segment::Unmatched(u) => u.text,
+        }
+    }
 }
 
 #[derive(Debug)]

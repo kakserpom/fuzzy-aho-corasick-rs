@@ -1,4 +1,4 @@
-use crate::{FuzzyAhoCorasick, FuzzyMatches, Segment};
+use crate::{FuzzyAhoCorasick, FuzzyMatches, Segment, UnmatchedSegment};
 const SPACE: [char; 2] = ['\x20', '\t'];
 const NO_LEADING_SPACE_PUNCTUATION: [char; 9] = [',', '.', '?', '!', ';', ':', '—', '-', '…'];
 
@@ -21,14 +21,23 @@ impl<'a> FuzzyMatches<'a> {
         for m in self.inner {
             if m.start >= last {
                 if m.start > last {
-                    segments.push(Segment::Unmatched(&self.haystack[last..m.start]));
+                    segments.push(Segment::Unmatched(UnmatchedSegment {
+                        start: last,
+                        end: m.start,
+                        text: &self.haystack[last..m.start],
+                    }));
                 }
                 last = m.end;
                 segments.push(Segment::Matched(m));
             }
         }
-        if last < self.haystack.len() {
-            segments.push(Segment::Unmatched(&self.haystack[last..]));
+        let len = self.haystack.len();
+        if last < len {
+            segments.push(Segment::Unmatched(UnmatchedSegment {
+                start: last,
+                end: len,
+                text: &self.haystack[last..],
+            }));
         }
         segments.into_iter()
     }
@@ -58,12 +67,12 @@ impl<'a> FuzzyMatches<'a> {
                     prev_matched = true;
                     result.push_str(m.text);
                 }
-                Segment::Unmatched(s) => {
-                    if prev_matched && !s.starts_with(NO_LEADING_SPACE_PUNCTUATION) {
+                Segment::Unmatched(u) => {
+                    if prev_matched && !u.text.starts_with(NO_LEADING_SPACE_PUNCTUATION) {
                         result.push(' ');
                     }
                     prev_matched = false;
-                    result.push_str(s);
+                    result.push_str(u.text);
                 }
             }
         }
