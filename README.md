@@ -1,21 +1,20 @@
 # fuzzy-aho-corasick
 
-A high-performance, Unicode-aware Rust implementation of the Aho–Corasick automaton with **fuzzy matching** (insertions,
+[![crates.io](https://img.shields.io/crates/v/fuzzy-aho-corasick.svg)](https://crates.io/crates/fuzzy-aho-corasick) [![docs.rs](https://img.shields.io/docsrs/fuzzy-aho-corasick)](https://docs.rs/fuzzy-aho-corasick) [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+High-performance, Unicode-aware Rust implementation of the Aho–Corasick automaton with **fuzzy matching** (insertions,
 deletions, substitutions, transpositions).
 
-This library is rooted in the scientific work “Fuzzified Aho–Corasick Search Automata” by Z. Horák, V. Snášel, A.
-Abraham, and A. E. Hassanien (see the [PDF](DOCS/ias10_horak.pdf)).
+## Key Features
 
-## Features
-
-- **Exact & Fuzzy Matching**: Locate exact patterns or allow configurable edit operations (Levenshtein distance +
-  transposition).
-- **Unicode‐Aware**: Operates on Unicode grapheme clusters and supports case‐insensitive matching.
-  scoring.
-- **Fine‐Grained Limits**: Per‐pattern caps on insertions, deletions, substitutions, swaps, or total edits.
-- **Non‐Overlapping Option**: Greedily choose longest non‐overlapping matches from left to right.
-- **Fuzzy Replacer**: Perform fuzzy find‐and‐replace, preserving unmatched segments.
-- **Text segmentation API**: use `segment_iter()`/`segment_text()` to split a string using your automaton.
+- **Exact & Fuzzy Matching**: Match literal patterns or allow configurable approximate matching with edit operations (
+  Levenshtein-style + transposition).
+- **Unicode-Aware**: Operates over grapheme clusters, with optional case-insensitive matching.
+- **Fine-Grained Limits**: Per-pattern caps on insertions, deletions, substitutions, swaps, or total edits.
+- **Non-Overlapping Selection**: Greedily choose a maximal set of non-overlapping matches with configurable heuristics.
+- **Fuzzy Replacer**: Find-and-replace fuzzily while preserving surrounding context.
+- **Segmentation API**: Split input into matched / unmatched segments via `segment_iter` / `segment_text`.
+- **Customizable Scoring**: Weighting and penalty tuning for substitution, insertion, deletion, swap.
 
 ## Installation
 
@@ -24,6 +23,12 @@ Add to your `Cargo.toml`:
 ```toml
 [dependencies]
 fuzzy-aho-corasick = "0.3"
+````
+
+Then in code:
+
+```rust
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
 ```
 
 ## Quick Start
@@ -32,7 +37,7 @@ fuzzy-aho-corasick = "0.3"
 use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
 
 fn main() {
-    // Build an engine allowing up to 1 edit per match
+    // Build engine allowing up to 1 edit per match, case-insensitive.
     let engine = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().edits(1))
         .case_insensitive(true)
@@ -41,48 +46,173 @@ fn main() {
     let text = "H3llo W0rld!";
     let matches = engine.search_non_overlapping(text, 0.8);
 
-    for m in matches {
+    for m in matches.iter() {
         println!(
             "matched pattern '{}' as '{}' (score {:.2})",
             m.pattern, m.text, m.similarity
         );
     }
-    // Output: matched pattern 'hello' as 'H3llo' (score 0.90)
+    // Expected output (approximate):
+    // matched pattern 'hello' as 'H3llo' (score 0.90)
 }
 ```
 
 ## Builder API
 
-```rust
-let builder = FuzzyAhoCorasickBuilder::new()
-// Maximum total edits (ins+del+sub+swap) per match
-.fuzzy(FuzzyLimits::new().edits(2))
-// Custom penalties
-.penalties(FuzzyPenalties::default ()
-.substitution(0.7)
-.insertion(0.9)
-.deletion(0.9)
-.swap(1)
-)
-// Unicode case folding
-.case_insensitive(true)
+Customize fuzzy behavior, penalties, and case folding:
 
-let engine = builder.build(["pattern1", "pattern2"]);
+```rust
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties};
+fn engine() {
+    FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2)) // up to 2 total edits per pattern by default
+        .penalties(
+            FuzzyPenalties::default()
+                .substitution(0.7)
+                .insertion(0.9)
+                .deletion(0.9)
+                .swap(1.0),
+        )
+        .case_insensitive(true)
+        .build(["pattern1", "pattern2"])
+}
 ```
+
+## Pattern Weights & Direct Pattern Construction
+
+By default, all patterns have weight `1.0`, but you can adjust per-pattern scoring and fuzzy limits directly via
+`Pattern` before building the automaton. You can also pass tuples or fully constructed `Pattern` instances to
+`build(...)`.
+
+* `Pattern::weight(f32)`: set the pattern’s weight (default `1.0`), affecting its effective similarity score.
+* `Pattern::fuzzy(FuzzyLimits)`: apply per-pattern edit limits.
+* `Pattern::custom_unique_id(usize)`: give a stable identity to the pattern for uniqueness-aware matching (
+  `non_overlapping_unique`).
+
+### Examples
+
+Weighting (e.g., give importance to certain patterns) and case-insensitive Greek:
+
+```rust
+fn main() {
+    use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, Pattern};
+
+    // Build from tuple list; each tuple is (pattern, weight).
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build([("Γειά", 1.0), ("σου", 1.0)]);
+}
+````
+
+Customizing patterns with fuzzy limits, unique IDs, and weights:
+
+```rust
+fn main() {
+    use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, Pattern, FuzzyLimits};
+
+    let p1 = Pattern::new("error")
+        .weight(2.0) // boost this pattern
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .custom_unique_id(42);
+
+    let p2 = Pattern::new("warning")
+        .weight(1.0)
+        .fuzzy(FuzzyLimits::new().edits(2));
+
+    // Build engine from explicit Pattern objects.
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .build([p1, p2]);
+}
+```
+
+These allow fine-grained control over ranking, deduplication, and fuzzy tolerance on a per-pattern basis.
 
 ## Fuzzy Replacer
 
-```rust
-let replacer = FuzzyAhoCorasickBuilder::new().build_replacer([
-("foo", "bar"),
-("baz", "qux"),
-]);
+Perform fuzzy find-and-replace with a mapping. Non-overlapping matches are chosen automatically based on default
+heuristics.
 
-let out = replacer.replace("F00 and BAZ!", 0.8);
-assert_eq!(out, "bar and qux!");
+```rust
+fn main() {
+    let replacer = FuzzyAhoCorasickBuilder::new().build_replacer([
+        ("foo", "bar"),
+        ("baz", "qux"),
+    ]);
+
+    let out = replacer.replace("F00 and BAZ!", 0.8);
+    assert_eq!(out, "bar and qux!");
+}
+```
+
+## Segmentation and Reconstruction
+
+Break text into matched/unmatched pieces and reassemble with intelligent spacing:
+
+```rust
+fn main() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .build(["input", "more"]);
+    let matches = engine.search_non_overlapping("someinptandm0re", 0.75);
+    let segmented_text = matches.segment_text();
+    assert_eq!(segmented_text, "some inpt and m0re");
+}
+```
+
+## Match Selection Strategies
+
+There are helpers to control ordering and overlap resolution:
+
+* `default_sort()`: Prioritizes higher similarity, longer patterns, then earlier position.
+* `greedy_sort()`: Prefers longer patterns first, then similarity.
+* `non_overlapping()`: Drops overlapping matches greedily in the current order.
+* `non_overlapping_unique()`: Same as above but ensures each pattern (respecting `custom_unique_id`) is used at most
+  once.
+
+Convenience entrypoints:
+
+* `search(...)`: Applies default sort and returns non-overlapping matches.
+* `search_greedy(...)`: Applies greedy sort.
+* `search_non_overlapping(...)` / `search_non_overlapping_unique(...)`: Variants that combine sorting + deduplication
+  semantics.
+
+## Performance Tips
+
+* Prefer filtering by similarity threshold early to prune low-quality candidates.
+* Tune `FuzzyLimits` per pattern when you know expected error characteristics.
+* Custom `FuzzyPenalties` can shape whether substitutions or insertions are “cheaper” in ambiguous regions.
+* Use `search_non_overlapping_*` variants to avoid post-processing overlapping match resolution.
+
+## Troubleshooting
+
+* **Too many false positives**: Raise the similarity threshold or tighten per-pattern limits.
+* **Missing fuzzy matches**: Lower the threshold, increase allowed edits, or adjust penalties to make substitutions less
+  punitive.
+* **Overlapping matches unwanted**: Use `search_non_overlapping` or `search_non_overlapping_unique` instead of raw
+  `search_unsorted`.
+
+## Examples
+
+See `examples/` (if present) for real-world usage patterns:
+
+* Fuzzy deduplication pipelines
+* Fuzzy find-and-replace in human-entered text
+* Entity extraction with per-entity error tolerance
+
+## Testing
+
+Run the test suite with:
+
+```sh
+cargo test
 ```
 
 ## License
 
-This project is distributed under the MIT License. See [LICENSE](LICENSE) for details.
+Distributed under the **MIT License**. See `LICENSE` for details.
+
+## Acknowledgements
+
+Based on the paper: *Fuzzified Aho–Corasick Search Automata* by Z. Horák, V. Snášel, A. Abraham, and A. E. Hassanien.
+See [`ias10_horak.pdf`](DOCS/ias10_horak.pdf).
 

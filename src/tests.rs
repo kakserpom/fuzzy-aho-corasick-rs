@@ -263,6 +263,16 @@ fn test_segment_text() {
 }
 
 #[test]
+fn test_segment_readme() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .build(["input", "more"]);
+    let matches = engine.search_non_overlapping("someinptandm0re", 0.75);
+    let segmented_text = matches.segment_text();
+    assert_eq!(segmented_text, "some inpt and m0re");
+}
+
+#[test]
 fn test_segment_name() {
     let engine = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().edits(3))
