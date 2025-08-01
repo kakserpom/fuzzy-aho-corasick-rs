@@ -10,7 +10,7 @@ mod tests;
 pub use builder::FuzzyAhoCorasickBuilder;
 pub use replacer::FuzzyReplacer;
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
 pub use structs::*;
@@ -27,12 +27,17 @@ macro_rules! trace {
 }
 /// Fuzzy Aho—Corasick engine
 impl FuzzyAhoCorasick {
+    /// Get the per-node limits if this node corresponds to a pattern that has
+    /// its own `FuzzyLimits`.
     #[inline]
     fn get_node_limits(&self, node: usize) -> Option<&FuzzyLimits> {
         self.nodes[node]
             .pattern_index
             .and_then(|i| self.patterns.get(i).and_then(|p| p.limits.as_ref()))
     }
+
+    /// Check ahead whether an insertion would stay within the allowed limits.
+    /// Considers both the node-specific limits and the global fallback `self.limits`.
     #[inline]
     fn within_limits_insertion_ahead(
         &self,
@@ -48,6 +53,7 @@ impl FuzzyAhoCorasick {
         }
     }
 
+    /// Check ahead whether a deletion would stay within the allowed limits.
     #[inline]
     fn within_limits_deletion_ahead(
         &self,
@@ -63,6 +69,7 @@ impl FuzzyAhoCorasick {
         }
     }
 
+    /// Check ahead whether a swap (transposition) would stay within the allowed limits.
     #[inline]
     fn within_limits_swap_ahead(
         &self,
@@ -81,6 +88,7 @@ impl FuzzyAhoCorasick {
         }
     }
 
+    /// Check ahead whether a substitution would stay within the allowed limits.
     #[inline]
     fn within_limits_subst(
         &self,
@@ -100,6 +108,8 @@ impl FuzzyAhoCorasick {
         }
     }
 
+    /// General limits check: given all edit counts, returns whether they are
+    /// acceptable under either the node-specific limits or the global default.
     #[inline]
     fn within_limits(
         &self,
@@ -125,14 +135,36 @@ impl FuzzyAhoCorasick {
         }
     }
 
+    /// Returns the list of patterns the automaton was built with.
     #[must_use]
-    pub fn patterns(&self) -> &Vec<Pattern> {
+    pub fn patterns(&self) -> &[Pattern] {
         &self.patterns
     }
 
+    /// Core fuzzy search over the haystack producing raw matches without any
+    /// global ordering applied. This explores all possible state transitions
+    /// (substitutions, swaps, insertions, deletions) starting at each grapheme
+    /// position, accumulating penalties and enforcing per-pattern limits. Keeps the
+    /// best match for each unique (start_byte, end_byte, pattern_index) key by
+    /// highest similarity, but does **not** sort the results; the returned
+    /// `FuzzyMatches.inner` is effectively unsorted.
+    ///
+    /// Similarity is computed as `(total_graphemes - penalties) / total_graphemes * weight`.
+    /// Matches below `similarity_threshold` are discarded early.
+    ///
+    /// # Parameters
+    /// - `haystack`: the input text to search in.
+    /// - `similarity_threshold`: minimum similarity a candidate must have to be kept.
+    ///
+    /// # Returns
+    /// A `FuzzyMatches` containing the best per-span matches meeting the threshold.
     #[inline]
     #[must_use]
-    pub fn search<'a>(&'a self, haystack: &'a str, similarity_threshold: f32) -> FuzzyMatches<'a> {
+    pub fn search_unsorted<'a>(
+        &'a self,
+        haystack: &'a str,
+        similarity_threshold: f32,
+    ) -> FuzzyMatches<'a> {
         let grapheme_idx: Vec<(usize, &str)> = haystack.grapheme_indices(true).collect();
         if grapheme_idx.is_empty() {
             return FuzzyMatches {
@@ -461,28 +493,66 @@ impl FuzzyAhoCorasick {
                 }
             }
         }
-        let mut inner: Vec<_> = best
-            .into_values()
-            .map(|mut m| {
-                m.text = &haystack[m.start..m.end];
-                m
-            })
-            .collect();
-
-        inner.sort_by(|left, right| {
-            right
-                .similarity
-                .total_cmp(&left.similarity)
-                .then_with(|| right.pattern.len().cmp(&left.pattern.len()))
-                .then_with(|| right.text.len().cmp(&left.text.len()))
-                .then_with(|| left.start.cmp(&right.start))
-        });
-
-        FuzzyMatches { haystack, inner }
+        FuzzyMatches {
+            haystack,
+            inner: best
+                .into_values()
+                .map(|mut m| {
+                    m.text = &haystack[m.start..m.end];
+                    m
+                })
+                .collect(),
+        }
     }
 
-    /// Search without overlapping matches (the engine will greedily choose the
-    /// longest non‑overlapping matches from left to right).
+    /// Convenience wrapper over `search_unsorted` that applies the default sorting
+    /// order to the matches (via `default_sort()`).
+    ///
+    /// # Parameters
+    /// - `haystack`: the input text to search in.
+    /// - `similarity_threshold`: minimum similarity threshold for candidates.
+    ///
+    /// # Returns
+    /// `FuzzyMatches` with matches sorted according to the default ranking.
+    #[inline]
+    #[must_use]
+    pub fn search<'a>(&'a self, haystack: &'a str, similarity_threshold: f32) -> FuzzyMatches<'a> {
+        let mut matches = self.search_unsorted(haystack, similarity_threshold);
+        matches.default_sort();
+        matches
+    }
+
+    /// Convenience wrapper over `search_unsorted` that applies a greedy sort (via `greedy_sort()`),
+    ///
+    /// # Parameters
+    /// - `haystack`: the input text to search in.
+    /// - `similarity_threshold`: minimum similarity threshold for candidates.
+    ///
+    /// # Returns
+    /// `FuzzyMatches` with matches sorted by the greedy heuristic.
+    #[inline]
+    #[must_use]
+    pub fn search_greedy<'a>(
+        &'a self,
+        haystack: &'a str,
+        similarity_threshold: f32,
+    ) -> FuzzyMatches<'a> {
+        let mut matches = self.search_unsorted(haystack, similarity_threshold);
+        matches.greedy_sort();
+        matches
+    }
+
+    /// Search that returns non-overlapping matches by delegating to
+    /// `non_overlapping()` on the fully sorted (default) results. This will
+    /// greedily select a set of matches such that their spans do not overlap,
+    /// according to whatever strategy `non_overlapping` encapsulates.
+    ///
+    /// # Parameters
+    /// - `haystack`: the input text to search in.
+    /// - `similarity_threshold`: minimum similarity threshold for candidates.
+    ///
+    /// # Returns
+    /// `FuzzyMatches` containing a non-overlapping subset of matches.
     #[must_use]
     pub fn search_non_overlapping<'a>(
         &'a self,
@@ -490,31 +560,21 @@ impl FuzzyAhoCorasick {
         similarity_threshold: f32,
     ) -> FuzzyMatches<'a> {
         let mut matches = self.search(haystack, similarity_threshold);
-        let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
-        matches.inner.retain(|m| {
-            if occupied_intervals
-                .range(..=m.start)
-                .next_back()
-                .is_none_or(|(_, &end)| end <= m.start)
-                && occupied_intervals
-                    .range(m.start..)
-                    .next()
-                    .is_none_or(|(&start, _)| start >= m.end)
-            {
-                occupied_intervals.insert(m.start, m.end);
-                #[cfg(test)]
-                trace!("ACCEPTING: \t{:?}", m);
-                true
-            } else {
-                #[cfg(test)]
-                trace!("DISCARDING OVERLAPPING: {m:?}");
-                false
-            }
-        });
-        matches.inner.sort_by_key(|m| m.start);
+        matches.non_overlapping();
         matches
     }
 
+    /// Variation of `search_non_overlapping` that additionally enforces uniqueness
+    /// of patterns: each pattern (identified by `custom_unique_id` if present or by
+    /// its index) may only contribute one accepted match. Delegates to
+    /// `non_overlapping_unique()` after obtaining the base sorted matches.
+    ///
+    /// # Parameters
+    /// - `haystack`: the input text to search in.
+    /// - `similarity_threshold`: minimum similarity threshold for candidates.
+    ///
+    /// # Returns
+    /// `FuzzyMatches` containing a non-overlapping, pattern-unique subset of matches.
     #[must_use]
     pub fn search_non_overlapping_unique<'a>(
         &'a self,
@@ -522,58 +582,42 @@ impl FuzzyAhoCorasick {
         similarity_threshold: f32,
     ) -> FuzzyMatches<'a> {
         let mut matches = self.search(haystack, similarity_threshold);
-        let mut used_patterns = BTreeSet::new();
-        let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
-        matches.inner.retain(|m| {
-            let unique_id =
-                if let Some(custom_unique_id) = self.patterns[m.pattern_index].custom_unique_id {
-                    UniqueId::Custom(custom_unique_id)
-                } else {
-                    UniqueId::Automatic(m.pattern_index)
-                };
-            if !used_patterns.contains(&unique_id)
-                && occupied_intervals
-                    .range(..=m.start)
-                    .next_back()
-                    .is_none_or(|(_, &end)| end <= m.start)
-                && occupied_intervals
-                    .range(m.start..)
-                    .next()
-                    .is_none_or(|(&start, _)| start >= m.end)
-            {
-                used_patterns.insert(unique_id);
-                occupied_intervals.insert(m.start, m.end);
-                #[cfg(test)]
-                trace!("ACCEPTING: \t{:?}", m);
-                true
-            } else {
-                #[cfg(test)]
-                trace!("DISCARDING OVERLAPPING: {m:?}");
-                false
-            }
-        });
-        matches.inner.sort_by_key(|m| m.start);
+        matches.non_overlapping_unique();
         matches
     }
 
-    /// Performs a **fuzzy** find‑and‑replace using a list of `(pattern →
-    /// replacement)` pairs.  Replacements are applied left‑to‑right, the longest
-    /// non‑overlapping match wins.
+    /// Perform replacements on `text` by finding non-overlapping fuzzy matches above
+    /// `threshold` and invoking `callback` for each. Matches are resolved via
+    /// `search_non_overlapping`, so they won’t overlap; the first chosen set is
+    /// used in left-to-right order.
+    ///
+    /// The `callback` is called with each `FuzzyMatch`. If it returns `Some(repl)`,
+    /// the matched span is replaced with `repl`. If it returns `None`, the original
+    /// substring from `text` is preserved.
+    ///
+    /// # Parameters
+    /// - `text`: input string to perform replacements on.
+    /// - `callback`: mapping from a `FuzzyMatch` to an optional replacement string.
+    /// - `threshold`: minimum similarity for a match to be considered.
+    ///
+    /// # Returns
+    /// A new `String` with the selected fuzzy matches replaced per `callback`.
+    ///
+    /// # Example
+    /// ```rust
+    /// use fuzzy_aho_corasick::FuzzyAhoCorasickBuilder;
+    /// let automaton = FuzzyAhoCorasickBuilder::new().build(["FOO", "BAR", "BAZ"]);
+    /// let result = automaton.replace("FOO BAR BAZ", |m| {
+    ///     (m.pattern.pattern == "BAR").then_some("###")
+    /// }, 0.8);
+    /// assert_eq!(result, "FOO ### BAZ");
+    /// ```
     #[must_use]
     pub fn replace<'a, F>(&self, text: &str, callback: F, threshold: f32) -> String
     where
         F: Fn(&FuzzyMatch) -> Option<&'a str>,
     {
-        let mut result = String::new();
-        let mut last = 0;
-        for matched in &self.search_non_overlapping(text, threshold) {
-            if matched.start >= last {
-                result.push_str(&text[last..matched.start]);
-                last = matched.end;
-                result.push_str(callback(matched).unwrap_or(matched.text));
-            }
-        }
-        result.push_str(&text[last..]);
-        result
+        self.search_non_overlapping(text, threshold)
+            .replace(text, callback)
     }
 }

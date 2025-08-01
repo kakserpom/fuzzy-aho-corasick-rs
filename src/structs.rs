@@ -1,5 +1,5 @@
 use crate::PatternIndex;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -409,6 +409,125 @@ impl std::ops::DerefMut for FuzzyMatches<'_> {
     }
 }
 impl<'a> FuzzyMatches<'a> {
+    /// Default ranking: prefers higher similarity, then longer pattern, then
+    /// longer matched text, then earlier occurrence.
+    #[inline]
+    pub fn default_sort(&mut self) {
+        self.inner.sort_by(|left, right| {
+            right
+                .similarity
+                .total_cmp(&left.similarity)
+                .then_with(|| right.pattern.len().cmp(&left.pattern.len()))
+                .then_with(|| right.text.len().cmp(&left.text.len()))
+                .then_with(|| left.start.cmp(&right.start))
+        });
+    }
+
+    /// Greedy ranking: prefers longer pattern first, then higher similarity,
+    /// then earlier position. Used when one wants to favor breadth of match over
+    /// score tie-breaking.
+    #[inline]
+    pub fn greedy_sort(&mut self) {
+        self.inner.sort_by(|left, right| {
+            right
+                .pattern
+                .len()
+                .cmp(&left.pattern.len())
+                .then_with(|| {
+                    right.similarity.total_cmp(&left.similarity) // higher similarity next
+                })
+                .then_with(|| left.start.cmp(&right.start)) // earlier start last
+        })
+    }
+
+    /// Retain a set of non-overlapping matches in place. Traverses in current
+    /// order and keeps a match only if its span does not intersect any already
+    /// accepted span. The kept matches are finally re-sorted by `start`.
+    pub fn non_overlapping(&mut self) {
+        let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
+        self.inner.retain(|m| {
+            if occupied_intervals
+                .range(..=m.start)
+                .next_back()
+                .is_none_or(|(_, &end)| end <= m.start)
+                && occupied_intervals
+                    .range(m.start..)
+                    .next()
+                    .is_none_or(|(&start, _)| start >= m.end)
+            {
+                occupied_intervals.insert(m.start, m.end);
+                #[cfg(test)]
+                println!("ACCEPTING: \t{:?}", m);
+                true
+            } else {
+                #[cfg(test)]
+                println!("DISCARDING OVERLAPPING: {m:?}");
+                false
+            }
+        });
+        self.inner.sort_by_key(|m| m.start);
+    }
+
+    /// Like `non_overlapping`, but also enforces that each pattern (by its
+    /// `custom_unique_id` if present, otherwise by index) is used at most once.
+    pub fn non_overlapping_unique(&mut self) {
+        let mut used_patterns = BTreeSet::new();
+        let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
+        self.inner.retain(|m| {
+            let unique_id = if let Some(custom_unique_id) = m.pattern.custom_unique_id {
+                UniqueId::Custom(custom_unique_id)
+            } else {
+                UniqueId::Automatic(m.pattern_index)
+            };
+            if !used_patterns.contains(&unique_id)
+                && occupied_intervals
+                    .range(..=m.start)
+                    .next_back()
+                    .is_none_or(|(_, &end)| end <= m.start)
+                && occupied_intervals
+                    .range(m.start..)
+                    .next()
+                    .is_none_or(|(&start, _)| start >= m.end)
+            {
+                used_patterns.insert(unique_id);
+                occupied_intervals.insert(m.start, m.end);
+                #[cfg(test)]
+                println!("ACCEPTING: \t{:?}", m);
+                true
+            } else {
+                #[cfg(test)]
+                println!("DISCARDING OVERLAPPING: {m:?}");
+                false
+            }
+        });
+        self.inner.sort_by_key(|m| m.start);
+    }
+
+    /// Performs a **fuzzy** find-and-replace using the current match list.
+    /// Replacements are applied left-to-right, skipping overlaps (since the
+    /// collection is expected to be already filtered for non-overlap if desired).
+    ///
+    /// The `callback` is invoked for each match; if it returns `Some(repl)`, the
+    /// match span is replaced with `repl`, otherwise the original matched text
+    /// is preserved.
+    #[must_use]
+    pub fn replace<'b, F>(&self, text: &str, callback: F) -> String
+    where
+        F: Fn(&FuzzyMatch) -> Option<&'b str>,
+    {
+        let mut result = String::new();
+        let mut last = 0;
+        for matched in &self.inner {
+            if matched.start >= last {
+                result.push_str(&text[last..matched.start]);
+                last = matched.end;
+                result.push_str(callback(matched).unwrap_or(matched.text));
+            }
+        }
+        result.push_str(&text[last..]);
+        result
+    }
+
     /// Returns an iterator over immutable references to the contained [`FuzzyMatch`] items.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &FuzzyMatch<'a>> {
