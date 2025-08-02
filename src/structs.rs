@@ -400,7 +400,7 @@ impl Segment<'_> {
 #[derive(Debug)]
 pub struct FuzzyMatches<'a> {
     pub(crate) haystack: &'a str,
-    pub(crate) inner: Vec<FuzzyMatch<'a>>,
+    pub inner: Vec<FuzzyMatch<'a>>,
 }
 impl<'a, 'b> IntoIterator for &'b FuzzyMatches<'a> {
     type Item = &'b FuzzyMatch<'a>;
@@ -459,10 +459,8 @@ impl<'a> FuzzyMatches<'a> {
                 .pattern
                 .len()
                 .cmp(&left.pattern.len())
-                .then_with(|| {
-                    right.similarity.total_cmp(&left.similarity) // higher similarity next
-                })
-                .then_with(|| left.start.cmp(&right.start)) // earlier start last
+                .then_with(|| right.similarity.total_cmp(&left.similarity))
+                .then_with(|| left.start.cmp(&right.start))
         })
     }
 
