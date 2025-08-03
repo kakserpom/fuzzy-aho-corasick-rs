@@ -225,6 +225,11 @@ impl Pattern {
         self.pattern.len()
     }
 
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Set pattern weight. Default is 1.0
     #[must_use]
     pub fn weight(mut self, weight: f32) -> Self {
@@ -389,6 +394,10 @@ impl Segment<'_> {
         }
     }
     #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
             Segment::Matched(m) => m.text,
@@ -461,7 +470,7 @@ impl<'a> FuzzyMatches<'a> {
                 .cmp(&left.pattern.len())
                 .then_with(|| right.similarity.total_cmp(&left.similarity))
                 .then_with(|| left.start.cmp(&right.start))
-        })
+        });
     }
 
     /// Retain a set of non-overlapping matches in place. Traverses in current

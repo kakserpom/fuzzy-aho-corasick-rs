@@ -145,7 +145,7 @@ impl FuzzyAhoCorasick {
     /// global ordering applied. This explores all possible state transitions
     /// (substitutions, swaps, insertions, deletions) starting at each grapheme
     /// position, accumulating penalties and enforcing per-pattern limits. Keeps the
-    /// best match for each unique (start_byte, end_byte, pattern_index) key by
+    /// best match for each unique (`start_byte`, `end_byte`, `pattern_index`) key by
     /// highest similarity, but does **not** sort the results; the returned
     /// `FuzzyMatches.inner` is effectively unsorted.
     ///
@@ -285,7 +285,7 @@ impl FuzzyAhoCorasick {
                                         similarity,
                                         text: &haystack[start_byte..end_byte],
                                         #[cfg(debug_assertions)]
-                                        notes: notes.to_owned(),
+                                        notes: notes.clone(),
                                     };
                                 }
                             })
@@ -302,7 +302,7 @@ impl FuzzyAhoCorasick {
                                 similarity,
                                 text: &haystack[start_byte..end_byte],
                                 #[cfg(debug_assertions)]
-                                notes: notes.to_owned(),
+                                notes: notes.clone(),
                             });
                     }
                 }
