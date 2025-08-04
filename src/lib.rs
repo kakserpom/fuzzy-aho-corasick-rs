@@ -1,6 +1,7 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 mod builder;
+mod matches;
 mod replacer;
 mod segment;
 pub mod structs;
@@ -619,5 +620,94 @@ impl FuzzyAhoCorasick {
     {
         self.search_non_overlapping(text, threshold)
             .replace(text, callback)
+    }
+
+    /// Strip any leading fuzzy‐matched prefix from `haystack` using the given
+    /// similarity `threshold`, and return the remainder of the string.
+    ///
+    /// # Behavior
+    ///
+    /// - All initial [`Segment::Matched`] variants are skipped.
+    /// - Any unmatched segments consisting solely of whitespace are also skipped.
+    /// - The first non‐whitespace [`Segment::Unmatched`]:
+    ///   - Has its leading whitespace trimmed before appending.
+    ///   - Disables skipping so that all subsequent segments are included.
+    /// - After that point, both `Matched` and `Unmatched` segments are appended
+    ///   in full (without further trimming).
+    ///
+    /// # Parameters
+    ///
+    /// - `haystack`: The text to strip a fuzzy‐matched prefix from.
+    /// - `threshold`: A float from `0.0` to `1.0` indicating the minimum
+    ///   similarity score required for a match.
+    ///
+    /// # Returns
+    ///
+    /// A `String` containing the remainder of `haystack` after removing the
+    /// leading fuzzy‐matched portion and any leading whitespace.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+    /// let f = FuzzyAhoCorasickBuilder::new()
+    ///     .fuzzy(FuzzyLimits::new().edits(1))
+    ///     .case_insensitive(true)
+    ///     .build(["LOREM", "IPSUM"]);
+    ///
+    /// // "LROEM" fuzzy‐matches "LOREM", "PISUM" matches "IPSUM",
+    /// // so both are stripped, and leading space before "ZZZ" is trimmed:
+    /// let result = f.strip_prefix("LrEM ISuM Lorm ZZZ", 0.8);
+    /// assert_eq!(result, "ZZZ");
+    /// ```
+    #[must_use]
+    pub fn strip_prefix<'a>(&'a self, haystack: &'a str, threshold: f32) -> String {
+        self.search_non_overlapping(haystack, threshold)
+            .strip_prefix()
+    }
+
+    /// Perform a non‐overlapping fuzzy search over `haystack` with the given
+    /// similarity `threshold`, then strip any trailing fuzzy‐matched suffix
+    /// from the end of the string and return the leading portion.
+    ///
+    /// # Behavior
+    ///
+    /// - Conducts a non‐overlapping fuzzy search (via [`search_non_overlapping`]).
+    /// - Skips all trailing [`Segment::Matched`] variants.
+    /// - Skips any trailing [`Segment::Unmatched`] variants consisting solely of whitespace.
+    /// - The last non‐whitespace [`Segment::Unmatched`]:
+    ///   - Has its trailing whitespace trimmed before inclusion.
+    ///   - Marks the cutoff point—everything after it is dropped.
+    ///
+    /// # Parameters
+    ///
+    /// - `haystack`: The text to strip a fuzzy‐matched suffix from.
+    /// - `threshold`: A float in `0.0..=1.0` indicating the minimum similarity
+    ///   score required for a match to count as part of the suffix.
+    ///
+    /// # Returns
+    ///
+    /// A `String` containing the beginning of `haystack` with any trailing
+    /// fuzzy‐matched portion (and trailing whitespace) removed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+    ///
+    /// let f = FuzzyAhoCorasickBuilder::new()
+    ///     .fuzzy(FuzzyLimits::new().edits(1))
+    ///     .case_insensitive(true)
+    ///     .build(["LOREM", "IPSUM"]);
+    ///
+    /// // The suffix " LrEM ISuM" fuzzily matches " LOREM IPSUM" at ≥0.8,
+    /// // so it's stripped from the end, leaving only "ZZZ".
+    /// let result = f.strip_postfix("ZZZ LrEM ISuM", 0.8);
+    /// assert_eq!(result, "ZZZ");
+    /// ```
+    #[must_use]
+    pub fn strip_postfix<'a>(&'a self, haystack: &'a str, threshold: f32) -> String {
+        self.search_non_overlapping(haystack, threshold)
+            .strip_postfix()
     }
 }

@@ -380,3 +380,27 @@ fn test_country() {
     let out = replacer.replace("CHEKHOSLOVAKIA", 0.7);
     assert_eq!(out, "SERBIA");
 }
+
+#[test]
+fn test_strip_prefix() {
+    assert_eq!(
+        FuzzyAhoCorasickBuilder::new()
+            .fuzzy(FuzzyLimits::new().edits(1))
+            .case_insensitive(true)
+            .build(["LOREM", "IPSUM"])
+            .strip_prefix("LrEM ISuM Lorm ZZZ", 0.8),
+        "ZZZ"
+    );
+}
+
+#[test]
+fn test_strip_postfix() {
+    assert_eq!(
+        FuzzyAhoCorasickBuilder::new()
+            .fuzzy(FuzzyLimits::new().edits(1))
+            .case_insensitive(true)
+            .build(["LOREM", "IPSUM"])
+            .strip_postfix("ZZZ LrEM ISuM Lorm", 0.8),
+        "ZZZ"
+    );
+}

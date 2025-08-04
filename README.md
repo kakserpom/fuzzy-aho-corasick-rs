@@ -2,16 +2,16 @@
 
 [![crates.io](https://img.shields.io/crates/v/fuzzy-aho-corasick.svg)](https://crates.io/crates/fuzzy-aho-corasick) [![docs.rs](https://img.shields.io/docsrs/fuzzy-aho-corasick)](https://docs.rs/fuzzy-aho-corasick) [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-High-performance, Unicode-aware Rust implementation of the Aho–Corasick automaton with **fuzzy matching** (insertions,
-deletions, substitutions, transpositions).
+High-performance, Unicode-aware safe Rust implementation of the Aho–Corasick automaton with **fuzzy matching** (
+insertions, deletions, substitutions, transpositions).
 
 ## Key Features
 
 - **Exact & Fuzzy Matching**: Match literal patterns or allow configurable approximate matching with edit operations (
   Levenshtein-style + transposition).
 - **Unicode-Aware**: Operates over grapheme clusters, with optional case-insensitive matching.
-- **Fine-Grained Limits**: Per-pattern caps on insertions, deletions, substitutions, swaps, or total edits.
-- **Non-Overlapping Selection**: Greedily choose a maximal set of non-overlapping matches with configurable heuristics.
+- **Fine-Grained Limits**: Per-pattern caps on insertions, deletions, substitutions, swaps, and total edits.
+- **Non-Overlapping Selection**: Choose a maximal set of non-overlapping matches with configurable heuristics.
 - **Fuzzy Replacer**: Find-and-replace fuzzily while preserving surrounding context.
 - **Segmentation API**: Split input into matched / unmatched segments via `segment_iter` / `segment_text`.
 - **Customizable Scoring**: Weighting and penalty tuning for substitution, insertion, deletion, swap.
@@ -127,38 +127,6 @@ fn main() {
 
 These allow fine-grained control over ranking, deduplication, and fuzzy tolerance on a per-pattern basis.
 
-## Fuzzy Replacer
-
-Perform fuzzy find-and-replace with a mapping. Non-overlapping matches are chosen automatically based on default
-heuristics.
-
-```rust
-fn main() {
-    let replacer = FuzzyAhoCorasickBuilder::new().build_replacer([
-        ("foo", "bar"),
-        ("baz", "qux"),
-    ]);
-
-    let out = replacer.replace("F00 and BAZ!", 0.8);
-    assert_eq!(out, "bar and qux!");
-}
-```
-
-## Segmentation and Reconstruction
-
-Break text into matched/unmatched pieces and reassemble with intelligent spacing:
-
-```rust
-fn main() {
-    let engine = FuzzyAhoCorasickBuilder::new()
-        .fuzzy(FuzzyLimits::new().edits(1))
-        .build(["input", "more"]);
-    let matches = engine.search_non_overlapping("someinptandm0re", 0.75);
-    let segmented_text = matches.segment_text();
-    assert_eq!(segmented_text, "some inpt and m0re");
-}
-```
-
 ## Match Selection Strategies
 
 There are helpers to control ordering and overlap resolution:
@@ -175,6 +143,56 @@ Convenience entrypoints:
 * `search_greedy(...)`: Applies greedy sort.
 * `search_non_overlapping(...)` / `search_non_overlapping_unique(...)`: Variants that combine sorting + deduplication
   semantics.
+
+## Segmentation and Reconstruction
+
+Break text into matched/unmatched pieces and reassemble with intelligent spacing:
+
+```rust
+fn main() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .build(["input", "more"]);
+    let matches = engine.search_non_overlapping("someinptandm0re", 0.75);
+    let segmented_text = matches.segment_text();
+    assert_eq!(segmented_text, "some inpt and m0re");
+}
+```
+
+### Post-Processing Utilities
+
+Once you have a `FuzzyMatches` (for example, from `search_non_overlapping`), these handy methods let you trim or
+transform the matched segments:
+
+* **`replace(callback)`**
+  Walks through matches left-to-right (skipping overlaps) and invokes your `Fn(&FuzzyMatch) -> Option<&str>` for each
+  one; if the callback returns `Some(repl)`, that span is replaced with `repl`, otherwise the original matched text is
+  preserved. See **Fuzzy Replacer** section for a basic replacer.
+
+* **`strip_prefix()`**
+  Drops all leading fuzzy-matched segments and any whitespace-only unmatched segments, then trims leading spaces from
+  the first kept unmatched segment and returns the rest of the text.
+
+* **`strip_postfix()`**
+  Removes all trailing fuzzy-matched segments and any whitespace-only unmatched segments, then trims trailing spaces
+  from the last kept unmatched segment and returns the leading portion of the text.
+
+#### Fuzzy Replacer
+
+Perform fuzzy find-and-replace with a mapping. Non-overlapping matches are chosen automatically based on default
+heuristics.
+
+```rust
+fn main() {
+    let replacer = FuzzyAhoCorasickBuilder::new().build_replacer([
+        ("foo", "bar"),
+        ("baz", "qux"),
+    ]);
+
+    let out = replacer.replace("F00 and BAZ!", 0.8);
+    assert_eq!(out, "bar and qux!");
+}
+```
 
 ## Performance Tips
 
