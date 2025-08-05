@@ -325,8 +325,8 @@ fn test_fuzzy_replace_fn() {
                 "Fuzzy Wuzzy was a hair. Fuzzy Wuzzy had no bear.",
                 |m| {
                     match m.text {
-                        "bear" => Some("hair".into()),
-                        "hair" => Some("bear".into()),
+                        "bear" => Some("hair"),
+                        "hair" => Some("bear"),
                         _ => None,
                     }
                 },
@@ -402,5 +402,17 @@ fn test_strip_postfix() {
             .build(["LOREM", "IPSUM"])
             .strip_postfix("ZZZ LrEM ISuM Lorm", 0.8),
         "ZZZ"
+    );
+}
+#[test]
+fn test_split() {
+    assert_eq!(
+        FuzzyAhoCorasickBuilder::new()
+            .fuzzy(FuzzyLimits::new().edits(1))
+            .case_insensitive(true)
+            .build(["LOREM", "IPSUM"])
+            .split("ZZZLrEMISuMAAA", 0.8)
+            .collect::<Vec<_>>(),
+        ["ZZZ", "", "AAA"]
     );
 }

@@ -12,10 +12,9 @@ impl<'a> FuzzyMatches<'a> {
     /// - Skips overlaps by virtue of assuming `self.inner` already contains the
     ///   desired non-overlapping set (it does not dedupe here).
     /// - Emits unmatched prefix/suffix pieces as `Unmatched`.
-    pub fn segment_iter(mut self) -> impl Iterator<Item = Segment<'a>> {
+    pub fn segment_iter(self) -> impl Iterator<Item = Segment<'a>> {
         #[cfg(test)]
         println!("matches: {:?}", self.inner);
-        self.inner.sort_by_key(|m| m.start);
         let mut segments = Vec::new();
         let mut last = 0;
         for m in self.inner {

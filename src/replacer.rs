@@ -11,11 +11,8 @@ impl FuzzyReplacer {
     /// non‑overlapping match wins.
     #[must_use]
     pub fn replace(&self, text: &str, threshold: f32) -> String {
-        self.engine.replace(
-            text,
-            |m| self.replacements.get(m.pattern_index).map(String::as_str),
-            threshold,
-        )
+        self.engine
+            .replace(text, |m| self.replacements.get(m.pattern_index), threshold)
     }
 
     #[must_use]

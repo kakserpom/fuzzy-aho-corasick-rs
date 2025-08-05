@@ -614,12 +614,13 @@ impl FuzzyAhoCorasick {
     /// assert_eq!(result, "FOO ### BAZ");
     /// ```
     #[must_use]
-    pub fn replace<'a, F>(&self, text: &str, callback: F, threshold: f32) -> String
+    pub fn replace<'a, F, S: Into<Cow<'a, str>>>(&'a self, text: &'a str, callback: F, threshold: f32) -> String
     where
-        F: Fn(&FuzzyMatch) -> Option<&'a str>,
+        F: Fn(&FuzzyMatch<'a>) -> Option<S>,
+        S: Into<Cow<'a, str>>,
     {
         self.search_non_overlapping(text, threshold)
-            .replace(text, callback)
+            .replace(callback)
     }
 
     /// Strip any leading fuzzy‐matched prefix from `haystack` using the given

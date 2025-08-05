@@ -1,4 +1,5 @@
 use crate::{FuzzyMatch, FuzzyMatches, Segment, UniqueId};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 impl<'a> FuzzyMatches<'a> {
@@ -95,27 +96,41 @@ impl<'a> FuzzyMatches<'a> {
     }
 
     /// Performs a **fuzzy** find-and-replace using the current match list.
-    /// Replacements are applied left-to-right, skipping overlaps (since the
-    /// collection is expected to be already filtered for non-overlap if desired).
+    /// You may return either a borrowed `&str` or an owned `String` from your callback.
     ///
-    /// The `callback` is invoked for each match; if it returns `Some(repl)`, the
-    /// match span is replaced with `repl`, otherwise the original matched text
-    /// is preserved.
+    /// # Parameters
+    ///
+    /// - `callback`: `Fn(&FuzzyMatch<'a>) -> Option<Cow<'a, str>>`.
+    ///    - Return `Some(Cow::Borrowed("foo"))` to substitute with a `&'static` or haystack slice.
+    ///    - Return `Some(Cow::Owned(my_string))` to substitute with a freshly-allocated `String`.
+    ///    - Return `None` to keep the original matched text.
+    ///
+    /// # Returns
+    ///
+    /// A new `String` with each fuzzy match replaced according to your callback.
     #[must_use]
-    pub fn replace<'b, F>(&self, text: &str, callback: F) -> String
+    pub fn replace<F, S>(&self, callback: F) -> String
     where
-        F: Fn(&FuzzyMatch) -> Option<&'b str>,
+        F: Fn(&FuzzyMatch<'a>) -> Option<S>,
+        S: Into<Cow<'a, str>>,
     {
         let mut result = String::new();
         let mut last = 0;
+
         for matched in &self.inner {
             if matched.start >= last {
-                result.push_str(&text[last..matched.start]);
+                // append the slice between the end of the last match and the start of this one
+                result.push_str(&self.haystack[last..matched.start]);
                 last = matched.end;
-                result.push_str(callback(matched).unwrap_or(matched.text));
+
+                // callback may return either borrowed or owned string
+                match callback(matched) {
+                    Some(cow) => result.push_str(&cow.into()),
+                    None => result.push_str(matched.text),
+                }
             }
         }
-        result.push_str(&text[last..]);
+        result.push_str(&self.haystack[last..]);
         result
     }
 
@@ -328,5 +343,37 @@ impl<'a> FuzzyMatches<'a> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    /// Filters the fuzzy matches by a predicate, returning a new `FuzzyMatches`
+    /// containing only those matches for which the predicate returns `true`.
+    ///
+    /// # Parameters
+    /// - `pred`: A closure `Fn(&FuzzyMatch<'a>) -> bool` applied to each match.
+    ///
+    /// # Returns
+    /// A `FuzzyMatches<'a>` with only the matches that satisfy `pred`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyMatch};
+    ///
+    /// let engine = FuzzyAhoCorasickBuilder::new()
+    ///     .fuzzy(FuzzyLimits::new().edits(1))
+    ///     .case_insensitive(true)
+    ///     .build(["ipsum", "lorem"]);
+    ///
+    /// assert_eq!(engine.search_non_overlapping("ipsum and l0rem", 0.5)
+    ///     .filter(|m| m.text.contains("0"))
+    ///     .replace(|m| Some(format!("**{}**", m.text))), "ipsum and **l0rem**");
+    /// ```
+    #[must_use]
+    pub fn filter<F>(&mut self, pred: F) -> &mut Self
+    where
+        F: Fn(&FuzzyMatch<'a>) -> bool,
+    {
+        self.inner.retain(pred);
+        self
     }
 }
