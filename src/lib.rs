@@ -710,4 +710,47 @@ impl FuzzyAhoCorasick {
         self.search_non_overlapping(haystack, threshold)
             .strip_postfix()
     }
+
+    /// Split `haystack` into unmatched substrings by treating each fuzzy match
+    /// (above the given `threshold`) as a separator.
+    ///
+    /// # Behavior
+    ///
+    /// - Performs a non-overlapping fuzzy search over `haystack` using
+    ///   [`search_non_overlapping`].
+    /// - Delegates to the `split()` method on the resulting `FuzzyMatches`.
+    /// - Produces one `String` per unmatched segment in order, including empty
+    ///   segments if matches occur at the very start or end.
+    ///
+    /// # Parameters
+    ///
+    /// - `haystack`: The input text to split on fuzzy matches.
+    /// - `threshold`: A similarity cutoff (`0.0..=1.0`); only matches with
+    ///   a score ≥ `threshold` are treated as separators.
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<String>` containing the parts of `haystack` between each fuzzy match.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+    ///
+    /// let engine = FuzzyAhoCorasickBuilder::new()
+    ///     .fuzzy(FuzzyLimits::new().edits(1))
+    ///     .case_insensitive(true)
+    ///     .build(["FOO", "BAR"]);
+    ///
+    /// let parts: Vec<String> = engine.split("xxFo0yyBAARzz", 0.8).collect();
+    /// assert_eq!(parts, vec!["xx", "yy", "zz"]);
+    /// ```
+    #[must_use]
+    pub fn split<'a>(
+        &'a self,
+        haystack: &'a str,
+        threshold: f32,
+    ) -> impl Iterator<Item = String> + 'a {
+        self.search_non_overlapping(haystack, threshold).split()
+    }
 }

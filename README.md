@@ -159,6 +159,33 @@ fn main() {
 }
 ```
 
+### Splitting on Fuzzy Matches
+
+You can treat each fuzzy match as a delimiter and collect the unmatched pieces:
+
+- **`FuzzyMatches::split()`**  
+  Splits the already‐segmented stream, returning a `Vec<String>` of all `Unmatched` parts (including empty ones if
+  matches touch the ends).
+
+- **`FuzzyAhoCorasick::split(haystack, threshold)`**  
+  Convenience: runs `search_non_overlapping(haystack, threshold)` and immediately calls `split()` on the result.
+
+**Example**
+
+```rust
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+fn main() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["FOO", "BAR"]);
+
+    // Treat each fuzzy match (≥0.8) as a separator:
+    let parts = engine.split("xxFOOyyBARzz", 0.8);
+    assert_eq!(parts, vec!["xx", "yy", "zz"]);
+}
+```
+
 ### Post-Processing Utilities
 
 Once you have a `FuzzyMatches` (for example, from `search_non_overlapping`), these handy methods let you trim or
@@ -231,6 +258,7 @@ Distributed under the **MIT License**. See `LICENSE` for details.
 
 ## Acknowledgements
 
-Based on the paper: *Fuzzified Aho–Corasick Search Automata* by Z. Horák, V. Snášel, A. Abraham, and A. E. Hassanien.
-See [`ias10_horak.pdf`](DOCS/ias10_horak.pdf).
+Based on a research paper — [**Fuzzified Aho–Corasick Search Automata**](DOCS/ias10_horak.pdf) by Z. Horák, V. Snášel,
+A. Abraham, and A. E. Hassanien.
+
 

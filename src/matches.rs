@@ -238,6 +238,63 @@ impl<'a> FuzzyMatches<'a> {
         result
     }
 
+    /// Splits the sequence of segments into a vector of unmatched substrings,
+    /// using each fuzzy‐matched segment as a delimiter.
+    ///
+    /// # Behavior
+    ///
+    /// - Iterates through `segment_iter()`, which yields `Segment::Matched` and `Segment::Unmatched`.
+    /// - On each `Segment::Matched`, pushes the current buffer into the result `Vec<String>` and resets it.
+    /// - On each `Segment::Unmatched(u)`, appends `u.text` to the current buffer.
+    /// - After processing all segments, pushes any remaining buffer (which may be empty).
+    ///
+    /// # Returns
+    ///
+    /// A `Vec<String>` containing all the unmatched pieces of the original text,
+    /// in order, split at each fuzzy match.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+    /// let engine = FuzzyAhoCorasickBuilder::new()
+    ///     .fuzzy(FuzzyLimits::new().edits(1))
+    ///     .case_insensitive(true)
+    ///     .build(["FOO", "BAR"]);
+    ///
+    /// let parts: Vec<String> = engine
+    ///     .search_non_overlapping("xxFoOyyBAARzz", 0.8)
+    ///     .split()
+    ///     .collect();
+    ///
+    /// assert_eq!(parts, vec![
+    ///     "xx".to_string(),
+    ///     "yy".to_string(),
+    ///     "zz".to_string(),
+    /// ]);
+    /// ```
+    #[must_use]
+    pub fn split(self) -> impl Iterator<Item = String> + 'a {
+        let mut segments = self.segment_iter();
+        let mut buf = String::new();
+        let mut done = false;
+        std::iter::from_fn(move || {
+            if done {
+                return None;
+            }
+            while let Some(segment) = segments.next() {
+                match segment {
+                    Segment::Unmatched(u) => buf.push_str(u.text),
+                    Segment::Matched(_) => {
+                        return Some(std::mem::take(&mut buf));
+                    }
+                }
+            }
+            done = true;
+            Some(std::mem::take(&mut buf))
+        })
+    }
+
     /// Returns an iterator over immutable references to the contained [`FuzzyMatch`] items.
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = &FuzzyMatch<'a>> {
