@@ -345,6 +345,40 @@ impl<'a> FuzzyMatches<'a> {
         self.inner.is_empty()
     }
 
+    /// Retains only the fuzzy matches for which the predicate returns `true`,
+    /// removing all others in place.
+    ///
+    /// # Parameters
+    ///
+    /// - `pred`: A closure `Fn(&FuzzyMatch<'a>) -> bool` that tests each match.
+    ///   Only matches where `pred` returns `true` will be kept.
+    ///
+    /// # Returns
+    ///
+    /// A mutable reference to `self`, allowing method chaining.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+    ///
+    /// let engine = FuzzyAhoCorasickBuilder::new()
+    ///     .build(["rust", "rustacean"]);
+    ///
+    /// let mut matches = engine.search_non_overlapping("rustacean and rust", 0.8);
+    /// // Keep only matches of the exact word "rust"
+    /// matches.retain(|m| m.pattern_index == 0);
+    ///
+    /// assert!(matches.iter().all(|m| m.pattern_index == 0));
+    /// ```
+    pub fn retain<F>(&mut self, pred: F) -> &mut Self
+    where
+        F: Fn(&FuzzyMatch<'a>) -> bool,
+    {
+        self.inner.retain(pred);
+        self
+    }
+
     /// Filters the fuzzy matches by a predicate, returning a new `FuzzyMatches`
     /// containing only those matches for which the predicate returns `true`.
     ///
@@ -369,11 +403,71 @@ impl<'a> FuzzyMatches<'a> {
     ///     .replace(|m| Some(format!("**{}**", m.text))), "ipsum and **l0rem**");
     /// ```
     #[must_use]
-    pub fn filter<F>(&mut self, pred: F) -> &mut Self
+    pub fn filter<F>(&self, pred: F) -> FuzzyMatches<'a>
     where
         F: Fn(&FuzzyMatch<'a>) -> bool,
     {
-        self.inner.retain(pred);
-        self
+        let inner = self.inner.iter().filter(|m| pred(m)).cloned().collect();
+
+        Self {
+            haystack: self.haystack,
+            inner,
+        }
+    }
+
+    /// Returns the byte offsets of every fuzzy match in the original haystack.
+    ///
+    /// # Behavior
+    /// - Iterates over all matches in `self.inner`.
+    /// - For each `FuzzyMatch`, collects its `(start, end)` byte indices.
+    ///
+    /// # Returns
+    /// A `Vec<(usize, usize)>` where each tuple is the `(start, end)` range in
+    /// the original input string corresponding to a match.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+    ///
+    /// let engine = FuzzyAhoCorasickBuilder::new()
+    ///     .fuzzy(FuzzyLimits::new().edits(1))
+    ///     .case_insensitive(true)
+    ///     .build(["HELLO", "WORLD"]);
+    ///
+    /// let matches = engine.search_non_overlapping("H3llo W0rld!", 0.8);
+    /// // Suppose "H3llo" spans bytes 0..5 and "W0rld" spans 6..11
+    /// assert_eq!(matches.matched_spans(), vec![(0, 5), (6, 11)]);
+    /// ```
+    #[must_use]
+    pub fn matched_spans(&self) -> Vec<(usize, usize)> {
+        self.inner.iter().map(|m| (m.start, m.end)).collect()
+    }
+
+    /// Returns the actual substrings of each fuzzy match, in order.
+    ///
+    /// # Behavior
+    /// - Iterates over all matches in `self.inner`.
+    /// - For each `FuzzyMatch`, extracts its `.text` slice.
+    ///
+    /// # Returns
+    /// A `Vec<&'a str>` containing the matched substrings from the haystack.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+    ///
+    /// let engine = FuzzyAhoCorasickBuilder::new()
+    ///     .fuzzy(FuzzyLimits::new().edits(1))
+    ///     .case_insensitive(true)
+    ///     .build(["HELLO", "WORLD"]);
+    ///
+    /// let matches = engine.search_non_overlapping("H3llo W0rld!", 0.8);
+    /// assert_eq!(matches.matched_strings(), vec!["H3llo", "W0rld"]);
+    /// ```
+    #[must_use]
+    pub fn matched_strings(&self) -> Vec<&'a str> {
+        self.inner.iter().map(|m| m.text).collect()
     }
 }
