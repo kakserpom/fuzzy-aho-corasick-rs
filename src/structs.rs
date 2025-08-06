@@ -375,6 +375,24 @@ pub enum Segment<'a> {
     Matched(FuzzyMatch<'a>),
     Unmatched(UnmatchedSegment<'a>),
 }
+impl<'a> Segment<'a> {
+    #[must_use]
+    pub fn matched(&'a self) -> Option<&'a FuzzyMatch<'a>> {
+        if let Segment::Matched(matched) = self {
+            Some(&matched)
+        } else {
+            None
+        }
+    }
+    #[must_use]
+    pub fn unmatched(&'a self) -> Option<&'a UnmatchedSegment<'a>> {
+        if let Segment::Unmatched(unmatched) = self {
+            Some(&unmatched)
+        } else {
+            None
+        }
+    }
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnmatchedSegment<'a> {
     /// Inclusive start byte index.
