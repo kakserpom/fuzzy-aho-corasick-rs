@@ -3,7 +3,6 @@
 mod builder;
 mod matches;
 mod replacer;
-mod segment;
 pub mod structs;
 #[cfg(test)]
 mod tests;
@@ -758,5 +757,22 @@ impl FuzzyAhoCorasick {
         threshold: f32,
     ) -> impl Iterator<Item = String> + 'a {
         self.search_non_overlapping(haystack, threshold).split()
+    }
+
+    /// Returns an **iterator** that yields interleaving [`Segment::Matched`]
+    /// [`Segment::Unmatched`] items for the given text.
+    pub fn segment_iter<'a>(
+        &'a self,
+        haystack: &'a str,
+        threshold: f32,
+    ) -> impl Iterator<Item = Segment<'a>> {
+        self.search_non_overlapping(haystack, threshold)
+            .segment_iter()
+    }
+    /// Convenience wrapper around [`segment_iter`](Self::segment_iter).
+    #[must_use]
+    pub fn segment_text(&self, haystack: &str, threshold: f32) -> String {
+        self.search_non_overlapping(haystack, threshold)
+            .segment_text()
     }
 }
