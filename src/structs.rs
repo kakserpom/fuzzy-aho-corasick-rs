@@ -339,6 +339,22 @@ impl<'a> From<(&'a str, f32, usize)> for Pattern {
     }
 }
 
+impl<'a> From<(String, f32, usize)> for Pattern {
+    fn from((s, w, max_edits): (String, f32, usize)) -> Self {
+        Pattern {
+            grapheme_len: s.graphemes(true).count(),
+            pattern: s,
+            weight: w,
+            limits: Some(
+                FuzzyLimits::default()
+                    .edits(max_edits as NumEdits)
+                    .finalize(),
+            ),
+            custom_unique_id: None,
+        }
+    }
+}
+
 /// Result returned by [`FuzzyAhoCorasick::search`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct FuzzyMatch<'a> {
