@@ -1,7 +1,9 @@
 /* -------------------------------------------------------------------------
  *  Tests
  * ---------------------------------------------------------------------- */
-use crate::{FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, Pattern};
+use crate::{
+    FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, Pattern,
+};
 
 fn make_engine() -> FuzzyAhoCorasick {
     FuzzyAhoCorasickBuilder::new()
@@ -414,5 +416,69 @@ fn test_split() {
             .split("ZZZLrEMISuMAAA", 0.8)
             .collect::<Vec<_>>(),
         ["ZZZ", "", "AAA"]
+    );
+}
+
+/// Test that fail links are correctly preserved after minimization.
+/// Fail links should point to valid nodes and not create cycles.
+#[test]
+fn test_fail_links_preserved() {
+    // Build a simple automaton with patterns to test fail links
+    let patterns = vec![
+        Pattern {
+            grapheme_len: 2,
+            pattern: "ab".to_string(),
+            custom_unique_id: Some(0),
+            weight: 1.0,
+            limits: None,
+        },
+        Pattern {
+            grapheme_len: 2,
+            pattern: "ac".to_string(),
+            custom_unique_id: Some(1),
+            weight: 0.8,
+            limits: None,
+        },
+    ];
+
+    // Build with minimization enabled
+    let ac = FuzzyAhoCorasickBuilder::default()
+        .minimize_lambda(10, 0.3) // Max error 0.3 for words up to 10 symbols
+        .build(patterns);
+
+    // Verify: all fail links are within bounds
+    for (i, node) in ac.nodes.iter().enumerate() {
+        assert!(
+            node.fail < ac.nodes.len(),
+            "Fail link from node {} points out of bounds: {}",
+            i,
+            node.fail
+        );
+    }
+
+    // Verify: no infinite loops in fail chain
+    for i in 0..ac.nodes.len() {
+        let mut visited = vec![false; ac.nodes.len()];
+        let mut current = i;
+        // Traverse fail chain up to N steps (N = number of nodes)
+        for _ in 0..ac.nodes.len() + 1 {
+            if visited[current] {
+                panic!(
+                    "Cycle detected in fail chain starting from node {}. Cycle at node {}.",
+                    i, current
+                );
+            }
+            visited[current] = true;
+            if ac.nodes[current].fail == current {
+                break; // self-loop is acceptable (e.g., root)
+            }
+            current = ac.nodes[current].fail;
+        }
+    }
+
+    // Optional: check that root's fail points to itself
+    assert_eq!(
+        ac.nodes[0].fail, 0,
+        "Root node's fail should point to itself"
     );
 }

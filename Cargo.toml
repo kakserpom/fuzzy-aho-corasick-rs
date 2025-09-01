@@ -6,6 +6,7 @@ license = "MIT"
 description = "Aho–Corasick automaton with fuzzy matching"
 repository = "https://github.com/kakserpom/fuzzy-aho-corasick-rs"
 [dependencies]
+itertools = "0.14.0"
 unicode-segmentation = "1.12"
 [dev-dependencies]
 criterion = "0.6"

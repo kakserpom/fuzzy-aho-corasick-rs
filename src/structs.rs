@@ -1,4 +1,5 @@
 use crate::PatternIndex;
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
 use unicode_segmentation::UnicodeSegmentation;
@@ -24,9 +25,8 @@ pub(crate) struct State {
 #[derive(Clone, Debug)]
 pub(crate) struct Node {
     pub(crate) pattern_index: Option<PatternIndex>,
-    pub(crate) epsilon: Option<usize>,
     /// Outgoing edges keyed by the next character.
-    pub(crate) transitions: BTreeMap<String, usize>,
+    pub(crate) transitions: BTreeMap<String, Vec<usize>>,
     /// Failure link (classic AC fallback state).
     pub(crate) fail: usize,
     /// All patterns that end in this state.
@@ -164,7 +164,6 @@ impl Node {
             parent,
             #[cfg(debug_assertions)]
             grapheme: grapheme.map(str::to_string),
-            epsilon: None,
         }
     }
 }
@@ -176,7 +175,7 @@ pub struct FuzzyAhoCorasick {
     /// Patterns
     pub(crate) patterns: Vec<Pattern>,
     /// Similarity map
-    pub(crate) similarity: &'static BTreeMap<(char, char), f32>,
+    pub(crate) similarity: Cow<'static, BTreeMap<(char, char), f32>>,
     /// Limits of errors
     pub(crate) limits: Option<FuzzyLimits>,
     /// Weight
