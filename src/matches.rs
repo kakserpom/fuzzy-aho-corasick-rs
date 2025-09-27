@@ -1,4 +1,4 @@
-use crate::{FuzzyMatch, FuzzyMatches, Segment, UniqueId, UnmatchedSegment};
+use crate::{FuzzyMatch, FuzzyMatches, PatternIndex, Segment, UniqueId, UnmatchedSegment};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 impl<'a> FuzzyMatches<'a> {
@@ -288,24 +288,17 @@ impl<'a> FuzzyMatches<'a> {
     /// ]);
     /// ```
     #[must_use]
-    pub fn split(self) -> impl Iterator<Item = String> + 'a {
+    pub fn split(self) -> impl Iterator<Item = &'a str> + 'a {
         let mut segments = self.segment_iter();
-        let mut buf = String::new();
-        let mut done = false;
         std::iter::from_fn(move || {
-            if done {
-                return None;
-            }
             while let Some(segment) = segments.next() {
-                match segment {
-                    Segment::Unmatched(u) => buf.push_str(u.text),
-                    Segment::Matched(_) => {
-                        return Some(std::mem::take(&mut buf));
+                {
+                    if let Segment::Unmatched(u) = segment {
+                        return Some(u.text);
                     }
                 }
             }
-            done = true;
-            Some(std::mem::take(&mut buf))
+            None
         })
     }
 

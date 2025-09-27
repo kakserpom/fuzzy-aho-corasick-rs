@@ -755,7 +755,7 @@ impl FuzzyAhoCorasick {
         &'a self,
         haystack: &'a str,
         threshold: f32,
-    ) -> impl Iterator<Item = String> + 'a {
+    ) -> impl Iterator<Item = &'a str> + 'a {
         self.search_non_overlapping(haystack, threshold).split()
     }
 
