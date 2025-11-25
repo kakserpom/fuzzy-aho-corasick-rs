@@ -276,15 +276,15 @@ impl<'a> FuzzyMatches<'a> {
     ///     .case_insensitive(true)
     ///     .build(["FOO", "BAR"]);
     ///
-    /// let parts: Vec<String> = engine
+    /// let parts: Vec<&str> = engine
     ///     .search_non_overlapping("xxFoOyyBAARzz", 0.8)
     ///     .split()
     ///     .collect();
     ///
     /// assert_eq!(parts, vec![
-    ///     "xx".to_string(),
-    ///     "yy".to_string(),
-    ///     "zz".to_string(),
+    ///     "xx",
+    ///     "yy",
+    ///     "zz"
     /// ]);
     /// ```
     #[must_use]

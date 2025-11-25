@@ -413,6 +413,6 @@ fn test_split() {
             .build(["LOREM", "IPSUM"])
             .split("ZZZLrEMISuMAAA", 0.8)
             .collect::<Vec<_>>(),
-        ["ZZZ", "", "AAA"]
+        ["ZZZ", "AAA"]
     );
 }

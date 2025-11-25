@@ -747,7 +747,7 @@ impl FuzzyAhoCorasick {
     ///     .case_insensitive(true)
     ///     .build(["FOO", "BAR"]);
     ///
-    /// let parts: Vec<String> = engine.split("xxFo0yyBAARzz", 0.8).collect();
+    /// let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", 0.8).collect();
     /// assert_eq!(parts, vec!["xx", "yy", "zz"]);
     /// ```
     #[must_use]
