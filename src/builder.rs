@@ -270,7 +270,7 @@ static DEFAULT_SIMILARITY_MAP: LazyLock<BTreeMap<(char, char), f32>> = LazyLock:
     for &a in &vowels {
         for &b in &vowels {
             if a != b {
-                map.insert((a, b), 0.8);
+                map.insert((a, b), 0.6);
             }
         }
     }
@@ -278,11 +278,11 @@ static DEFAULT_SIMILARITY_MAP: LazyLock<BTreeMap<(char, char), f32>> = LazyLock:
     for &a in &consonants {
         for &b in &consonants {
             if a != b {
-                map.insert((a, b), 0.6);
+                map.insert((a, b), 0.4);
             }
         }
     }
-    map.insert(('o', '0'), 0.8);
-    map.insert(('0', 'o'), 0.8);
+    map.insert(('o', '0'), 0.6);
+    map.insert(('0', 'o'), 0.6);
     map
 });
