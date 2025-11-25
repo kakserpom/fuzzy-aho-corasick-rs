@@ -115,7 +115,7 @@ pub struct FuzzyPenalties {
 
 impl Default for FuzzyPenalties {
     fn default() -> Self {
-        let m = 1.;
+        let m = 1.3;
         Self {
             substitution: 1. * m,
             insertion: 0.4 * m,

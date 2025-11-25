@@ -427,7 +427,7 @@ impl<'a> FuzzyMatches<'a> {
     ///     .case_insensitive(true)
     ///     .build(["HELLO", "WORLD"]);
     ///
-    /// let matches = engine.search_non_overlapping("H3llo W0rld!", 0.8);
+    /// let matches = engine.search_non_overlapping("H3llo W0rld!", 0.7);
     /// // Suppose "H3llo" spans bytes 0..5 and "W0rld" spans 6..11
     /// assert_eq!(matches.matched_spans(), vec![(0, 5), (6, 11)]);
     /// ```
@@ -455,7 +455,7 @@ impl<'a> FuzzyMatches<'a> {
     ///     .case_insensitive(true)
     ///     .build(["HELLO", "WORLD"]);
     ///
-    /// let matches = engine.search_non_overlapping("H3llo W0rld!", 0.8);
+    /// let matches = engine.search_non_overlapping("H3llo W0rld!", 0.7);
     /// assert_eq!(matches.matched_strings(), vec!["H3llo", "W0rld"]);
     /// ```
     #[must_use]
