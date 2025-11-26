@@ -117,7 +117,7 @@ impl Default for FuzzyPenalties {
     fn default() -> Self {
         let m = 1.3;
         Self {
-            substitution: 1.5 * m,
+            substitution: 1.1 * m,
             insertion: 0.4 * m,
             deletion: 0.7 * m,
             swap: 0.4 * m,

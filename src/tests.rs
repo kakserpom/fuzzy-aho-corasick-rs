@@ -112,7 +112,7 @@ fn test_extra_letter() {
 #[test]
 fn test_missing_letter() {
     let fac = make_engine();
-    let result = fac.search("saddmhussein", 0.3);
+    let result = fac.search("saddmhussin", 0.3);
     println!("{:?}", result);
     assert!(
         result
