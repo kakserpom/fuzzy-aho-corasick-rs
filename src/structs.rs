@@ -1,9 +1,36 @@
 use crate::PatternIndex;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fmt;
+use std::hash::{BuildHasherDefault, Hasher};
 use unicode_segmentation::UnicodeSegmentation;
 
-pub type NumEdits = usize;
+/// A fast hasher for string keys - uses FxHash algorithm
+#[derive(Default)]
+pub struct FxHasher {
+    hash: u64,
+}
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        const K: u64 = 0x517c_c1b7_2722_0a95;
+        for &byte in bytes {
+            self.hash = (self.hash.rotate_left(5) ^ u64::from(byte)).wrapping_mul(K);
+        }
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+}
+
+pub type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+
+/// Edit count type - u8 is sufficient for practical edit distances (max 255)
+pub type NumEdits = u8;
+
+/// Internal search state
 #[derive(Clone)]
 pub(crate) struct State {
     pub(crate) node: usize,
@@ -26,7 +53,7 @@ pub(crate) struct Node {
     pub(crate) pattern_index: Option<PatternIndex>,
     pub(crate) epsilon: Option<usize>,
     /// Outgoing edges keyed by the next character.
-    pub(crate) transitions: BTreeMap<String, usize>,
+    pub(crate) transitions: FxHashMap<String, usize>,
     /// Failure link (classic AC fallback state).
     pub(crate) fail: usize,
     /// All patterns that end in this state.
@@ -156,7 +183,7 @@ impl Node {
     ) -> Node {
         Self {
             pattern_index: None,
-            transitions: BTreeMap::new(),
+            transitions: FxHashMap::default(),
             fail: 0,
             output: Vec::new(),
             weight: 0.0,
@@ -176,13 +203,17 @@ pub struct FuzzyAhoCorasick {
     /// Patterns
     pub(crate) patterns: Vec<Pattern>,
     /// Similarity map
-    pub(crate) similarity: &'static BTreeMap<(char, char), f32>,
+    pub(crate) similarity: &'static FxHashMap<(char, char), f32>,
     /// Limits of errors
     pub(crate) limits: Option<FuzzyLimits>,
     /// Weight
     pub(crate) penalties: FuzzyPenalties,
     /// Case insensitivity
     pub(crate) case_insensitive: bool,
+    /// Maximum pattern length in graphemes (for early pruning)
+    pub(crate) max_pattern_grapheme_len: usize,
+    /// Beam width for search - limits state explosion (None = unlimited)
+    pub(crate) beam_width: Option<usize>,
 }
 
 #[allow(clippy::missing_fields_in_debug)]

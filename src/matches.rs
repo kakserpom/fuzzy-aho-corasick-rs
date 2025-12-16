@@ -1,4 +1,4 @@
-use crate::{FuzzyMatch, FuzzyMatches, PatternIndex, Segment, UniqueId, UnmatchedSegment};
+use crate::{FuzzyMatch, FuzzyMatches, Segment, UniqueId, UnmatchedSegment};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 impl<'a> FuzzyMatches<'a> {

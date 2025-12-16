@@ -416,3 +416,35 @@ fn test_split() {
         ["ZZZ", "AAA"]
     );
 }
+
+#[test]
+fn test_beam_search() {
+    // Test that beam search still finds matches (may find fewer with very small beam)
+    let engine_no_beam = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2))
+        .case_insensitive(true)
+        .build(["saddam", "hussein"]);
+
+    let engine_with_beam = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2))
+        .case_insensitive(true)
+        .beam_width(100)
+        .build(["saddam", "hussein"]);
+
+    let text = "saddamhusein";
+
+    let results_no_beam = engine_no_beam.search_non_overlapping(text, 0.7);
+    let results_with_beam = engine_with_beam.search_non_overlapping(text, 0.7);
+
+    // Both should find matches
+    assert!(!results_no_beam.is_empty(), "No beam should find matches");
+    assert!(
+        !results_with_beam.is_empty(),
+        "Beam search should also find matches"
+    );
+
+    // Check that beam search found the key patterns
+    assert!(results_with_beam
+        .iter()
+        .any(|m| m.pattern.as_str() == "saddam"));
+}

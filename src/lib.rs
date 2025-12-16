@@ -10,7 +10,7 @@ mod tests;
 pub use builder::FuzzyAhoCorasickBuilder;
 pub use replacer::FuzzyReplacer;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
 pub use structs::*;
@@ -34,6 +34,17 @@ impl FuzzyAhoCorasick {
         self.nodes[node]
             .pattern_index
             .and_then(|i| self.patterns.get(i).and_then(|p| p.limits.as_ref()))
+    }
+
+    /// Fast path similarity lookup with inline handling of common cases.
+    #[inline(always)]
+    fn get_similarity(&self, a: char, b: char) -> f32 {
+        // Fast path: exact match
+        if a == b {
+            return 1.0;
+        }
+        // Look up in similarity table
+        *self.similarity.get(&(a, b)).unwrap_or(&0.0)
     }
 
     /// Check ahead whether an insertion would stay within the allowed limits.
@@ -183,9 +194,12 @@ impl FuzzyAhoCorasick {
             })
             .collect();
 
-        let mut best: BTreeMap<(usize, usize, usize), FuzzyMatch> = BTreeMap::new();
+        // Use HashMap for O(1) lookup instead of BTreeMap's O(log n)
+        let mut best: HashMap<(usize, usize, usize), FuzzyMatch> =
+            HashMap::with_capacity(self.patterns.len() * 4);
 
-        let mut queue: Vec<State> = Vec::with_capacity(64);
+        // Pre-allocate queue - size based on beam width or a small default
+        let mut queue: Vec<State> = Vec::with_capacity(self.beam_width.unwrap_or(64));
 
         trace!(
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
@@ -214,6 +228,16 @@ impl FuzzyAhoCorasick {
 
             let mut q_idx = 0;
             while q_idx < queue.len() {
+                // Beam pruning: if queue grows too large, keep only best candidates
+                if let Some(bw) = self.beam_width {
+                    let remaining = queue.len() - q_idx;
+                    if remaining > bw * 2 {
+                        // Sort remaining items by penalties (lowest first = best candidates)
+                        queue[q_idx..].sort_by(|a, b| a.penalties.total_cmp(&b.penalties));
+                        // Keep only beam_width items from q_idx onward
+                        queue.truncate(q_idx + bw);
+                    }
+                }
                 let State {
                     node,
                     j,
@@ -231,10 +255,13 @@ impl FuzzyAhoCorasick {
                 let notes = queue[q_idx].notes.clone();
                 q_idx += 1;
 
-                /*trace!(
-                    "visit: node={} j={} span=({}->{}) score={:.3} edits={}",
-                    node, j, matched_start, matched_end, score, edits
-                );*/
+                // Early pruning: check if this state can possibly produce a match
+                // above the threshold. Use the maximum pattern length as the best case.
+                let max_possible_similarity = (self.max_pattern_grapheme_len as f32 - penalties)
+                    / self.max_pattern_grapheme_len as f32;
+                if max_possible_similarity < similarity_threshold {
+                    continue;
+                }
 
                 let Node {
                     output,
@@ -346,7 +373,7 @@ impl FuzzyAhoCorasick {
                             substitutions,
                         ) {
                             // substitution
-                            let sim = *self.similarity.get(&(g_ch, current_ch)).unwrap_or(&0.);
+                            let sim = self.get_similarity(g_ch, current_ch);
                             let penalty = self.penalties.substitution * (1.0 - sim);
 
                             trace!(
