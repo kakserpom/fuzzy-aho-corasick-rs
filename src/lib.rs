@@ -574,6 +574,27 @@ impl FuzzyAhoCorasick {
         matches
     }
 
+    /// Convenience wrapper over `search_unsorted` that applies a coverage-weighted sort.
+    /// Uses `similarity * text.len()` to prefer matches that cover more text.
+    ///
+    /// # Parameters
+    /// - `haystack`: the input text to search in.
+    /// - `similarity_threshold`: minimum similarity threshold for candidates.
+    ///
+    /// # Returns
+    /// `FuzzyMatches` with matches sorted by coverage-weighted score.
+    #[inline]
+    #[must_use]
+    pub fn search_coverage_weighted<'a>(
+        &'a self,
+        haystack: &'a str,
+        similarity_threshold: f32,
+    ) -> FuzzyMatches<'a> {
+        let mut matches = self.search_unsorted(haystack, similarity_threshold);
+        matches.coverage_weighted_sort();
+        matches
+    }
+
     /// Search that returns non-overlapping matches by delegating to
     /// `non_overlapping()` on the fully sorted (default) results. This will
     /// greedily select a set of matches such that their spans do not overlap,
@@ -614,6 +635,28 @@ impl FuzzyAhoCorasick {
         similarity_threshold: f32,
     ) -> FuzzyMatches<'a> {
         let mut matches = self.search(haystack, similarity_threshold);
+        matches.non_overlapping_unique();
+        matches
+    }
+
+    /// Like `search_non_overlapping_unique`, but uses coverage-weighted sorting.
+    /// This prefers matches that cover more text (similarity * text.len()),
+    /// which helps when short high-similarity matches would otherwise beat
+    /// longer patterns that match more of a word.
+    ///
+    /// # Parameters
+    /// - `haystack`: the input text to search in.
+    /// - `similarity_threshold`: minimum similarity threshold for candidates.
+    ///
+    /// # Returns
+    /// `FuzzyMatches` containing a non-overlapping, pattern-unique subset of matches.
+    #[must_use]
+    pub fn search_non_overlapping_unique_coverage_weighted<'a>(
+        &'a self,
+        haystack: &'a str,
+        similarity_threshold: f32,
+    ) -> FuzzyMatches<'a> {
+        let mut matches = self.search_coverage_weighted(haystack, similarity_threshold);
         matches.non_overlapping_unique();
         matches
     }

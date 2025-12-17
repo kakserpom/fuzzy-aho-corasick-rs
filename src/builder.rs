@@ -263,12 +263,57 @@ impl FuzzyAhoCorasickBuilder {
         // Build ASCII similarity table for fast lookups
         let ascii_similarity = Box::new(AsciiSimilarityTable::from_map(similarity));
 
+        // Compute effective limits: if no global limits are set but patterns have limits,
+        // derive a permissive global limit from the max of all pattern limits.
+        // This fixes the bug where deletions at non-final nodes were blocked.
+        let effective_limits = self.limits.or_else(|| {
+            let mut max_edits = None;
+            let mut max_insertions = None;
+            let mut max_deletions = None;
+            let mut max_substitutions = None;
+            let mut max_swaps = None;
+            let mut any_pattern_has_limits = false;
+
+            for p in &patterns {
+                if let Some(ref lim) = p.limits {
+                    any_pattern_has_limits = true;
+                    if let Some(e) = lim.edits {
+                        max_edits = Some(max_edits.unwrap_or(0).max(e));
+                    }
+                    if let Some(i) = lim.insertions {
+                        max_insertions = Some(max_insertions.unwrap_or(0).max(i));
+                    }
+                    if let Some(d) = lim.deletions {
+                        max_deletions = Some(max_deletions.unwrap_or(0).max(d));
+                    }
+                    if let Some(s) = lim.substitutions {
+                        max_substitutions = Some(max_substitutions.unwrap_or(0).max(s));
+                    }
+                    if let Some(sw) = lim.swaps {
+                        max_swaps = Some(max_swaps.unwrap_or(0).max(sw));
+                    }
+                }
+            }
+
+            if any_pattern_has_limits {
+                Some(FuzzyLimits {
+                    edits: max_edits,
+                    insertions: max_insertions,
+                    deletions: max_deletions,
+                    substitutions: max_substitutions,
+                    swaps: max_swaps,
+                })
+            } else {
+                None
+            }
+        });
+
         FuzzyAhoCorasick {
             nodes,
             patterns,
             similarity,
             ascii_similarity,
-            limits: self.limits,
+            limits: effective_limits,
             penalties: self.penalties,
             case_insensitive: self.case_insensitive,
             max_pattern_grapheme_len,

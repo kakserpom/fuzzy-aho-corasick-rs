@@ -31,6 +31,24 @@ impl<'a> FuzzyMatches<'a> {
         });
     }
 
+    /// Coverage-weighted ranking: uses `similarity² * pattern.len()` as primary criterion.
+    /// This prefers matches where longer patterns match well, but heavily penalizes
+    /// lower-similarity matches to avoid greedy over-matching.
+    /// Useful when short high-similarity matches should not beat longer good matches.
+    #[inline]
+    pub fn coverage_weighted_sort(&mut self) {
+        self.inner.sort_by(|left, right| {
+            // Use similarity squared to heavily penalize lower-similarity matches
+            // Use pattern length (not text length) to avoid preferring over-matched text
+            let left_score = left.similarity * left.similarity * left.pattern.len() as f32;
+            let right_score = right.similarity * right.similarity * right.pattern.len() as f32;
+            right_score
+                .total_cmp(&left_score)
+                .then_with(|| right.similarity.total_cmp(&left.similarity))
+                .then_with(|| left.start.cmp(&right.start))
+        });
+    }
+
     /// Retain a set of non-overlapping matches in place. Traverses in current
     /// order and keeps a match only if its span does not intersect any already
     /// accepted span. The kept matches are finally re-sorted by `start`.
