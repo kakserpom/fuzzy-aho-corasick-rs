@@ -1,4 +1,4 @@
-use crate::structs::FxHashMap;
+use crate::structs::{AsciiSimilarityTable, FxHashMap};
 use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyPenalties, FuzzyReplacer, Node, Pattern};
 use std::collections::VecDeque;
 use std::sync::LazyLock;
@@ -260,10 +260,14 @@ impl FuzzyAhoCorasickBuilder {
             nodes = reprs;
         }
 
+        // Build ASCII similarity table for fast lookups
+        let ascii_similarity = Box::new(AsciiSimilarityTable::from_map(similarity));
+
         FuzzyAhoCorasick {
             nodes,
             patterns,
             similarity,
+            ascii_similarity,
             limits: self.limits,
             penalties: self.penalties,
             case_insensitive: self.case_insensitive,

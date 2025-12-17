@@ -4,6 +4,48 @@ use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
 use unicode_segmentation::UnicodeSegmentation;
 
+/// Precomputed ASCII similarity lookup table for O(1) access.
+/// Index with [char1 as usize][char2 as usize] for ASCII chars < 128.
+#[derive(Clone)]
+pub struct AsciiSimilarityTable {
+    table: [[f32; 128]; 128],
+}
+
+impl AsciiSimilarityTable {
+    /// Build the ASCII lookup table from a similarity map.
+    #[must_use]
+    pub fn from_map(map: &FxHashMap<(char, char), f32>) -> Self {
+        let mut table = [[0.0f32; 128]; 128];
+
+        // Set diagonal to 1.0 (exact matches)
+        for i in 0..128 {
+            table[i][i] = 1.0;
+        }
+
+        // Fill from the similarity map
+        for (&(a, b), &sim) in map {
+            if (a as u32) < 128 && (b as u32) < 128 {
+                table[a as usize][b as usize] = sim;
+            }
+        }
+
+        Self { table }
+    }
+
+    /// Get similarity between two ASCII characters. Returns None for non-ASCII.
+    #[inline(always)]
+    pub fn get(&self, a: char, b: char) -> Option<f32> {
+        let a_idx = a as u32;
+        let b_idx = b as u32;
+        if a_idx < 128 && b_idx < 128 {
+            // SAFETY: bounds checked above
+            Some(unsafe { *self.table.get_unchecked(a_idx as usize).get_unchecked(b_idx as usize) })
+        } else {
+            None
+        }
+    }
+}
+
 /// A fast hasher for string keys - uses FxHash algorithm
 #[derive(Default)]
 pub struct FxHasher {
@@ -202,8 +244,10 @@ pub struct FuzzyAhoCorasick {
     pub(crate) nodes: Vec<Node>,
     /// Patterns
     pub(crate) patterns: Vec<Pattern>,
-    /// Similarity map
+    /// Similarity map (for non-ASCII fallback)
     pub(crate) similarity: &'static FxHashMap<(char, char), f32>,
+    /// Fast ASCII similarity lookup table
+    pub(crate) ascii_similarity: Box<AsciiSimilarityTable>,
     /// Limits of errors
     pub(crate) limits: Option<FuzzyLimits>,
     /// Weight

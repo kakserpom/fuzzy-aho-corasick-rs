@@ -37,13 +37,18 @@ impl FuzzyAhoCorasick {
     }
 
     /// Fast path similarity lookup with inline handling of common cases.
+    /// Uses precomputed ASCII table for O(1) lookup, falls back to HashMap for non-ASCII.
     #[inline(always)]
     fn get_similarity(&self, a: char, b: char) -> f32 {
         // Fast path: exact match
         if a == b {
             return 1.0;
         }
-        // Look up in similarity table
+        // Try ASCII fast path first (O(1) array lookup)
+        if let Some(sim) = self.ascii_similarity.get(a, b) {
+            return sim;
+        }
+        // Fall back to HashMap for non-ASCII characters
         *self.similarity.get(&(a, b)).unwrap_or(&0.0)
     }
 
