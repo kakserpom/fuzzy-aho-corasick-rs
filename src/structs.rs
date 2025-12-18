@@ -8,18 +8,19 @@ use unicode_segmentation::UnicodeSegmentation;
 /// Index with [char1 as usize][char2 as usize] for ASCII chars < 128.
 #[derive(Clone)]
 pub struct AsciiSimilarityTable {
-    table: [[f32; 128]; 128],
+    table: Box<[[f32; 128]; 128]>,
 }
 
 impl AsciiSimilarityTable {
     /// Build the ASCII lookup table from a similarity map.
     #[must_use]
+    #[allow(clippy::large_stack_arrays)]
     pub fn from_map(map: &FxHashMap<(char, char), f32>) -> Self {
-        let mut table = [[0.0f32; 128]; 128];
+        let mut table = Box::new([[0.0f32; 128]; 128]);
 
         // Set diagonal to 1.0 (exact matches)
-        for i in 0..128 {
-            table[i][i] = 1.0;
+        for (i, row) in table.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
 
         // Fill from the similarity map
@@ -33,7 +34,8 @@ impl AsciiSimilarityTable {
     }
 
     /// Get similarity between two ASCII characters. Returns None for non-ASCII.
-    #[inline(always)]
+    #[inline]
+    #[must_use]
     pub fn get(&self, a: char, b: char) -> Option<f32> {
         let a_idx = a as u32;
         let b_idx = b as u32;
@@ -46,7 +48,7 @@ impl AsciiSimilarityTable {
     }
 }
 
-/// A fast hasher for string keys - uses FxHash algorithm
+/// A fast hasher for string keys - uses `FxHash` algorithm
 #[derive(Default)]
 pub struct FxHasher {
     hash: u64,
@@ -398,33 +400,25 @@ impl From<(&String, f32)> for Pattern {
     }
 }
 
-impl<'a> From<(&'a str, f32, usize)> for Pattern {
-    fn from((s, w, max_edits): (&'a str, f32, usize)) -> Self {
+impl<'a> From<(&'a str, f32, NumEdits)> for Pattern {
+    fn from((s, w, max_edits): (&'a str, f32, NumEdits)) -> Self {
         Pattern {
             pattern: s.to_owned(),
             grapheme_len: s.graphemes(true).count(),
             weight: w,
-            limits: Some(
-                FuzzyLimits::default()
-                    .edits(max_edits as NumEdits)
-                    .finalize(),
-            ),
+            limits: Some(FuzzyLimits::default().edits(max_edits).finalize()),
             custom_unique_id: None,
         }
     }
 }
 
-impl<'a> From<(String, f32, usize)> for Pattern {
-    fn from((s, w, max_edits): (String, f32, usize)) -> Self {
+impl From<(String, f32, NumEdits)> for Pattern {
+    fn from((s, w, max_edits): (String, f32, NumEdits)) -> Self {
         Pattern {
             grapheme_len: s.graphemes(true).count(),
             pattern: s,
             weight: w,
-            limits: Some(
-                FuzzyLimits::default()
-                    .edits(max_edits as NumEdits)
-                    .finalize(),
-            ),
+            limits: Some(FuzzyLimits::default().edits(max_edits).finalize()),
             custom_unique_id: None,
         }
     }
@@ -470,7 +464,7 @@ impl<'a> Segment<'a> {
     #[must_use]
     pub fn matched(&'a self) -> Option<&'a FuzzyMatch<'a>> {
         if let Segment::Matched(matched) = self {
-            Some(&matched)
+            Some(matched)
         } else {
             None
         }
@@ -478,7 +472,7 @@ impl<'a> Segment<'a> {
     #[must_use]
     pub fn unmatched(&'a self) -> Option<&'a UnmatchedSegment<'a>> {
         if let Segment::Unmatched(unmatched) = self {
-            Some(&unmatched)
+            Some(unmatched)
         } else {
             None
         }

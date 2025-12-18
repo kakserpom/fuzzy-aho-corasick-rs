@@ -243,10 +243,10 @@ impl<'a> FuzzyMatches<'a> {
 
         for seg in self.segment_iter() {
             buf.push_back(seg);
-            if let Some(Segment::Unmatched(u)) = buf.back() {
-                if !u.text.trim().is_empty() {
-                    keep = buf.len();
-                }
+            if let Some(Segment::Unmatched(u)) = buf.back()
+                && !u.text.trim().is_empty()
+            {
+                keep = buf.len();
             }
         }
 
@@ -305,15 +305,12 @@ impl<'a> FuzzyMatches<'a> {
     ///     "zz"
     /// ]);
     /// ```
-    #[must_use]
     pub fn split(self) -> impl Iterator<Item = &'a str> + 'a {
         let mut segments = self.segment_iter();
         std::iter::from_fn(move || {
-            while let Some(segment) = segments.next() {
-                {
-                    if let Segment::Unmatched(u) = segment {
-                        return Some(u.text);
-                    }
+            for segment in segments.by_ref() {
+                if let Segment::Unmatched(u) = segment {
+                    return Some(u.text);
                 }
             }
             None

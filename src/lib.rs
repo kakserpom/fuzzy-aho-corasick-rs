@@ -37,8 +37,8 @@ impl FuzzyAhoCorasick {
     }
 
     /// Fast path similarity lookup with inline handling of common cases.
-    /// Uses precomputed ASCII table for O(1) lookup, falls back to HashMap for non-ASCII.
-    #[inline(always)]
+    /// Uses precomputed ASCII table for O(1) lookup, falls back to `HashMap` for non-ASCII.
+    #[inline]
     fn get_similarity(&self, a: char, b: char) -> f32 {
         // Fast path: exact match
         if a == b {
@@ -425,35 +425,34 @@ impl FuzzyAhoCorasick {
                         if let Some(&node2) = transitions
                             .get(b.as_ref())
                             .and_then(|&x| self.nodes[x].transitions.get(a.as_ref()))
-                        {
-                            if self.within_limits_swap_ahead(
+                            && self.within_limits_swap_ahead(
                                 self.get_node_limits(node2),
                                 edits,
                                 swaps,
-                            ) {
+                            )
+                        {
+                            #[cfg(debug_assertions)]
+                            let mut notes = notes.clone();
+                            #[cfg(debug_assertions)]
+                            notes.push(format!(
+                                "swap a:{a:?} b:{b:?} (swaps->{}, edits->{})",
+                                swaps + 1,
+                                edits + 1
+                            ));
+                            queue.push(State {
+                                node: node2,
+                                j: j + 2,
+                                matched_start,
+                                matched_end: j + 2,
+                                penalties: penalties + self.penalties.swap,
+                                edits: edits + 1,
+                                insertions,
+                                deletions,
+                                substitutions,
+                                swaps: swaps + 1,
                                 #[cfg(debug_assertions)]
-                                let mut notes = notes.clone();
-                                #[cfg(debug_assertions)]
-                                notes.push(format!(
-                                    "swap a:{a:?} b:{b:?} (swaps->{}, edits->{})",
-                                    swaps + 1,
-                                    edits + 1
-                                ));
-                                queue.push(State {
-                                    node: node2,
-                                    j: j + 2,
-                                    matched_start,
-                                    matched_end: j + 2,
-                                    penalties: penalties + self.penalties.swap,
-                                    edits: edits + 1,
-                                    insertions,
-                                    deletions,
-                                    substitutions,
-                                    swaps: swaps + 1,
-                                    #[cfg(debug_assertions)]
-                                    notes,
-                                });
-                            }
+                                notes,
+                            });
                         }
                     }
 
@@ -640,7 +639,7 @@ impl FuzzyAhoCorasick {
     }
 
     /// Like `search_non_overlapping_unique`, but uses coverage-weighted sorting.
-    /// This prefers matches that cover more text (similarity * text.len()),
+    /// This prefers matches that cover more text (`similarity * text.len()`),
     /// which helps when short high-similarity matches would otherwise beat
     /// longer patterns that match more of a word.
     ///
@@ -696,7 +695,6 @@ impl FuzzyAhoCorasick {
     ) -> String
     where
         F: Fn(&FuzzyMatch<'a>) -> Option<S>,
-        S: Into<Cow<'a, str>>,
     {
         self.search_non_overlapping(text, threshold)
             .replace(callback)
@@ -825,7 +823,6 @@ impl FuzzyAhoCorasick {
     /// let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", 0.8).collect();
     /// assert_eq!(parts, vec!["xx", "yy", "zz"]);
     /// ```
-    #[must_use]
     pub fn split<'a>(
         &'a self,
         haystack: &'a str,
