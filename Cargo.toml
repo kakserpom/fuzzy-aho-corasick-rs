@@ -7,6 +7,7 @@ description = "Aho–Corasick automaton with fuzzy matching"
 repository = "https://github.com/kakserpom/fuzzy-aho-corasick-rs"
 [dependencies]
 unicode-segmentation = "1.12"
+memchr = "2.7"
 [dev-dependencies]
 criterion = "0.6"
 [[bench]]

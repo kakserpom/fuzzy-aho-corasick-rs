@@ -1,5 +1,6 @@
+use crate::structs::{AsciiSimilarityTable, FxHashMap};
 use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyPenalties, FuzzyReplacer, Node, Pattern};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::LazyLock;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -18,10 +19,11 @@ use unicode_segmentation::UnicodeSegmentation;
 #[derive(Debug, Default)]
 pub struct FuzzyAhoCorasickBuilder {
     minimize_lambda: Option<f32>,
-    similarity: Option<&'static BTreeMap<(char, char), f32>>,
+    similarity: Option<&'static FxHashMap<(char, char), f32>>,
     limits: Option<FuzzyLimits>,
     penalties: FuzzyPenalties,
     case_insensitive: bool,
+    beam_width: Option<usize>,
 }
 
 impl FuzzyAhoCorasickBuilder {
@@ -34,6 +36,7 @@ impl FuzzyAhoCorasickBuilder {
             limits: None,
             penalties: FuzzyPenalties::default(),
             case_insensitive: false,
+            beam_width: None,
         }
     }
 
@@ -46,7 +49,7 @@ impl FuzzyAhoCorasickBuilder {
 
     /// Provide a custom similarity map.
     #[must_use]
-    pub fn similarity(mut self, map: &'static BTreeMap<(char, char), f32>) -> Self {
+    pub fn similarity(mut self, map: &'static FxHashMap<(char, char), f32>) -> Self {
         self.similarity = Some(map);
         self
     }
@@ -69,6 +72,20 @@ impl FuzzyAhoCorasickBuilder {
     #[must_use]
     pub fn case_insensitive(mut self, value: bool) -> Self {
         self.case_insensitive = value;
+        self
+    }
+
+    /// Set beam width for search. Limits the number of active states to the
+    /// top-K candidates with lowest penalties. This trades some accuracy for
+    /// significant speed improvements when using high edit limits.
+    ///
+    /// Recommended values:
+    /// - `None` (default): unlimited, explores all states (most accurate)
+    /// - `Some(100-500)`: good balance for most use cases
+    /// - `Some(50-100)`: faster but may miss some fuzzy matches
+    #[must_use]
+    pub fn beam_width(mut self, width: usize) -> Self {
+        self.beam_width = Some(width);
         self
     }
 
@@ -109,8 +126,9 @@ impl FuzzyAhoCorasickBuilder {
         T: Into<Pattern>,
     {
         let patterns: Vec<Pattern> = inputs.into_iter().map(Into::into).collect();
-        let similarity: &'static BTreeMap<(_, _), _> =
+        let similarity: &'static FxHashMap<(_, _), _> =
             self.similarity.unwrap_or(&DEFAULT_SIMILARITY_MAP);
+        let max_pattern_grapheme_len = patterns.iter().map(|p| p.grapheme_len).max().unwrap_or(0);
 
         let mut nodes = vec![Node::new(
             #[cfg(debug_assertions)]
@@ -242,13 +260,64 @@ impl FuzzyAhoCorasickBuilder {
             nodes = reprs;
         }
 
+        // Build ASCII similarity table for fast lookups
+        let ascii_similarity = Box::new(AsciiSimilarityTable::from_map(similarity));
+
+        // Compute effective limits: if no global limits are set but patterns have limits,
+        // derive a permissive global limit from the max of all pattern limits.
+        // This fixes the bug where deletions at non-final nodes were blocked.
+        let effective_limits = self.limits.or_else(|| {
+            let mut max_edits = None;
+            let mut max_insertions = None;
+            let mut max_deletions = None;
+            let mut max_substitutions = None;
+            let mut max_swaps = None;
+            let mut any_pattern_has_limits = false;
+
+            for p in &patterns {
+                if let Some(ref lim) = p.limits {
+                    any_pattern_has_limits = true;
+                    if let Some(e) = lim.edits {
+                        max_edits = Some(max_edits.unwrap_or(0).max(e));
+                    }
+                    if let Some(i) = lim.insertions {
+                        max_insertions = Some(max_insertions.unwrap_or(0).max(i));
+                    }
+                    if let Some(d) = lim.deletions {
+                        max_deletions = Some(max_deletions.unwrap_or(0).max(d));
+                    }
+                    if let Some(s) = lim.substitutions {
+                        max_substitutions = Some(max_substitutions.unwrap_or(0).max(s));
+                    }
+                    if let Some(sw) = lim.swaps {
+                        max_swaps = Some(max_swaps.unwrap_or(0).max(sw));
+                    }
+                }
+            }
+
+            if any_pattern_has_limits {
+                Some(FuzzyLimits {
+                    edits: max_edits,
+                    insertions: max_insertions,
+                    deletions: max_deletions,
+                    substitutions: max_substitutions,
+                    swaps: max_swaps,
+                })
+            } else {
+                None
+            }
+        });
+
         FuzzyAhoCorasick {
             nodes,
             patterns,
             similarity,
-            limits: self.limits,
+            ascii_similarity,
+            limits: effective_limits,
             penalties: self.penalties,
             case_insensitive: self.case_insensitive,
+            max_pattern_grapheme_len,
+            beam_width: self.beam_width,
         }
     }
 }
@@ -258,8 +327,8 @@ impl FuzzyAhoCorasickBuilder {
  * ---------------------------------------------------------------------- */
 
 /// Singleton that stores the lazily‑initialised vowel/consonant similarity map.
-static DEFAULT_SIMILARITY_MAP: LazyLock<BTreeMap<(char, char), f32>> = LazyLock::new(|| {
-    let mut map = BTreeMap::new();
+static DEFAULT_SIMILARITY_MAP: LazyLock<FxHashMap<(char, char), f32>> = LazyLock::new(|| {
+    let mut map = FxHashMap::default();
     let vowels = ['a', 'e', 'i', 'o', 'u'];
     let consonants = (b'a'..=b'z')
         .map(|b| b as char)
@@ -282,7 +351,14 @@ static DEFAULT_SIMILARITY_MAP: LazyLock<BTreeMap<(char, char), f32>> = LazyLock:
             }
         }
     }
+    // Common OCR/typo confusions
     map.insert(('o', '0'), 0.6);
     map.insert(('0', 'o'), 0.6);
+    map.insert(('l', '1'), 0.7);
+    map.insert(('1', 'l'), 0.7);
+    map.insert(('i', '1'), 0.6);
+    map.insert(('1', 'i'), 0.6);
+    map.insert(('s', '5'), 0.5);
+    map.insert(('5', 's'), 0.5);
     map
 });

@@ -10,7 +10,7 @@ mod tests;
 pub use builder::FuzzyAhoCorasickBuilder;
 pub use replacer::FuzzyReplacer;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
 pub use structs::*;
@@ -34,6 +34,22 @@ impl FuzzyAhoCorasick {
         self.nodes[node]
             .pattern_index
             .and_then(|i| self.patterns.get(i).and_then(|p| p.limits.as_ref()))
+    }
+
+    /// Fast path similarity lookup with inline handling of common cases.
+    /// Uses precomputed ASCII table for O(1) lookup, falls back to `HashMap` for non-ASCII.
+    #[inline]
+    fn get_similarity(&self, a: char, b: char) -> f32 {
+        // Fast path: exact match
+        if a == b {
+            return 1.0;
+        }
+        // Try ASCII fast path first (O(1) array lookup)
+        if let Some(sim) = self.ascii_similarity.get(a, b) {
+            return sim;
+        }
+        // Fall back to HashMap for non-ASCII characters
+        *self.similarity.get(&(a, b)).unwrap_or(&0.0)
     }
 
     /// Check ahead whether an insertion would stay within the allowed limits.
@@ -183,9 +199,12 @@ impl FuzzyAhoCorasick {
             })
             .collect();
 
-        let mut best: BTreeMap<(usize, usize, usize), FuzzyMatch> = BTreeMap::new();
+        // Use HashMap for O(1) lookup instead of BTreeMap's O(log n)
+        let mut best: HashMap<(usize, usize, usize), FuzzyMatch> =
+            HashMap::with_capacity(self.patterns.len() * 4);
 
-        let mut queue: Vec<State> = Vec::with_capacity(64);
+        // Pre-allocate queue - size based on beam width or a small default
+        let mut queue: Vec<State> = Vec::with_capacity(self.beam_width.unwrap_or(64));
 
         trace!(
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
@@ -214,6 +233,16 @@ impl FuzzyAhoCorasick {
 
             let mut q_idx = 0;
             while q_idx < queue.len() {
+                // Beam pruning: if queue grows too large, keep only best candidates
+                if let Some(bw) = self.beam_width {
+                    let remaining = queue.len() - q_idx;
+                    if remaining > bw * 2 {
+                        // Sort remaining items by penalties (lowest first = best candidates)
+                        queue[q_idx..].sort_by(|a, b| a.penalties.total_cmp(&b.penalties));
+                        // Keep only beam_width items from q_idx onward
+                        queue.truncate(q_idx + bw);
+                    }
+                }
                 let State {
                     node,
                     j,
@@ -231,10 +260,13 @@ impl FuzzyAhoCorasick {
                 let notes = queue[q_idx].notes.clone();
                 q_idx += 1;
 
-                /*trace!(
-                    "visit: node={} j={} span=({}->{}) score={:.3} edits={}",
-                    node, j, matched_start, matched_end, score, edits
-                );*/
+                // Early pruning: check if this state can possibly produce a match
+                // above the threshold. Use the maximum pattern length as the best case.
+                let max_possible_similarity = (self.max_pattern_grapheme_len as f32 - penalties)
+                    / self.max_pattern_grapheme_len as f32;
+                if max_possible_similarity < similarity_threshold {
+                    continue;
+                }
 
                 let Node {
                     output,
@@ -346,7 +378,7 @@ impl FuzzyAhoCorasick {
                             substitutions,
                         ) {
                             // substitution
-                            let sim = *self.similarity.get(&(g_ch, current_ch)).unwrap_or(&0.);
+                            let sim = self.get_similarity(g_ch, current_ch);
                             let penalty = self.penalties.substitution * (1.0 - sim);
 
                             trace!(
@@ -393,35 +425,34 @@ impl FuzzyAhoCorasick {
                         if let Some(&node2) = transitions
                             .get(b.as_ref())
                             .and_then(|&x| self.nodes[x].transitions.get(a.as_ref()))
-                        {
-                            if self.within_limits_swap_ahead(
+                            && self.within_limits_swap_ahead(
                                 self.get_node_limits(node2),
                                 edits,
                                 swaps,
-                            ) {
+                            )
+                        {
+                            #[cfg(debug_assertions)]
+                            let mut notes = notes.clone();
+                            #[cfg(debug_assertions)]
+                            notes.push(format!(
+                                "swap a:{a:?} b:{b:?} (swaps->{}, edits->{})",
+                                swaps + 1,
+                                edits + 1
+                            ));
+                            queue.push(State {
+                                node: node2,
+                                j: j + 2,
+                                matched_start,
+                                matched_end: j + 2,
+                                penalties: penalties + self.penalties.swap,
+                                edits: edits + 1,
+                                insertions,
+                                deletions,
+                                substitutions,
+                                swaps: swaps + 1,
                                 #[cfg(debug_assertions)]
-                                let mut notes = notes.clone();
-                                #[cfg(debug_assertions)]
-                                notes.push(format!(
-                                    "swap a:{a:?} b:{b:?} (swaps->{}, edits->{})",
-                                    swaps + 1,
-                                    edits + 1
-                                ));
-                                queue.push(State {
-                                    node: node2,
-                                    j: j + 2,
-                                    matched_start,
-                                    matched_end: j + 2,
-                                    penalties: penalties + self.penalties.swap,
-                                    edits: edits + 1,
-                                    insertions,
-                                    deletions,
-                                    substitutions,
-                                    swaps: swaps + 1,
-                                    #[cfg(debug_assertions)]
-                                    notes,
-                                });
-                            }
+                                notes,
+                            });
                         }
                     }
 
@@ -542,6 +573,27 @@ impl FuzzyAhoCorasick {
         matches
     }
 
+    /// Convenience wrapper over `search_unsorted` that applies a coverage-weighted sort.
+    /// Uses `similarity * text.len()` to prefer matches that cover more text.
+    ///
+    /// # Parameters
+    /// - `haystack`: the input text to search in.
+    /// - `similarity_threshold`: minimum similarity threshold for candidates.
+    ///
+    /// # Returns
+    /// `FuzzyMatches` with matches sorted by coverage-weighted score.
+    #[inline]
+    #[must_use]
+    pub fn search_coverage_weighted<'a>(
+        &'a self,
+        haystack: &'a str,
+        similarity_threshold: f32,
+    ) -> FuzzyMatches<'a> {
+        let mut matches = self.search_unsorted(haystack, similarity_threshold);
+        matches.coverage_weighted_sort();
+        matches
+    }
+
     /// Search that returns non-overlapping matches by delegating to
     /// `non_overlapping()` on the fully sorted (default) results. This will
     /// greedily select a set of matches such that their spans do not overlap,
@@ -586,6 +638,28 @@ impl FuzzyAhoCorasick {
         matches
     }
 
+    /// Like `search_non_overlapping_unique`, but uses coverage-weighted sorting.
+    /// This prefers matches that cover more text (`similarity * text.len()`),
+    /// which helps when short high-similarity matches would otherwise beat
+    /// longer patterns that match more of a word.
+    ///
+    /// # Parameters
+    /// - `haystack`: the input text to search in.
+    /// - `similarity_threshold`: minimum similarity threshold for candidates.
+    ///
+    /// # Returns
+    /// `FuzzyMatches` containing a non-overlapping, pattern-unique subset of matches.
+    #[must_use]
+    pub fn search_non_overlapping_unique_coverage_weighted<'a>(
+        &'a self,
+        haystack: &'a str,
+        similarity_threshold: f32,
+    ) -> FuzzyMatches<'a> {
+        let mut matches = self.search_coverage_weighted(haystack, similarity_threshold);
+        matches.non_overlapping_unique();
+        matches
+    }
+
     /// Perform replacements on `text` by finding non-overlapping fuzzy matches above
     /// `threshold` and invoking `callback` for each. Matches are resolved via
     /// `search_non_overlapping`, so they won’t overlap; the first chosen set is
@@ -621,7 +695,6 @@ impl FuzzyAhoCorasick {
     ) -> String
     where
         F: Fn(&FuzzyMatch<'a>) -> Option<S>,
-        S: Into<Cow<'a, str>>,
     {
         self.search_non_overlapping(text, threshold)
             .replace(callback)
@@ -750,7 +823,6 @@ impl FuzzyAhoCorasick {
     /// let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", 0.8).collect();
     /// assert_eq!(parts, vec!["xx", "yy", "zz"]);
     /// ```
-    #[must_use]
     pub fn split<'a>(
         &'a self,
         haystack: &'a str,

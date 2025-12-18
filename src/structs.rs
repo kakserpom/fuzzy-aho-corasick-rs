@@ -1,9 +1,80 @@
 use crate::PatternIndex;
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fmt;
+use std::hash::{BuildHasherDefault, Hasher};
 use unicode_segmentation::UnicodeSegmentation;
 
-pub type NumEdits = usize;
+/// Precomputed ASCII similarity lookup table for O(1) access.
+/// Index with [char1 as usize][char2 as usize] for ASCII chars < 128.
+#[derive(Clone)]
+pub struct AsciiSimilarityTable {
+    table: Box<[[f32; 128]; 128]>,
+}
+
+impl AsciiSimilarityTable {
+    /// Build the ASCII lookup table from a similarity map.
+    #[must_use]
+    #[allow(clippy::large_stack_arrays)]
+    pub fn from_map(map: &FxHashMap<(char, char), f32>) -> Self {
+        let mut table = Box::new([[0.0f32; 128]; 128]);
+
+        // Set diagonal to 1.0 (exact matches)
+        for (i, row) in table.iter_mut().enumerate() {
+            row[i] = 1.0;
+        }
+
+        // Fill from the similarity map
+        for (&(a, b), &sim) in map {
+            if (a as u32) < 128 && (b as u32) < 128 {
+                table[a as usize][b as usize] = sim;
+            }
+        }
+
+        Self { table }
+    }
+
+    /// Get similarity between two ASCII characters. Returns None for non-ASCII.
+    #[inline]
+    #[must_use]
+    pub fn get(&self, a: char, b: char) -> Option<f32> {
+        let a_idx = a as u32;
+        let b_idx = b as u32;
+        if a_idx < 128 && b_idx < 128 {
+            // SAFETY: bounds checked above
+            Some(unsafe { *self.table.get_unchecked(a_idx as usize).get_unchecked(b_idx as usize) })
+        } else {
+            None
+        }
+    }
+}
+
+/// A fast hasher for string keys - uses `FxHash` algorithm
+#[derive(Default)]
+pub struct FxHasher {
+    hash: u64,
+}
+
+impl Hasher for FxHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        const K: u64 = 0x517c_c1b7_2722_0a95;
+        for &byte in bytes {
+            self.hash = (self.hash.rotate_left(5) ^ u64::from(byte)).wrapping_mul(K);
+        }
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+}
+
+pub type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+
+/// Edit count type - u8 is sufficient for practical edit distances (max 255)
+pub type NumEdits = u8;
+
+/// Internal search state
 #[derive(Clone)]
 pub(crate) struct State {
     pub(crate) node: usize,
@@ -26,7 +97,7 @@ pub(crate) struct Node {
     pub(crate) pattern_index: Option<PatternIndex>,
     pub(crate) epsilon: Option<usize>,
     /// Outgoing edges keyed by the next character.
-    pub(crate) transitions: BTreeMap<String, usize>,
+    pub(crate) transitions: FxHashMap<String, usize>,
     /// Failure link (classic AC fallback state).
     pub(crate) fail: usize,
     /// All patterns that end in this state.
@@ -156,7 +227,7 @@ impl Node {
     ) -> Node {
         Self {
             pattern_index: None,
-            transitions: BTreeMap::new(),
+            transitions: FxHashMap::default(),
             fail: 0,
             output: Vec::new(),
             weight: 0.0,
@@ -175,14 +246,20 @@ pub struct FuzzyAhoCorasick {
     pub(crate) nodes: Vec<Node>,
     /// Patterns
     pub(crate) patterns: Vec<Pattern>,
-    /// Similarity map
-    pub(crate) similarity: &'static BTreeMap<(char, char), f32>,
+    /// Similarity map (for non-ASCII fallback)
+    pub(crate) similarity: &'static FxHashMap<(char, char), f32>,
+    /// Fast ASCII similarity lookup table
+    pub(crate) ascii_similarity: Box<AsciiSimilarityTable>,
     /// Limits of errors
     pub(crate) limits: Option<FuzzyLimits>,
     /// Weight
     pub(crate) penalties: FuzzyPenalties,
     /// Case insensitivity
     pub(crate) case_insensitive: bool,
+    /// Maximum pattern length in graphemes (for early pruning)
+    pub(crate) max_pattern_grapheme_len: usize,
+    /// Beam width for search - limits state explosion (None = unlimited)
+    pub(crate) beam_width: Option<usize>,
 }
 
 #[allow(clippy::missing_fields_in_debug)]
@@ -323,33 +400,25 @@ impl From<(&String, f32)> for Pattern {
     }
 }
 
-impl<'a> From<(&'a str, f32, usize)> for Pattern {
-    fn from((s, w, max_edits): (&'a str, f32, usize)) -> Self {
+impl<'a> From<(&'a str, f32, NumEdits)> for Pattern {
+    fn from((s, w, max_edits): (&'a str, f32, NumEdits)) -> Self {
         Pattern {
             pattern: s.to_owned(),
             grapheme_len: s.graphemes(true).count(),
             weight: w,
-            limits: Some(
-                FuzzyLimits::default()
-                    .edits(max_edits as NumEdits)
-                    .finalize(),
-            ),
+            limits: Some(FuzzyLimits::default().edits(max_edits).finalize()),
             custom_unique_id: None,
         }
     }
 }
 
-impl<'a> From<(String, f32, usize)> for Pattern {
-    fn from((s, w, max_edits): (String, f32, usize)) -> Self {
+impl From<(String, f32, NumEdits)> for Pattern {
+    fn from((s, w, max_edits): (String, f32, NumEdits)) -> Self {
         Pattern {
             grapheme_len: s.graphemes(true).count(),
             pattern: s,
             weight: w,
-            limits: Some(
-                FuzzyLimits::default()
-                    .edits(max_edits as NumEdits)
-                    .finalize(),
-            ),
+            limits: Some(FuzzyLimits::default().edits(max_edits).finalize()),
             custom_unique_id: None,
         }
     }
@@ -395,7 +464,7 @@ impl<'a> Segment<'a> {
     #[must_use]
     pub fn matched(&'a self) -> Option<&'a FuzzyMatch<'a>> {
         if let Segment::Matched(matched) = self {
-            Some(&matched)
+            Some(matched)
         } else {
             None
         }
@@ -403,7 +472,7 @@ impl<'a> Segment<'a> {
     #[must_use]
     pub fn unmatched(&'a self) -> Option<&'a UnmatchedSegment<'a>> {
         if let Segment::Unmatched(unmatched) = self {
-            Some(&unmatched)
+            Some(unmatched)
         } else {
             None
         }

@@ -416,3 +416,200 @@ fn test_split() {
         ["ZZZ", "AAA"]
     );
 }
+
+#[test]
+fn test_beam_search() {
+    // Test that beam search still finds matches (may find fewer with very small beam)
+    let engine_no_beam = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2))
+        .case_insensitive(true)
+        .build(["saddam", "hussein"]);
+
+    let engine_with_beam = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2))
+        .case_insensitive(true)
+        .beam_width(100)
+        .build(["saddam", "hussein"]);
+
+    let text = "saddamhusein";
+
+    let results_no_beam = engine_no_beam.search_non_overlapping(text, 0.7);
+    let results_with_beam = engine_with_beam.search_non_overlapping(text, 0.7);
+
+    // Both should find matches
+    assert!(!results_no_beam.is_empty(), "No beam should find matches");
+    assert!(
+        !results_with_beam.is_empty(),
+        "Beam search should also find matches"
+    );
+
+    // Check that beam search found the key patterns
+    assert!(results_with_beam
+        .iter()
+        .any(|m| m.pattern.as_str() == "saddam"));
+}
+
+#[test]
+fn test_truncated_walijan() {
+    // Pattern = "WALIJAN" (7 chars), Haystack = "alijan" (6 chars)
+    // Need 1 deletion at the start to match
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build([Pattern::from("WALIJAN").fuzzy(FuzzyLimits::new().edits(3))]);
+
+    let result = engine.search("alijan", 0.7);
+    println!("\nResult for alijan: {:?}", result);
+    
+    // This should find WALIJAN with text="alijan"
+    assert!(
+        result.iter().any(|m| m.pattern.as_str() == "WALIJAN"),
+        "Should find WALIJAN in 'alijan' with deletions. Results: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_truncated_short() {
+    // Pattern = "TOLA" (4 chars), Haystack = "OLA" (3 chars)
+    // Need 1 deletion at the start to match
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build([Pattern::from("TOLA").fuzzy(FuzzyLimits::new().edits(2))]);
+
+    let result = engine.search("OLA", 0.5);
+    println!("\nResult for OLA: {:?}", result);
+    
+    assert!(
+        result.iter().any(|m| m.text == "OLA"),
+        "Should find TOLA in 'OLA' with deletion. Results: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_truncated_with_global_limits() {
+    // Use GLOBAL limits instead of pattern-specific limits
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .fuzzy(FuzzyLimits::new().edits(2))  // Global limits
+        .build(["TOLA"]);
+
+    let result = engine.search("OLA", 0.5);
+    println!("\nResult for OLA with global limits: {:?}", result);
+    
+    assert!(
+        result.iter().any(|m| m.text == "OLA"),
+        "Should find TOLA in 'OLA' with global limits. Results: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_truncated_walijan_with_global_limits() {
+    // Use GLOBAL limits for WALIJAN
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .fuzzy(FuzzyLimits::new().edits(3))  // Global limits
+        .build(["WALIJAN"]);
+
+    let result = engine.search("alijan", 0.7);
+    println!("\nResult for alijan with global limits: {:?}", result);
+    
+    assert!(
+        result.iter().any(|m| m.pattern.as_str() == "WALIJAN"),
+        "Should find WALIJAN in 'alijan' with global limits. Results: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_phonetic_td_substitution() {
+    // Test T↔D phonetic substitution: "Tjamel" should match "DJAMEL"
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build([Pattern::from("DJAMEL").fuzzy(FuzzyLimits::new().edits(3))]);
+    
+    let result = engine.search("Tjamel", 0.5);
+    println!("\nResult for 'Tjamel' vs 'DJAMEL' (0.5): {:?}", result);
+    
+    let result2 = engine.search("Tjamel", 0.7);
+    println!("Result for 'Tjamel' vs 'DJAMEL' (0.7): {:?}", result2);
+    
+    // Calculate expected similarity:
+    // Pattern: DJAMEL (6 chars)
+    // Query: Tjamel
+    // T↔D substitution: consonant-consonant similarity = 0.4, penalty = 1.43 * (1 - 0.4) = 0.858
+    // Similarity = (6 - 0.858) / 6 = 0.857
+    
+    assert!(
+        result.iter().any(|m| m.pattern.as_str() == "DJAMEL"),
+        "Should find DJAMEL in 'Tjamel' with T↔D substitution. Results: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_missing_middle_char() {
+    // "Mmir" should match "MOMIR" (missing 'O')
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build([Pattern::from("MOMIR").fuzzy(FuzzyLimits::new().edits(3))]);
+    
+    let result = engine.search("Mmir", 0.5);
+    println!("\nResult for 'Mmir' vs 'MOMIR' (0.5): {:?}", result);
+    
+    let result2 = engine.search("Mmir", 0.7);
+    println!("Result for 'Mmir' vs 'MOMIR' (0.7): {:?}", result2);
+    
+    // For 5-char pattern with 1 deletion at position 2:
+    // similarity = (5 - 0.91) / 5 = 0.818
+    assert!(
+        result.iter().any(|m| m.pattern.as_str() == "MOMIR"),
+        "Should find MOMIR in 'Mmir'. Results: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_siic_simic() {
+    // "SIIC" (4 chars) should match "SIMIC" (5 chars) - missing 'M'
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build([Pattern::from("SIMIC").fuzzy(FuzzyLimits::new().edits(3))]);
+    
+    let result = engine.search("SIIC", 0.7);
+    println!("\nResult for 'SIIC' vs 'SIMIC': {:?}", result);
+}
+
+#[test]
+fn test_aminulah_aminullah() {
+    // "Aminulah" should match "AMINULLAH" - missing 'L'
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build([Pattern::from("AMINULLAH").fuzzy(FuzzyLimits::new().edits(3))]);
+    
+    let result = engine.search("Aminulah", 0.7);
+    println!("\nResult for 'Aminulah' vs 'AMINULLAH': {:?}", result);
+}
+
+#[test]
+fn test_jaar_jafar() {
+    // "Jaar" should match "JAFAR" - missing 'F'
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build([Pattern::from("JAFAR").fuzzy(FuzzyLimits::new().edits(3))]);
+    
+    let result = engine.search("Jaar", 0.7);
+    println!("\nResult for 'Jaar' vs 'JAFAR': {:?}", result);
+}
+
+#[test]
+fn test_aminullah_aminulah() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build([Pattern::from("AMINULLAH").fuzzy(FuzzyLimits::new().edits(3))]);
+
+    let result = engine.search("Aminulah", 0.7);
+    println!("Result for 'Aminulah' vs 'AMINULLAH': {:?}", result);
+    assert!(result.inner.len() > 0, "AMINULLAH should match Aminulah");
+}

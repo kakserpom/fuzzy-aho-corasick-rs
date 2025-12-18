@@ -1,4 +1,4 @@
-use crate::{FuzzyMatch, FuzzyMatches, PatternIndex, Segment, UniqueId, UnmatchedSegment};
+use crate::{FuzzyMatch, FuzzyMatches, Segment, UniqueId, UnmatchedSegment};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 impl<'a> FuzzyMatches<'a> {
@@ -26,6 +26,24 @@ impl<'a> FuzzyMatches<'a> {
                 .pattern
                 .len()
                 .cmp(&left.pattern.len())
+                .then_with(|| right.similarity.total_cmp(&left.similarity))
+                .then_with(|| left.start.cmp(&right.start))
+        });
+    }
+
+    /// Coverage-weighted ranking: uses `similarity² * pattern.len()` as primary criterion.
+    /// This prefers matches where longer patterns match well, but heavily penalizes
+    /// lower-similarity matches to avoid greedy over-matching.
+    /// Useful when short high-similarity matches should not beat longer good matches.
+    #[inline]
+    pub fn coverage_weighted_sort(&mut self) {
+        self.inner.sort_by(|left, right| {
+            // Use similarity squared to heavily penalize lower-similarity matches
+            // Use pattern length (not text length) to avoid preferring over-matched text
+            let left_score = left.similarity * left.similarity * left.pattern.len() as f32;
+            let right_score = right.similarity * right.similarity * right.pattern.len() as f32;
+            right_score
+                .total_cmp(&left_score)
                 .then_with(|| right.similarity.total_cmp(&left.similarity))
                 .then_with(|| left.start.cmp(&right.start))
         });
@@ -225,10 +243,10 @@ impl<'a> FuzzyMatches<'a> {
 
         for seg in self.segment_iter() {
             buf.push_back(seg);
-            if let Some(Segment::Unmatched(u)) = buf.back() {
-                if !u.text.trim().is_empty() {
-                    keep = buf.len();
-                }
+            if let Some(Segment::Unmatched(u)) = buf.back()
+                && !u.text.trim().is_empty()
+            {
+                keep = buf.len();
             }
         }
 
@@ -287,15 +305,12 @@ impl<'a> FuzzyMatches<'a> {
     ///     "zz"
     /// ]);
     /// ```
-    #[must_use]
     pub fn split(self) -> impl Iterator<Item = &'a str> + 'a {
         let mut segments = self.segment_iter();
         std::iter::from_fn(move || {
-            while let Some(segment) = segments.next() {
-                {
-                    if let Segment::Unmatched(u) = segment {
-                        return Some(u.text);
-                    }
+            for segment in segments.by_ref() {
+                if let Segment::Unmatched(u) = segment {
+                    return Some(u.text);
                 }
             }
             None
