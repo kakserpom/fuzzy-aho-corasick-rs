@@ -1,6 +1,6 @@
 # fuzzy-aho-corasick
 
-[![crates.io](https://img.shields.io/crates/v/fuzzy-aho-corasick.svg)](https://crates.io/crates/fuzzy-aho-corasick) [![docs.rs](https://img.shields.io/docsrs/fuzzy-aho-corasick)](https://docs.rs/fuzzy-aho-corasick) [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://github.com/kakserpom/fuzzy-aho-corasick-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/kakserpom/fuzzy-aho-corasick-rs/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/fuzzy-aho-corasick.svg)](https://crates.io/crates/fuzzy-aho-corasick) [![docs.rs](https://img.shields.io/docsrs/fuzzy-aho-corasick)](https://docs.rs/fuzzy-aho-corasick) [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 High-performance, Unicode-aware safe Rust implementation of the Aho–Corasick automaton with **fuzzy matching** (
 insertions, deletions, substitutions, transpositions).
