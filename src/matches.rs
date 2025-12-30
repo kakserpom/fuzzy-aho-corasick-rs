@@ -66,7 +66,7 @@ impl<'a> FuzzyMatches<'a> {
             {
                 occupied_intervals.insert(m.start, m.end);
                 #[cfg(test)]
-                println!("ACCEPTING: \t{:?}", m);
+                println!("ACCEPTING: \t{m:?}");
                 true
             } else {
                 #[cfg(test)]
@@ -101,7 +101,7 @@ impl<'a> FuzzyMatches<'a> {
                 used_patterns.insert(unique_id);
                 occupied_intervals.insert(m.start, m.end);
                 #[cfg(test)]
-                println!("ACCEPTING: \t{:?}", m);
+                println!("ACCEPTING: \t{m:?}");
                 true
             } else {
                 #[cfg(test)]
@@ -536,7 +536,7 @@ impl<'a> FuzzyMatches<'a> {
         let mut prev_matched = false;
         for segment in self.segment_iter() {
             #[cfg(test)]
-            println!("segment: {:?}", segment);
+            println!("segment: {segment:?}");
             match segment {
                 Segment::Matched(m) => {
                     if prev_matched || (!result.is_empty() && !result.ends_with(SPACE)) {

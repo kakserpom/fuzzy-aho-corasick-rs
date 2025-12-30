@@ -16,7 +16,7 @@ fn test_non_overlapping_regression_0() {
         .case_insensitive(true)
         .build(["NA", "MENA"]);
     let result = fac.search_non_overlapping("NA MENA", 0.6);
-    println!("Result: {:?}", result);
+    println!("Result: {result:?}");
     assert!(
         result
             .iter()
@@ -31,7 +31,7 @@ fn test_non_overlapping_regression_2() {
         .case_insensitive(true)
         .build(["KO", "KO", "LWIN"]);
     let result = fac.search_non_overlapping("KWO KO LWIN", 0.6);
-    println!("Result: {:#?}", result);
+    println!("Result: {result:#?}");
     assert!(
         result
             .iter()
@@ -45,7 +45,7 @@ fn test_non_overlapping_regression_3() {
         .case_insensitive(true)
         .build(["AL", "WASEL", "AND", "BABEL", "GENERAL", "TRADING", "LLC"]);
     let result = fac.search_non_overlapping_unique("AL WASL ANT BBEL GNERAL TRATING LC", 0.6);
-    println!("Result: {:#?}", result);
+    println!("Result: {result:#?}");
     assert!(
         result
             .iter()
@@ -73,11 +73,11 @@ fn test_unicode_cyrillic() {
         .case_insensitive(true)
         .build(["юрий"]);
     let res = engine.search("ЮРИЙ ГАГАРИН", 0.9);
-    println!("{:?}", res);
+    println!("{res:?}");
     assert!(res.iter().any(|m| m.text.to_lowercase() == "юрий"));
 
     let res = engine.segment_text("ЮРИЙГАГАРИН", 0.9);
-    println!("{:?}", res);
+    println!("{res:?}");
 
     assert_eq!(res, "ЮРИЙ ГАГАРИН");
 }
@@ -113,7 +113,7 @@ fn test_extra_letter() {
 fn test_missing_letter() {
     let fac = make_engine();
     let result = fac.search("saddmhussin", 0.3);
-    println!("{:?}", result);
+    println!("{result:?}");
     assert!(
         result
             .iter()
@@ -236,7 +236,7 @@ fn test_regression_1() {
         .build(["CO"]);
 
     let result = engine.search("CA", 0.8);
-    println!("{:?}", result);
+    println!("{result:?}");
     assert_eq!(result.iter().count(), 0);
 }
 
@@ -246,8 +246,8 @@ fn test_regression_2() {
         .build([Pattern::from("TOLA").fuzzy(FuzzyLimits::new().edits(2))]);
 
     let result = engine.search_non_overlapping("TOL", 0.5);
-    println!("\nResult: {:?}", result);
-    assert_eq!(result.iter().any(|x| x.text == "TOL"), true);
+    println!("\nResult: {result:?}");
+    assert!(result.iter().any(|x| x.text == "TOL"));
 }
 
 #[test]
@@ -458,13 +458,12 @@ fn test_truncated_walijan() {
         .build([Pattern::from("WALIJAN").fuzzy(FuzzyLimits::new().edits(3))]);
 
     let result = engine.search("alijan", 0.7);
-    println!("\nResult for alijan: {:?}", result);
+    println!("\nResult for alijan: {result:?}");
     
     // This should find WALIJAN with text="alijan"
     assert!(
         result.iter().any(|m| m.pattern.as_str() == "WALIJAN"),
-        "Should find WALIJAN in 'alijan' with deletions. Results: {:?}",
-        result
+        "Should find WALIJAN in 'alijan' with deletions. Results: {result:?}"
     );
 }
 
@@ -477,12 +476,11 @@ fn test_truncated_short() {
         .build([Pattern::from("TOLA").fuzzy(FuzzyLimits::new().edits(2))]);
 
     let result = engine.search("OLA", 0.5);
-    println!("\nResult for OLA: {:?}", result);
+    println!("\nResult for OLA: {result:?}");
     
     assert!(
         result.iter().any(|m| m.text == "OLA"),
-        "Should find TOLA in 'OLA' with deletion. Results: {:?}",
-        result
+        "Should find TOLA in 'OLA' with deletion. Results: {result:?}"
     );
 }
 
@@ -495,12 +493,11 @@ fn test_truncated_with_global_limits() {
         .build(["TOLA"]);
 
     let result = engine.search("OLA", 0.5);
-    println!("\nResult for OLA with global limits: {:?}", result);
+    println!("\nResult for OLA with global limits: {result:?}");
     
     assert!(
         result.iter().any(|m| m.text == "OLA"),
-        "Should find TOLA in 'OLA' with global limits. Results: {:?}",
-        result
+        "Should find TOLA in 'OLA' with global limits. Results: {result:?}"
     );
 }
 
@@ -513,12 +510,11 @@ fn test_truncated_walijan_with_global_limits() {
         .build(["WALIJAN"]);
 
     let result = engine.search("alijan", 0.7);
-    println!("\nResult for alijan with global limits: {:?}", result);
+    println!("\nResult for alijan with global limits: {result:?}");
     
     assert!(
         result.iter().any(|m| m.pattern.as_str() == "WALIJAN"),
-        "Should find WALIJAN in 'alijan' with global limits. Results: {:?}",
-        result
+        "Should find WALIJAN in 'alijan' with global limits. Results: {result:?}"
     );
 }
 
@@ -530,21 +526,20 @@ fn test_phonetic_td_substitution() {
         .build([Pattern::from("DJAMEL").fuzzy(FuzzyLimits::new().edits(3))]);
     
     let result = engine.search("Tjamel", 0.5);
-    println!("\nResult for 'Tjamel' vs 'DJAMEL' (0.5): {:?}", result);
-    
+    println!("\nResult for 'Tjamel' vs 'DJAMEL' (0.5): {result:?}");
+
     let result2 = engine.search("Tjamel", 0.7);
-    println!("Result for 'Tjamel' vs 'DJAMEL' (0.7): {:?}", result2);
-    
+    println!("Result for 'Tjamel' vs 'DJAMEL' (0.7): {result2:?}");
+
     // Calculate expected similarity:
     // Pattern: DJAMEL (6 chars)
     // Query: Tjamel
     // T↔D substitution: consonant-consonant similarity = 0.4, penalty = 1.43 * (1 - 0.4) = 0.858
     // Similarity = (6 - 0.858) / 6 = 0.857
-    
+
     assert!(
         result.iter().any(|m| m.pattern.as_str() == "DJAMEL"),
-        "Should find DJAMEL in 'Tjamel' with T↔D substitution. Results: {:?}",
-        result
+        "Should find DJAMEL in 'Tjamel' with T↔D substitution. Results: {result:?}"
     );
 }
 
@@ -556,17 +551,16 @@ fn test_missing_middle_char() {
         .build([Pattern::from("MOMIR").fuzzy(FuzzyLimits::new().edits(3))]);
     
     let result = engine.search("Mmir", 0.5);
-    println!("\nResult for 'Mmir' vs 'MOMIR' (0.5): {:?}", result);
-    
+    println!("\nResult for 'Mmir' vs 'MOMIR' (0.5): {result:?}");
+
     let result2 = engine.search("Mmir", 0.7);
-    println!("Result for 'Mmir' vs 'MOMIR' (0.7): {:?}", result2);
-    
+    println!("Result for 'Mmir' vs 'MOMIR' (0.7): {result2:?}");
+
     // For 5-char pattern with 1 deletion at position 2:
     // similarity = (5 - 0.91) / 5 = 0.818
     assert!(
         result.iter().any(|m| m.pattern.as_str() == "MOMIR"),
-        "Should find MOMIR in 'Mmir'. Results: {:?}",
-        result
+        "Should find MOMIR in 'Mmir'. Results: {result:?}"
     );
 }
 
@@ -578,7 +572,7 @@ fn test_siic_simic() {
         .build([Pattern::from("SIMIC").fuzzy(FuzzyLimits::new().edits(3))]);
     
     let result = engine.search("SIIC", 0.7);
-    println!("\nResult for 'SIIC' vs 'SIMIC': {:?}", result);
+    println!("\nResult for 'SIIC' vs 'SIMIC': {result:?}");
 }
 
 #[test]
@@ -589,7 +583,7 @@ fn test_aminulah_aminullah() {
         .build([Pattern::from("AMINULLAH").fuzzy(FuzzyLimits::new().edits(3))]);
     
     let result = engine.search("Aminulah", 0.7);
-    println!("\nResult for 'Aminulah' vs 'AMINULLAH': {:?}", result);
+    println!("\nResult for 'Aminulah' vs 'AMINULLAH': {result:?}");
 }
 
 #[test]
@@ -600,7 +594,7 @@ fn test_jaar_jafar() {
         .build([Pattern::from("JAFAR").fuzzy(FuzzyLimits::new().edits(3))]);
     
     let result = engine.search("Jaar", 0.7);
-    println!("\nResult for 'Jaar' vs 'JAFAR': {:?}", result);
+    println!("\nResult for 'Jaar' vs 'JAFAR': {result:?}");
 }
 
 #[test]
@@ -610,6 +604,6 @@ fn test_aminullah_aminulah() {
         .build([Pattern::from("AMINULLAH").fuzzy(FuzzyLimits::new().edits(3))]);
 
     let result = engine.search("Aminulah", 0.7);
-    println!("Result for 'Aminulah' vs 'AMINULLAH': {:?}", result);
-    assert!(result.inner.len() > 0, "AMINULLAH should match Aminulah");
+    println!("Result for 'Aminulah' vs 'AMINULLAH': {result:?}");
+    assert!(!result.inner.is_empty(), "AMINULLAH should match Aminulah");
 }
