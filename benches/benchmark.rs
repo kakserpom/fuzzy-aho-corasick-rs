@@ -32,10 +32,26 @@ fn benchmark_long_text(c: &mut Criterion) {
 
 fn benchmark_many_patterns(c: &mut Criterion) {
     let patterns: Vec<&str> = vec![
-        "JOINT", "STOCK", "COMPANY", "LIMITED", "LIABILITY",
-        "PUBLIC", "PRIVATE", "CORPORATION", "INTERNATIONAL", "ENTERPRISE",
-        "TRADING", "HOLDINGS", "INVESTMENT", "CAPITAL", "PARTNERS",
-        "ASSOCIATES", "SOLUTIONS", "INDUSTRIES", "TECHNOLOGIES", "SERVICES",
+        "JOINT",
+        "STOCK",
+        "COMPANY",
+        "LIMITED",
+        "LIABILITY",
+        "PUBLIC",
+        "PRIVATE",
+        "CORPORATION",
+        "INTERNATIONAL",
+        "ENTERPRISE",
+        "TRADING",
+        "HOLDINGS",
+        "INVESTMENT",
+        "CAPITAL",
+        "PARTNERS",
+        "ASSOCIATES",
+        "SOLUTIONS",
+        "INDUSTRIES",
+        "TECHNOLOGIES",
+        "SERVICES",
     ];
 
     let automaton = FuzzyAhoCorasickBuilder::new()
@@ -62,15 +78,11 @@ fn benchmark_fuzzy_levels(c: &mut Criterion) {
             .fuzzy(FuzzyLimits::new().edits(edits))
             .build(["saddam", "hussein"]);
 
-        group.bench_with_input(
-            BenchmarkId::new("edits", edits),
-            &edits,
-            |b, _| {
-                b.iter(|| {
-                    let _ = automaton.search_non_overlapping(black_box(text), 0.6);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("edits", edits), &edits, |b, _| {
+            b.iter(|| {
+                let _ = automaton.search_non_overlapping(black_box(text), 0.6);
+            });
+        });
     }
 
     group.finish();
@@ -78,9 +90,21 @@ fn benchmark_fuzzy_levels(c: &mut Criterion) {
 
 fn benchmark_build(c: &mut Criterion) {
     let patterns: Vec<&str> = vec![
-        "JOINT", "STOCK", "COMPANY", "LIMITED", "LIABILITY",
-        "PUBLIC", "PRIVATE", "CORPORATION", "INTERNATIONAL", "ENTERPRISE",
-        "TRADING", "HOLDINGS", "INVESTMENT", "CAPITAL", "PARTNERS",
+        "JOINT",
+        "STOCK",
+        "COMPANY",
+        "LIMITED",
+        "LIABILITY",
+        "PUBLIC",
+        "PRIVATE",
+        "CORPORATION",
+        "INTERNATIONAL",
+        "ENTERPRISE",
+        "TRADING",
+        "HOLDINGS",
+        "INVESTMENT",
+        "CAPITAL",
+        "PARTNERS",
     ];
 
     c.bench_function("build_automaton", |b| {
@@ -122,19 +146,40 @@ fn benchmark_beam_search(c: &mut Criterion) {
     let automaton_no_beam = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().edits(4))
         .case_insensitive(true)
-        .build(["saddam", "hussein", "tincidunt", "porta", "vestibulum", "accumsan"]);
+        .build([
+            "saddam",
+            "hussein",
+            "tincidunt",
+            "porta",
+            "vestibulum",
+            "accumsan",
+        ]);
 
     let automaton_beam_500 = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().edits(4))
         .case_insensitive(true)
         .beam_width(500)
-        .build(["saddam", "hussein", "tincidunt", "porta", "vestibulum", "accumsan"]);
+        .build([
+            "saddam",
+            "hussein",
+            "tincidunt",
+            "porta",
+            "vestibulum",
+            "accumsan",
+        ]);
 
     let automaton_beam_100 = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().edits(4))
         .case_insensitive(true)
         .beam_width(100)
-        .build(["saddam", "hussein", "tincidunt", "porta", "vestibulum", "accumsan"]);
+        .build([
+            "saddam",
+            "hussein",
+            "tincidunt",
+            "porta",
+            "vestibulum",
+            "accumsan",
+        ]);
 
     group.bench_function("no_beam_edits4", |b| {
         b.iter(|| {

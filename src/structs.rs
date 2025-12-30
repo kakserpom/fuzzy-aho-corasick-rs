@@ -41,7 +41,12 @@ impl AsciiSimilarityTable {
         let b_idx = b as u32;
         if a_idx < 128 && b_idx < 128 {
             // SAFETY: bounds checked above
-            Some(unsafe { *self.table.get_unchecked(a_idx as usize).get_unchecked(b_idx as usize) })
+            Some(unsafe {
+                *self
+                    .table
+                    .get_unchecked(a_idx as usize)
+                    .get_unchecked(b_idx as usize)
+            })
         } else {
             None
         }
