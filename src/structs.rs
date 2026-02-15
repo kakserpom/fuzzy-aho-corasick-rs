@@ -4,76 +4,39 @@ use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
 use unicode_segmentation::UnicodeSegmentation;
 
-/// Precomputed ASCII similarity lookup table for O(1) access.
-/// Index with [char1 as usize][char2 as usize] for ASCII chars < 128.
+/// Combined similarity data: hashmap for non-ASCII and precomputed ASCII table for O(1) lookup.
 #[derive(Clone)]
-struct AsciiSimilarityTable {
-    table: Box<[[f32; 128]; 128]>,
-}
-
-impl fmt::Debug for AsciiSimilarityTable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AsciiSimilarityTable")
-            .finish_non_exhaustive()
-    }
-}
-
-impl AsciiSimilarityTable {
-    /// Build the ASCII lookup table from a similarity map.
-    #[must_use]
-    #[allow(clippy::large_stack_arrays)]
-    fn from_map(map: &FxHashMap<(char, char), f32>) -> Self {
-        let mut table = Box::new([[0.0f32; 128]; 128]);
-
-        // Set diagonal to 1.0 (exact matches)
-        for (i, row) in table.iter_mut().enumerate() {
-            row[i] = 1.0;
-        }
-
-        // Fill from the similarity map
-        for (&(a, b), &sim) in map {
-            if (a as u32) < 128 && (b as u32) < 128 {
-                table[a as usize][b as usize] = sim;
-            }
-        }
-
-        Self { table }
-    }
-
-    /// Get similarity between two ASCII characters. Returns None for non-ASCII.
-    #[inline]
-    #[must_use]
-    fn get(&self, a: char, b: char) -> Option<f32> {
-        let a_idx = a as u32;
-        let b_idx = b as u32;
-        if a_idx < 128 && b_idx < 128 {
-            // SAFETY: bounds checked above
-            Some(unsafe {
-                *self
-                    .table
-                    .get_unchecked(a_idx as usize)
-                    .get_unchecked(b_idx as usize)
-            })
-        } else {
-            None
-        }
-    }
-}
-
-/// Combined similarity data: hashmap for non-ASCII and precomputed table for ASCII.
-#[derive(Clone, Debug)]
 pub struct Similarity {
     /// Similarity map for non-ASCII fallback
     map: FxHashMap<(char, char), f32>,
-    /// Fast ASCII similarity lookup table
-    ascii_table: AsciiSimilarityTable,
+    /// Precomputed ASCII similarity table indexed by [char1][char2] for chars < 128
+    ascii_table: Box<[[f32; 128]]>,
+}
+
+impl fmt::Debug for Similarity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Similarity").finish_non_exhaustive()
+    }
 }
 
 impl Similarity {
     /// Build similarity data from a hashmap.
     #[must_use]
     pub fn from_map(map: FxHashMap<(char, char), f32>) -> Self {
-        let ascii_table = AsciiSimilarityTable::from_map(&map);
+        let mut ascii_table = vec![[0.0f32; 128]; 128].into_boxed_slice();
+
+        // Set diagonal to 1.0 (exact matches)
+        for (i, row) in ascii_table.iter_mut().enumerate() {
+            row[i] = 1.0;
+        }
+
+        // Fill from the similarity map
+        for (&(a, b), &sim) in &map {
+            if (a as u32) < 128 && (b as u32) < 128 {
+                ascii_table[a as usize][b as usize] = sim;
+            }
+        }
+
         Self { map, ascii_table }
     }
 
@@ -82,10 +45,19 @@ impl Similarity {
     #[inline]
     #[must_use]
     pub fn get(&self, a: char, b: char) -> f32 {
-        if let Some(sim) = self.ascii_table.get(a, b) {
-            return sim;
+        let a_idx = a as u32;
+        let b_idx = b as u32;
+        if a_idx < 128 && b_idx < 128 {
+            // SAFETY: bounds checked above
+            unsafe {
+                *self
+                    .ascii_table
+                    .get_unchecked(a_idx as usize)
+                    .get_unchecked(b_idx as usize)
+            }
+        } else {
+            *self.map.get(&(a, b)).unwrap_or(&0.0)
         }
-        *self.map.get(&(a, b)).unwrap_or(&0.0)
     }
 }
 
