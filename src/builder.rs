@@ -1,4 +1,4 @@
-use crate::structs::{AsciiSimilarityTable, FxHashMap};
+use crate::structs::{FxHashMap, Similarity};
 use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyPenalties, FuzzyReplacer, Node, Pattern};
 use std::collections::VecDeque;
 use std::sync::LazyLock;
@@ -19,7 +19,7 @@ use unicode_segmentation::UnicodeSegmentation;
 #[derive(Debug, Default)]
 pub struct FuzzyAhoCorasickBuilder {
     minimize_lambda: Option<f32>,
-    similarity: Option<&'static FxHashMap<(char, char), f32>>,
+    similarity: Option<&'static Similarity>,
     limits: Option<FuzzyLimits>,
     penalties: FuzzyPenalties,
     case_insensitive: bool,
@@ -47,10 +47,10 @@ impl FuzzyAhoCorasickBuilder {
         self
     }
 
-    /// Provide a custom similarity map.
+    /// Provide custom similarity data.
     #[must_use]
-    pub fn similarity(mut self, map: &'static FxHashMap<(char, char), f32>) -> Self {
-        self.similarity = Some(map);
+    pub fn similarity(mut self, similarity: &'static Similarity) -> Self {
+        self.similarity = Some(similarity);
         self
     }
 
@@ -126,8 +126,7 @@ impl FuzzyAhoCorasickBuilder {
         T: Into<Pattern>,
     {
         let patterns: Vec<Pattern> = inputs.into_iter().map(Into::into).collect();
-        let similarity: &'static FxHashMap<(_, _), _> =
-            self.similarity.unwrap_or(&DEFAULT_SIMILARITY_MAP);
+        let similarity: &'static Similarity = self.similarity.unwrap_or(&DEFAULT_SIMILARITY);
         let max_pattern_grapheme_len = patterns.iter().map(|p| p.grapheme_len).max().unwrap_or(0);
 
         let mut nodes = vec![Node::new(
@@ -260,9 +259,6 @@ impl FuzzyAhoCorasickBuilder {
             nodes = reprs;
         }
 
-        // Build ASCII similarity table for fast lookups
-        let ascii_similarity = Box::new(AsciiSimilarityTable::from_map(similarity));
-
         // Compute effective limits: if no global limits are set but patterns have limits,
         // derive a permissive global limit from the max of all pattern limits.
         // This fixes the bug where deletions at non-final nodes were blocked.
@@ -312,7 +308,6 @@ impl FuzzyAhoCorasickBuilder {
             nodes,
             patterns,
             similarity,
-            ascii_similarity,
             limits: effective_limits,
             penalties: self.penalties,
             case_insensitive: self.case_insensitive,
@@ -323,11 +318,11 @@ impl FuzzyAhoCorasickBuilder {
 }
 
 /* -------------------------------------------------------------------------
- *  Default similarity map
+ *  Default similarity
  * ---------------------------------------------------------------------- */
 
-/// Singleton that stores the lazily‑initialised vowel/consonant similarity map.
-static DEFAULT_SIMILARITY_MAP: LazyLock<FxHashMap<(char, char), f32>> = LazyLock::new(|| {
+/// Singleton that stores the lazily‑initialised vowel/consonant similarity data.
+static DEFAULT_SIMILARITY: LazyLock<Similarity> = LazyLock::new(|| {
     let mut map = FxHashMap::default();
     let vowels = ['a', 'e', 'i', 'o', 'u'];
     let consonants = (b'a'..=b'z')
@@ -360,5 +355,5 @@ static DEFAULT_SIMILARITY_MAP: LazyLock<FxHashMap<(char, char), f32>> = LazyLock
     map.insert(('1', 'i'), 0.6);
     map.insert(('s', '5'), 0.5);
     map.insert(('5', 's'), 0.5);
-    map
+    Similarity::from_map(map)
 });

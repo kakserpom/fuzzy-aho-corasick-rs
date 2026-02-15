@@ -7,15 +7,22 @@ use unicode_segmentation::UnicodeSegmentation;
 /// Precomputed ASCII similarity lookup table for O(1) access.
 /// Index with [char1 as usize][char2 as usize] for ASCII chars < 128.
 #[derive(Clone)]
-pub struct AsciiSimilarityTable {
+struct AsciiSimilarityTable {
     table: Box<[[f32; 128]; 128]>,
+}
+
+impl fmt::Debug for AsciiSimilarityTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AsciiSimilarityTable")
+            .finish_non_exhaustive()
+    }
 }
 
 impl AsciiSimilarityTable {
     /// Build the ASCII lookup table from a similarity map.
     #[must_use]
     #[allow(clippy::large_stack_arrays)]
-    pub fn from_map(map: &FxHashMap<(char, char), f32>) -> Self {
+    fn from_map(map: &FxHashMap<(char, char), f32>) -> Self {
         let mut table = Box::new([[0.0f32; 128]; 128]);
 
         // Set diagonal to 1.0 (exact matches)
@@ -36,7 +43,7 @@ impl AsciiSimilarityTable {
     /// Get similarity between two ASCII characters. Returns None for non-ASCII.
     #[inline]
     #[must_use]
-    pub fn get(&self, a: char, b: char) -> Option<f32> {
+    fn get(&self, a: char, b: char) -> Option<f32> {
         let a_idx = a as u32;
         let b_idx = b as u32;
         if a_idx < 128 && b_idx < 128 {
@@ -50,6 +57,35 @@ impl AsciiSimilarityTable {
         } else {
             None
         }
+    }
+}
+
+/// Combined similarity data: hashmap for non-ASCII and precomputed table for ASCII.
+#[derive(Clone, Debug)]
+pub struct Similarity {
+    /// Similarity map for non-ASCII fallback
+    map: FxHashMap<(char, char), f32>,
+    /// Fast ASCII similarity lookup table
+    ascii_table: AsciiSimilarityTable,
+}
+
+impl Similarity {
+    /// Build similarity data from a hashmap.
+    #[must_use]
+    pub fn from_map(map: FxHashMap<(char, char), f32>) -> Self {
+        let ascii_table = AsciiSimilarityTable::from_map(&map);
+        Self { map, ascii_table }
+    }
+
+    /// Get similarity between two characters.
+    /// Uses fast ASCII lookup when possible, falls back to hashmap for non-ASCII.
+    #[inline]
+    #[must_use]
+    pub fn get(&self, a: char, b: char) -> f32 {
+        if let Some(sim) = self.ascii_table.get(a, b) {
+            return sim;
+        }
+        *self.map.get(&(a, b)).unwrap_or(&0.0)
     }
 }
 
@@ -251,10 +287,8 @@ pub struct FuzzyAhoCorasick {
     pub(crate) nodes: Vec<Node>,
     /// Patterns
     pub(crate) patterns: Vec<Pattern>,
-    /// Similarity map (for non-ASCII fallback)
-    pub(crate) similarity: &'static FxHashMap<(char, char), f32>,
-    /// Fast ASCII similarity lookup table
-    pub(crate) ascii_similarity: Box<AsciiSimilarityTable>,
+    /// Similarity data (ASCII table + non-ASCII fallback map)
+    pub(crate) similarity: &'static Similarity,
     /// Limits of errors
     pub(crate) limits: Option<FuzzyLimits>,
     /// Weight

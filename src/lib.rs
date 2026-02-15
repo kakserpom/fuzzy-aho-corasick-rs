@@ -44,12 +44,7 @@ impl FuzzyAhoCorasick {
         if a == b {
             return 1.0;
         }
-        // Try ASCII fast path first (O(1) array lookup)
-        if let Some(sim) = self.ascii_similarity.get(a, b) {
-            return sim;
-        }
-        // Fall back to HashMap for non-ASCII characters
-        *self.similarity.get(&(a, b)).unwrap_or(&0.0)
+        self.similarity.get(a, b)
     }
 
     /// Check ahead whether an insertion would stay within the allowed limits.
