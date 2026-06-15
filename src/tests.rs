@@ -625,8 +625,17 @@ fn test_long_token_no_blowup_regression() {
         .insertions(2)
         .swaps(0);
     let patterns = [
-        "SA", "LES", "CO", "JSC", "LTD", "BANK", "GROUP", "COMPANY", "CORPORATION",
-        "JOINT STOCK COMPANY", "FEDERAL STATE BUDGETARY INSTITUTION OF SCIENCE",
+        "SA",
+        "LES",
+        "CO",
+        "JSC",
+        "LTD",
+        "BANK",
+        "GROUP",
+        "COMPANY",
+        "CORPORATION",
+        "JOINT STOCK COMPANY",
+        "FEDERAL STATE BUDGETARY INSTITUTION OF SCIENCE",
     ]
     .into_iter()
     .map(|p| Pattern::from(p.to_owned()).fuzzy(limits.clone()));

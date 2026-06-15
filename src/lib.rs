@@ -15,6 +15,29 @@ use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
 pub use structs::*;
 
+/// Automaton trie node index.
+type NodeIndex = usize;
+/// Current position (grapheme index) in the haystack.
+type HaystackPos = usize;
+/// Start grapheme index of the matched span in the haystack.
+type MatchStart = usize;
+/// End grapheme index of the matched span in the haystack.
+type MatchEnd = usize;
+
+/// Key for the per-window state-dedup map: automaton position, matched span, and
+/// the four per-edit-type counts. Two states with equal keys behave identically
+/// going forward, so only the lowest-penalty one needs expanding.
+type VisitedKey = (
+    NodeIndex,
+    HaystackPos,
+    MatchStart,
+    MatchEnd,
+    NumEdits,
+    NumEdits,
+    NumEdits,
+    NumEdits,
+);
+
 #[allow(unused_macros)]
 #[cfg(test)]
 macro_rules! trace {
@@ -206,10 +229,7 @@ impl FuzzyAhoCorasick {
         // without dedup this BFS explodes in time and memory on long haystacks. Two states that
         // agree on automaton position, matched span, and per-edit-type counts behave identically
         // in the future, so only the lowest-penalty one needs to be expanded.
-        let mut visited: HashMap<
-            (usize, usize, usize, usize, NumEdits, NumEdits, NumEdits, NumEdits),
-            f32,
-        > = HashMap::new();
+        let mut visited: HashMap<VisitedKey, f32> = HashMap::new();
 
         trace!(
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
