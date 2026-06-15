@@ -201,6 +201,16 @@ impl FuzzyAhoCorasick {
         // Pre-allocate queue - size based on beam width or a small default
         let mut queue: Vec<State> = Vec::with_capacity(self.beam_width.unwrap_or(64));
 
+        // Visited set for state deduplication, reused (cleared) per start window. Insertions and
+        // deletions can reach the same automaton position via exponentially many distinct paths;
+        // without dedup this BFS explodes in time and memory on long haystacks. Two states that
+        // agree on automaton position, matched span, and per-edit-type counts behave identically
+        // in the future, so only the lowest-penalty one needs to be expanded.
+        let mut visited: HashMap<
+            (usize, usize, usize, usize, NumEdits, NumEdits, NumEdits, NumEdits),
+            f32,
+        > = HashMap::new();
+
         trace!(
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
         );
@@ -211,6 +221,7 @@ impl FuzzyAhoCorasick {
             );
 
             queue.clear();
+            visited.clear();
             queue.push(State {
                 node: 0,
                 j: start,
@@ -254,6 +265,27 @@ impl FuzzyAhoCorasick {
                 #[cfg(debug_assertions)]
                 let notes = queue[q_idx].notes.clone();
                 q_idx += 1;
+
+                // State deduplication: skip if an equal-or-better (lower-penalty) state with the
+                // same automaton position, matched span, and per-edit-type counts was already
+                // expanded. This collapses the exponential set of insertion/deletion paths that
+                // reach the same position into a polynomial number of distinct states.
+                let dedup_key = (
+                    node,
+                    j,
+                    matched_start,
+                    matched_end,
+                    insertions,
+                    deletions,
+                    substitutions,
+                    swaps,
+                );
+                match visited.get(&dedup_key) {
+                    Some(&seen) if seen <= penalties => continue,
+                    _ => {
+                        visited.insert(dedup_key, penalties);
+                    }
+                }
 
                 // Early pruning: check if this state can possibly produce a match
                 // above the threshold. Use the maximum pattern length as the best case.

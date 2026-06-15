@@ -609,3 +609,47 @@ fn test_aminullah_aminulah() {
     println!("Result for 'Aminulah' vs 'AMINULLAH': {result:?}");
     assert!(!result.inner.is_empty(), "AMINULLAH should match Aminulah");
 }
+
+/// Regression: searching a long token against fuzzy patterns that allow insertions and
+/// deletions used to explode combinatorially (no state dedup), consuming tens of GB and
+/// dozens of seconds for a single ~29-char word. With state deduplication it must complete
+/// near-instantly. See amlsearch issue: "Russische ... Ruckversicherungsgesellschaft JSC" OOM.
+#[test]
+fn test_long_token_no_blowup_regression() {
+    // Mirror the real-world entity automaton: a mix of short and long patterns, each fuzzy
+    // with the same generous limits that triggered the blow-up.
+    let limits = FuzzyLimits::new()
+        .edits(3)
+        .substitutions(1)
+        .deletions(2)
+        .insertions(2)
+        .swaps(0);
+    let patterns = [
+        "SA", "LES", "CO", "JSC", "LTD", "BANK", "GROUP", "COMPANY", "CORPORATION",
+        "JOINT STOCK COMPANY", "FEDERAL STATE BUDGETARY INSTITUTION OF SCIENCE",
+    ]
+    .into_iter()
+    .map(|p| Pattern::from(p.to_owned()).fuzzy(limits.clone()));
+
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build(patterns);
+
+    let haystack = "RUSSISCHE NATIONALE RUCKVERSICHERUNGSGESELLSCHAFT JSC";
+    let start = std::time::Instant::now();
+    let result = engine.search_greedy(haystack, 0.8);
+    let elapsed = start.elapsed();
+
+    println!("elapsed={elapsed:?} matches={}", result.inner.len());
+    // Before the dedup fix this took ~20s+ and allocated tens of GB. A generous ceiling well
+    // below that pathological behaviour while tolerating slow CI.
+    assert!(
+        elapsed < std::time::Duration::from_secs(2),
+        "long-token fuzzy search took {elapsed:?} — state-dedup regression"
+    );
+    // Correctness sanity: the trailing exact "JSC" token must still be found.
+    assert!(
+        result.iter().any(|m| m.pattern.as_str() == "JSC"),
+        "expected the JSC token to match"
+    );
+}
