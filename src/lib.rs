@@ -571,16 +571,20 @@ impl FuzzyAhoCorasick {
                 }
             }
         }
-        FuzzyMatches {
-            haystack,
-            inner: best
-                .into_values()
-                .map(|mut m| {
-                    m.text = &haystack[m.start..m.end];
-                    m
-                })
-                .collect(),
-        }
+        // `best` is a randomly-seeded `HashMap`, so `into_values()` yields a different order on
+        // every call. Downstream consumers (`default_sort`, the non-overlapping selectors) sort
+        // *stably*, so that random order would leak through into tie-breaking and make results
+        // non-reproducible run-to-run. Sort by the stable match identity so the output is
+        // deterministic before any of that runs.
+        let mut inner: Vec<FuzzyMatch> = best
+            .into_values()
+            .map(|mut m| {
+                m.text = &haystack[m.start..m.end];
+                m
+            })
+            .collect();
+        inner.sort_unstable_by_key(|m| (m.start, m.end, m.pattern_index));
+        FuzzyMatches { haystack, inner }
     }
 
     /// Convenience wrapper over `search_unsorted` that applies the default sorting
