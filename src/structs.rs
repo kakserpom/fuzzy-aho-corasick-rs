@@ -67,13 +67,55 @@ pub struct FxHasher {
     hash: u64,
 }
 
+/// Multiplicative constant of the `FxHash` algorithm.
+const K: u64 = 0x517c_c1b7_2722_0a95;
+
+impl FxHasher {
+    #[inline]
+    fn add(&mut self, i: u64) {
+        self.hash = (self.hash.rotate_left(5) ^ i).wrapping_mul(K);
+    }
+}
+
 impl Hasher for FxHasher {
     #[inline]
-    fn write(&mut self, bytes: &[u8]) {
-        const K: u64 = 0x517c_c1b7_2722_0a95;
-        for &byte in bytes {
-            self.hash = (self.hash.rotate_left(5) ^ u64::from(byte)).wrapping_mul(K);
+    fn write(&mut self, mut bytes: &[u8]) {
+        // Mix a whole word at a time instead of one byte per multiply. The dedup and `best` maps
+        // are keyed by integer tuples, so their `write_*` hooks below are what run hottest; this
+        // path only matters for the string-keyed transition map.
+        while bytes.len() >= 8 {
+            let (chunk, rest) = bytes.split_at(8);
+            self.add(u64::from_le_bytes(chunk.try_into().unwrap()));
+            bytes = rest;
         }
+        if bytes.len() >= 4 {
+            let (chunk, rest) = bytes.split_at(4);
+            self.add(u64::from(u32::from_le_bytes(chunk.try_into().unwrap())));
+            bytes = rest;
+        }
+        for &byte in bytes {
+            self.add(u64::from(byte));
+        }
+    }
+
+    #[inline]
+    fn write_u8(&mut self, i: u8) {
+        self.add(u64::from(i));
+    }
+
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        self.add(u64::from(i));
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.add(i);
+    }
+
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.add(i as u64);
     }
 
     #[inline]
