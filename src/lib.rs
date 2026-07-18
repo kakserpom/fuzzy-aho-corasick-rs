@@ -10,6 +10,7 @@ mod tests;
 pub use builder::FuzzyAhoCorasickBuilder;
 pub use replacer::FuzzyReplacer;
 use std::borrow::Cow;
+use std::collections::hash_map::Entry;
 use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
 pub use structs::*;
@@ -315,10 +316,18 @@ impl FuzzyAhoCorasick {
                     substitutions,
                     swaps,
                 );
-                match visited.get(&dedup_key) {
-                    Some(&seen) if seen <= penalties => continue,
-                    _ => {
-                        visited.insert(dedup_key, penalties);
+                // Use the entry API so the key is hashed once (a plain `get` followed by `insert`
+                // hashes it twice); this map is probed on every expanded state, so that second hash
+                // was a measurable slice of the hot path.
+                match visited.entry(dedup_key) {
+                    Entry::Occupied(mut slot) => {
+                        if *slot.get() <= penalties {
+                            continue;
+                        }
+                        slot.insert(penalties);
+                    }
+                    Entry::Vacant(slot) => {
+                        slot.insert(penalties);
                     }
                 }
 
