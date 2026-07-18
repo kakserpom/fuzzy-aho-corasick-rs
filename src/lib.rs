@@ -344,9 +344,14 @@ impl FuzzyAhoCorasick {
                     ..
                 } = node_ref;
 
-                // Per-node limits are the same for every edit-type check below; compute once
-                // instead of re-deriving them (a pattern lookup) up to four times per state.
-                let node_limits = self.get_node_limits(node);
+                // Per-node limits are the same for every edit-type check below; compute once instead
+                // of re-deriving them (a pattern lookup) up to four times per state. Skip the lookup
+                // entirely in the common case where no pattern has its own limits.
+                let node_limits = if self.has_pattern_limits {
+                    self.get_node_limits(node)
+                } else {
+                    None
+                };
 
                 if !output.is_empty() {
                     for &pattern_index in output {

@@ -335,6 +335,9 @@ pub struct FuzzyAhoCorasick {
     pub(crate) penalties: FuzzyPenalties,
     /// Case insensitivity
     pub(crate) case_insensitive: bool,
+    /// Whether any pattern carries its own [`FuzzyLimits`]. When false, the per-node limit lookup on
+    /// the search hot path is skipped entirely and the global `limits` are used directly.
+    pub(crate) has_pattern_limits: bool,
     /// Beam width for search - limits state explosion (None = unlimited)
     pub(crate) beam_width: Option<usize>,
 }

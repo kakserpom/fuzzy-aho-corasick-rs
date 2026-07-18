@@ -358,6 +358,8 @@ impl FuzzyAhoCorasickBuilder {
             node.prune_len_over_weight = len / reach_weight[i];
         }
 
+        let has_pattern_limits = patterns.iter().any(|p| p.limits.is_some());
+
         FuzzyAhoCorasick {
             nodes,
             patterns,
@@ -365,6 +367,7 @@ impl FuzzyAhoCorasickBuilder {
             limits: effective_limits,
             penalties: self.penalties,
             case_insensitive: self.case_insensitive,
+            has_pattern_limits,
             beam_width: self.beam_width,
         }
     }
