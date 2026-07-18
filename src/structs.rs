@@ -146,13 +146,28 @@ pub(crate) struct State {
     pub(crate) notes: Vec<String>,
 }
 
+/// A single outgoing edge, materialised once after the trie is built. Duplicates the information
+/// in [`Node::transitions`] but in a flat, `Copy`, iteration-friendly layout: the substitution and
+/// deletion scans walk every edge of a node on the hot path, and this avoids re-decoding the
+/// grapheme's first `char` and chasing hash buckets on each visit.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Edge {
+    /// First `char` of the edge's grapheme, precomputed for the similarity lookup.
+    pub(crate) first_char: char,
+    /// Target node index.
+    pub(crate) next: usize,
+}
+
 /// A single node inside the internal Aho–Corasick automaton.
 #[derive(Clone, Debug)]
 pub(crate) struct Node {
     pub(crate) pattern_index: Option<PatternIndex>,
     pub(crate) epsilon: Option<usize>,
-    /// Outgoing edges keyed by the next character.
+    /// Outgoing edges keyed by the next character (used for O(1) exact/swap lookups).
     pub(crate) transitions: FxHashMap<String, usize>,
+    /// Same edges as `transitions`, in a flat layout for hot-path iteration. Derived from
+    /// `transitions` in a final build pass; must be kept consistent with it.
+    pub(crate) edges: Vec<Edge>,
     /// Failure link (classic AC fallback state).
     pub(crate) fail: usize,
     /// All patterns that end in this state.
@@ -283,6 +298,7 @@ impl Node {
         Self {
             pattern_index: None,
             transitions: FxHashMap::default(),
+            edges: Vec::new(),
             fail: 0,
             output: Vec::new(),
             weight: 0.0,

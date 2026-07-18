@@ -1,5 +1,5 @@
 use crate::structs::{FxHashMap, Similarity};
-use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyPenalties, FuzzyReplacer, Node, Pattern};
+use crate::{Edge, FuzzyAhoCorasick, FuzzyLimits, FuzzyPenalties, FuzzyReplacer, Node, Pattern};
 use std::collections::VecDeque;
 use std::sync::LazyLock;
 use unicode_segmentation::UnicodeSegmentation;
@@ -303,6 +303,22 @@ impl FuzzyAhoCorasickBuilder {
                 None
             }
         });
+
+        // Materialise the flat edge list the search hot path iterates over, now that the trie
+        // (including any minimisation) is final. Order follows `transitions`' iteration order —
+        // deterministic given the fixed-seed hasher — which is exactly the order the search
+        // previously iterated the map in, so tie-breaking among equal-similarity matches is
+        // unchanged.
+        for node in &mut nodes {
+            node.edges = node
+                .transitions
+                .iter()
+                .map(|(g, &next)| Edge {
+                    first_char: g.chars().next().unwrap_or('\0'),
+                    next,
+                })
+                .collect();
+        }
 
         FuzzyAhoCorasick {
             nodes,

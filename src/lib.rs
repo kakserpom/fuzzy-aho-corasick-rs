@@ -208,7 +208,14 @@ impl FuzzyAhoCorasick {
         let text_chars: Vec<Cow<str>> = grapheme_idx
             .iter()
             .map(|(_, g)| {
-                if self.case_insensitive {
+                // Only allocate a lowercased copy when the grapheme could actually change. For an
+                // all-ASCII grapheme with no uppercase byte (spaces, digits, punctuation, and
+                // already-lowercase letters — the bulk of typical text) `to_lowercase()` is a no-op,
+                // so borrow instead. Non-ASCII graphemes may still lowercase, so those go the owned
+                // path.
+                let needs_lowercasing = self.case_insensitive
+                    && (!g.is_ascii() || g.bytes().any(|b| b.is_ascii_uppercase()));
+                if needs_lowercasing {
                     Cow::Owned(g.to_lowercase())
                 } else {
                     Cow::Borrowed(*g)
@@ -327,6 +334,7 @@ impl FuzzyAhoCorasick {
                 let Node {
                     output,
                     transitions,
+                    edges,
                     ..
                 } = &self.nodes[node];
 
@@ -412,7 +420,8 @@ impl FuzzyAhoCorasick {
 
                     // Exact transition: an O(1) map lookup instead of scanning every edge. This is
                     // the common case and is always taken when the current grapheme has an edge.
-                    if let Some(&next_node) = transitions.get(current_grapheme) {
+                    let exact_next = transitions.get(current_grapheme).copied();
+                    if let Some(next_node) = exact_next {
                         trace!(
                             "  match   {:>8} ─ok→ node={}  sim=1.00",
                             current_grapheme, next_node
@@ -438,14 +447,17 @@ impl FuzzyAhoCorasick {
                     // already covered the only reachable transition.
                     if self.within_limits_subst(node_limits, edits, substitutions) {
                         let current_ch = current_grapheme.chars().next().unwrap_or('\0');
-                        for (edge_g, &next_node) in transitions {
-                            if edge_g == current_grapheme {
-                                // Already handled by the exact lookup above.
+                        for edge in edges {
+                            let next_node = edge.next;
+                            // Skip the exact transition (already enqueued above). Its target is
+                            // reached with zero penalty and no extra edit, so any edge leading to
+                            // the same node — possible after minimisation merges siblings — is
+                            // strictly dominated by it and needs no substitution branch.
+                            if Some(next_node) == exact_next {
                                 continue;
                             }
-                            let g_ch = edge_g.chars().next().unwrap_or('\0');
                             // substitution
-                            let sim = self.get_similarity(g_ch, current_ch);
+                            let sim = self.get_similarity(edge.first_char, current_ch);
                             let penalty = self.penalties.substitution * (1.0 - sim);
 
                             // Skip substitutions that would push the state past the score ceiling.
@@ -456,7 +468,7 @@ impl FuzzyAhoCorasick {
                             trace!(
                                 "  subst {:>8?} ─sub→ {current_grapheme:?} \
                                  node={}  sim={:.2} pen={:.2} edits->{}",
-                                edge_g,
+                                edge.first_char,
                                 next_node,
                                 sim,
                                 penalty,
@@ -465,7 +477,7 @@ impl FuzzyAhoCorasick {
                             #[cfg(debug_assertions)]
                             let mut notes = notes.clone();
                             #[cfg(debug_assertions)]
-                            notes.push(format!("sub {edge_g:?} -> {current_grapheme:?} (sim={sim:.2}, pen={penalty:.2}) (subst->{}, edits->{})", substitutions + 1, edits + 1));
+                            notes.push(format!("sub {:?} -> {current_grapheme:?} (sim={sim:.2}, pen={penalty:.2}) (subst->{}, edits->{})", edge.first_char, substitutions + 1, edits + 1));
 
                             queue.push(State {
                                 node: next_node,
@@ -564,8 +576,8 @@ impl FuzzyAhoCorasick {
                 if penalties + self.penalties.deletion <= max_penalties
                     && self.within_limits_deletion_ahead(node_limits, edits, deletions)
                 {
-                    #[allow(unused_variables)]
-                    for (edge_g2, &next_node2) in transitions {
+                    for edge in edges {
+                        let next_node2 = edge.next;
                         trace!(
                             "  delete to node={next_node2} penalty={:.2}",
                             self.penalties.deletion
@@ -573,7 +585,11 @@ impl FuzzyAhoCorasick {
                         #[cfg(debug_assertions)]
                         let mut notes = notes.clone();
                         #[cfg(debug_assertions)]
-                        notes.push(format!("edge_g2 {edge_g2:?} (del->{:?})", deletions + 1));
+                        notes.push(format!(
+                            "edge_g2 {:?} (del->{:?})",
+                            edge.first_char,
+                            deletions + 1
+                        ));
                         queue.push(State {
                             node: next_node2,
                             j,
