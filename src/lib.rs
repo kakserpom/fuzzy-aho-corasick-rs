@@ -510,13 +510,15 @@ impl FuzzyAhoCorasick {
                     //
                     // 2) Swap (transposition of two neighboring graphemes)
                     //
-                    if j + 1 < text_chars.len() {
+                    if j + 1 < text_chars.len() && penalties + self.penalties.swap <= max_penalties
+                    {
                         let a = &text_chars[j];
                         let b = &text_chars[j + 1];
+                        // The two map lookups below each hash a grapheme string, so gate them behind
+                        // the cheap penalty check above rather than the other way around.
                         if let Some(&node2) = transitions
                             .get(b.as_ref())
                             .and_then(|&x| self.nodes[x].transitions.get(a.as_ref()))
-                            && penalties + self.penalties.swap <= max_penalties
                             && self.within_limits_swap_ahead(
                                 self.get_node_limits(node2),
                                 edits,
