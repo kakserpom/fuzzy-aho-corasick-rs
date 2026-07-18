@@ -10,7 +10,6 @@ mod tests;
 pub use builder::FuzzyAhoCorasickBuilder;
 pub use replacer::FuzzyReplacer;
 use std::borrow::Cow;
-use std::collections::HashMap;
 use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
 pub use structs::*;
@@ -217,9 +216,10 @@ impl FuzzyAhoCorasick {
             })
             .collect();
 
-        // Use HashMap for O(1) lookup instead of BTreeMap's O(log n)
-        let mut best: HashMap<(usize, usize, usize), FuzzyMatch> =
-            HashMap::with_capacity(self.patterns.len() * 4);
+        // Keyed by (start_byte, end_byte, pattern_index). Uses the fast FxHash hasher instead of
+        // the default SipHash: keys are small integer tuples looked up on every accepted match.
+        let mut best: FxHashMap<(usize, usize, usize), FuzzyMatch> = FxHashMap::default();
+        best.reserve(self.patterns.len() * 4);
 
         // Pre-allocate queue - size based on beam width or a small default
         let mut queue: Vec<State> = Vec::with_capacity(self.beam_width.unwrap_or(64));
@@ -228,8 +228,9 @@ impl FuzzyAhoCorasick {
         // deletions can reach the same automaton position via exponentially many distinct paths;
         // without dedup this BFS explodes in time and memory on long haystacks. Two states that
         // agree on automaton position, matched span, and per-edit-type counts behave identically
-        // in the future, so only the lowest-penalty one needs to be expanded.
-        let mut visited: HashMap<VisitedKey, f32> = HashMap::new();
+        // in the future, so only the lowest-penalty one needs to be expanded. FxHash is used
+        // because the key is an integer tuple hashed once per expanded state (the hottest map).
+        let mut visited: FxHashMap<VisitedKey, f32> = FxHashMap::default();
 
         trace!(
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
@@ -321,6 +322,10 @@ impl FuzzyAhoCorasick {
                     ..
                 } = &self.nodes[node];
 
+                // Per-node limits are the same for every edit-type check below; compute once
+                // instead of re-deriving them (a pattern lookup) up to four times per state.
+                let node_limits = self.get_node_limits(node);
+
                 if !output.is_empty() {
                     for &pattern_index in output {
                         if !self.within_limits(
@@ -391,39 +396,46 @@ impl FuzzyAhoCorasick {
                 //
                 if j < text_chars.len() {
                     let current_grapheme = text_chars[j].as_ref();
-                    let current_ch = current_grapheme.chars().next().unwrap_or('\0');
+                    let matched_start_next = if matched_end == matched_start {
+                        j
+                    } else {
+                        matched_start
+                    };
 
-                    for (edge_g, &next_node) in transitions {
-                        #[cfg(debug_assertions)]
-                        let notes = notes.clone();
-
-                        let g_ch = edge_g.chars().next().unwrap_or('\0');
-                        if edge_g == current_grapheme {
-                            // exact match
-                            trace!("  match   {:>8} ─ok→ node={}  sim=1.00", edge_g, next_node);
-                            queue.push(State {
-                                node: next_node,
-                                j: j + 1,
-                                matched_start: if matched_end == matched_start {
-                                    j
-                                } else {
-                                    matched_start
-                                },
-                                matched_end: j + 1,
-                                penalties,
-                                edits,
-                                insertions,
-                                deletions,
-                                substitutions,
-                                swaps,
-                                #[cfg(debug_assertions)]
-                                notes,
-                            });
-                        } else if self.within_limits_subst(
-                            self.get_node_limits(node),
+                    // Exact transition: an O(1) map lookup instead of scanning every edge. This is
+                    // the common case and is always taken when the current grapheme has an edge.
+                    if let Some(&next_node) = transitions.get(current_grapheme) {
+                        trace!(
+                            "  match   {:>8} ─ok→ node={}  sim=1.00",
+                            current_grapheme, next_node
+                        );
+                        queue.push(State {
+                            node: next_node,
+                            j: j + 1,
+                            matched_start: matched_start_next,
+                            matched_end: j + 1,
+                            penalties,
                             edits,
+                            insertions,
+                            deletions,
                             substitutions,
-                        ) {
+                            swaps,
+                            #[cfg(debug_assertions)]
+                            notes: notes.clone(),
+                        });
+                    }
+
+                    // Substitutions require scanning every outgoing edge, so only do so when a
+                    // substitution is still within limits. When it is not, the exact lookup above
+                    // already covered the only reachable transition.
+                    if self.within_limits_subst(node_limits, edits, substitutions) {
+                        let current_ch = current_grapheme.chars().next().unwrap_or('\0');
+                        for (edge_g, &next_node) in transitions {
+                            if edge_g == current_grapheme {
+                                // Already handled by the exact lookup above.
+                                continue;
+                            }
+                            let g_ch = edge_g.chars().next().unwrap_or('\0');
                             // substitution
                             let sim = self.get_similarity(g_ch, current_ch);
                             let penalty = self.penalties.substitution * (1.0 - sim);
@@ -445,11 +457,7 @@ impl FuzzyAhoCorasick {
                             queue.push(State {
                                 node: next_node,
                                 j: j + 1,
-                                matched_start: if matched_end == matched_start {
-                                    j
-                                } else {
-                                    matched_start
-                                },
+                                matched_start: matched_start_next,
                                 matched_end: j + 1,
                                 penalties: penalties + penalty,
                                 edits: edits + 1,
@@ -507,11 +515,7 @@ impl FuzzyAhoCorasick {
                     // 3a) Insertion (skip a haystack character)
                     //
                     if (matched_start != matched_end || matched_start != j)
-                        && self.within_limits_insertion_ahead(
-                            self.get_node_limits(node),
-                            edits,
-                            insertions,
-                        )
+                        && self.within_limits_insertion_ahead(node_limits, edits, insertions)
                     {
                         #[cfg(debug_assertions)]
                         let mut notes = notes.clone();
@@ -542,7 +546,7 @@ impl FuzzyAhoCorasick {
                 //
                 // 3b) Deletion (skip a pattern character) — always, even if j == len
                 //
-                if self.within_limits_deletion_ahead(self.get_node_limits(node), edits, deletions) {
+                if self.within_limits_deletion_ahead(node_limits, edits, deletions) {
                     #[allow(unused_variables)]
                     for (edge_g2, &next_node2) in transitions {
                         trace!(
@@ -571,11 +575,10 @@ impl FuzzyAhoCorasick {
                 }
             }
         }
-        // `best` is a randomly-seeded `HashMap`, so `into_values()` yields a different order on
-        // every call. Downstream consumers (`default_sort`, the non-overlapping selectors) sort
-        // *stably*, so that random order would leak through into tie-breaking and make results
-        // non-reproducible run-to-run. Sort by the stable match identity so the output is
-        // deterministic before any of that runs.
+        // `best.into_values()` yields matches in hash-bucket order, which is unrelated to their
+        // position in the haystack. Downstream consumers (`default_sort`, the non-overlapping
+        // selectors) sort *stably*, so that arbitrary order would leak through into tie-breaking.
+        // Sort by the stable match identity so the output is deterministic before any of that runs.
         let mut inner: Vec<FuzzyMatch> = best
             .into_values()
             .map(|mut m| {
