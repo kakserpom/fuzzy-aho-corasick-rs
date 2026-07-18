@@ -79,6 +79,11 @@ impl FxHasher {
 
 impl Hasher for FxHasher {
     #[inline]
+    fn finish(&self) -> u64 {
+        self.hash
+    }
+
+    #[inline]
     fn write(&mut self, mut bytes: &[u8]) {
         // Mix a whole word at a time instead of one byte per multiply. The dedup and `best` maps
         // are keyed by integer tuples, so their `write_*` hooks below are what run hottest; this
@@ -116,11 +121,6 @@ impl Hasher for FxHasher {
     #[inline]
     fn write_usize(&mut self, i: usize) {
         self.add(i as u64);
-    }
-
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.hash
     }
 }
 
@@ -172,6 +172,14 @@ pub(crate) struct Node {
     pub(crate) fail: usize,
     /// All patterns that end in this state.
     pub(crate) output: Vec<usize>,
+    /// Two precomputed coefficients of this node's pruning ceiling. A state at this node can only
+    /// complete a pattern still reachable from here (its own `output` plus its transition subtree);
+    /// for the longest/heaviest such pattern `(len - pen) / len * weight >= threshold` rearranges to
+    /// `pen <= len - (len / weight) * threshold`. Storing `len` and `len / weight` lets the hot path
+    /// evaluate the ceiling as `prune_len - prune_len_over_weight * threshold` — no division, no
+    /// per-search allocation — while pruning short-pattern branches far earlier than a global bound.
+    pub(crate) prune_len: f32,
+    pub(crate) prune_len_over_weight: f32,
     /// Pre‑computed prefix weight (see [`FuzzyAhoCorasickBuilder::pmf`]).
     pub(crate) weight: f32,
     /// Index of the parent state – only present in *debug* builds to make
@@ -301,6 +309,8 @@ impl Node {
             edges: Vec::new(),
             fail: 0,
             output: Vec::new(),
+            prune_len: 0.0,
+            prune_len_over_weight: 0.0,
             weight: 0.0,
             #[cfg(debug_assertions)]
             parent,
@@ -325,8 +335,6 @@ pub struct FuzzyAhoCorasick {
     pub(crate) penalties: FuzzyPenalties,
     /// Case insensitivity
     pub(crate) case_insensitive: bool,
-    /// Maximum pattern length in graphemes (for early pruning)
-    pub(crate) max_pattern_grapheme_len: usize,
     /// Beam width for search - limits state explosion (None = unlimited)
     pub(crate) beam_width: Option<usize>,
 }

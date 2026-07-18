@@ -127,7 +127,6 @@ impl FuzzyAhoCorasickBuilder {
     {
         let patterns: Vec<Pattern> = inputs.into_iter().map(Into::into).collect();
         let similarity: &'static Similarity = self.similarity.unwrap_or(&DEFAULT_SIMILARITY);
-        let max_pattern_grapheme_len = patterns.iter().map(|p| p.grapheme_len).max().unwrap_or(0);
 
         let mut nodes = vec![Node::new(
             #[cfg(debug_assertions)]
@@ -320,6 +319,45 @@ impl FuzzyAhoCorasickBuilder {
                 .collect();
         }
 
+        // Per-node reachable bounds (longest pattern / heaviest weight reachable from each node).
+        // Seed each node from the patterns that complete at it, then propagate descendants' values
+        // up the transition edges to a fixpoint. The `max` update is monotone and bounded, so this
+        // converges even if minimisation turned the trie into a DAG with shared subtrees.
+        let mut reach_len: Vec<usize> = vec![0; nodes.len()];
+        let mut reach_weight: Vec<f32> = vec![0.0; nodes.len()];
+        for (i, node) in nodes.iter().enumerate() {
+            for &p in &node.output {
+                reach_len[i] = reach_len[i].max(patterns[p].grapheme_len);
+                reach_weight[i] = reach_weight[i].max(patterns[p].weight);
+            }
+        }
+        // Iterate high index → low: in the freshly built trie a child always has a higher index
+        // than its parent, so descendants are finalised before their parent and a single pass
+        // suffices. The `changed` loop only does extra work if minimisation turned the trie into a
+        // DAG; `max` is monotone and bounded, so it still converges.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for i in (0..nodes.len()).rev() {
+                let (mut best_len, mut best_weight) = (reach_len[i], reach_weight[i]);
+                for &child in nodes[i].transitions.values() {
+                    best_len = best_len.max(reach_len[child]);
+                    best_weight = best_weight.max(reach_weight[child]);
+                }
+                // `max` is monotone, so a change can only be an increase.
+                if best_len > reach_len[i] || best_weight > reach_weight[i] {
+                    reach_len[i] = best_len;
+                    reach_weight[i] = best_weight;
+                    changed = true;
+                }
+            }
+        }
+        for (i, node) in nodes.iter_mut().enumerate() {
+            let len = reach_len[i] as f32;
+            node.prune_len = len;
+            node.prune_len_over_weight = len / reach_weight[i];
+        }
+
         FuzzyAhoCorasick {
             nodes,
             patterns,
@@ -327,7 +365,6 @@ impl FuzzyAhoCorasickBuilder {
             limits: effective_limits,
             penalties: self.penalties,
             case_insensitive: self.case_insensitive,
-            max_pattern_grapheme_len,
             beam_width: self.beam_width,
         }
     }

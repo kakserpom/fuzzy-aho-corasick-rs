@@ -239,14 +239,12 @@ impl FuzzyAhoCorasick {
         // because the key is an integer tuple hashed once per expanded state (the hottest map).
         let mut visited: FxHashMap<VisitedKey, f32> = FxHashMap::default();
 
-        // A state can only ever yield a match above the threshold while its accumulated penalties
-        // stay under this ceiling: even in the best case (a pattern of maximal length) the score is
-        // `(max_len - penalties) / max_len`, so `penalties <= max_len * (1 - threshold)`. Any edit
-        // only adds penalties, so once a state exceeds this it (and all its descendants) are dead.
-        // Precomputing the ceiling turns the per-state prune into a single comparison and lets us
-        // reject penalty-adding transitions *before* they are enqueued.
-        let max_penalties =
-            self.max_pattern_grapheme_len as f32 * (1.0 - similarity_threshold).max(0.0);
+        // Global penalty ceiling, used for the cheap push-time guards below: a state carrying more
+        // penalty than this can never reach the threshold. The root reaches every pattern, so its
+        // per-node coefficients give exactly the global bound (longest/heaviest pattern). See
+        // `Node::prune_len` for the derivation.
+        let root = &self.nodes[0];
+        let max_penalties = root.prune_len - root.prune_len_over_weight * similarity_threshold;
 
         trace!(
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
@@ -324,10 +322,17 @@ impl FuzzyAhoCorasick {
                     }
                 }
 
-                // Early pruning: a state whose penalties already exceed the ceiling cannot yield a
-                // match above the threshold (see `max_penalties`). Most such states are rejected at
-                // push time below; this guards the initial state and any that slip through.
-                if penalties > max_penalties {
+                let node_ref = &self.nodes[node];
+
+                // Early pruning against this node's own (tight) ceiling: a state whose penalties
+                // exceed what the longest/heaviest pattern still reachable from here allows cannot
+                // yield an above-threshold match, and neither can any descendant (edits only add
+                // penalties) — so pruning here cuts the entire subtree. This is tighter than the
+                // global `max_penalties` used for the push guards, and it reuses the node reference
+                // already loaded below, so it costs nothing extra on the hot path.
+                if penalties
+                    > node_ref.prune_len - node_ref.prune_len_over_weight * similarity_threshold
+                {
                     continue;
                 }
 
@@ -336,7 +341,7 @@ impl FuzzyAhoCorasick {
                     transitions,
                     edges,
                     ..
-                } = &self.nodes[node];
+                } = node_ref;
 
                 // Per-node limits are the same for every edit-type check below; compute once
                 // instead of re-deriving them (a pattern lookup) up to four times per state.
@@ -460,7 +465,7 @@ impl FuzzyAhoCorasick {
                             let sim = self.get_similarity(edge.first_char, current_ch);
                             let penalty = self.penalties.substitution * (1.0 - sim);
 
-                            // Skip substitutions that would push the state past the score ceiling.
+                            // Skip substitutions that would push the state past the global ceiling.
                             if penalties + penalty > max_penalties {
                                 continue;
                             }
@@ -499,13 +504,13 @@ impl FuzzyAhoCorasick {
                     //
                     // 2) Swap (transposition of two neighboring graphemes)
                     //
-                    if j + 1 < text_chars.len() && penalties + self.penalties.swap <= max_penalties
-                    {
+                    if j + 1 < text_chars.len() {
                         let a = &text_chars[j];
                         let b = &text_chars[j + 1];
                         if let Some(&node2) = transitions
                             .get(b.as_ref())
                             .and_then(|&x| self.nodes[x].transitions.get(a.as_ref()))
+                            && penalties + self.penalties.swap <= max_penalties
                             && self.within_limits_swap_ahead(
                                 self.get_node_limits(node2),
                                 edits,
