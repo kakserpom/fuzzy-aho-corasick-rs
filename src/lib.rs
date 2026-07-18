@@ -24,19 +24,11 @@ type MatchStart = usize;
 /// End grapheme index of the matched span in the haystack.
 type MatchEnd = usize;
 
-/// Key for the per-window state-dedup map: automaton position, matched span, and
-/// the four per-edit-type counts. Two states with equal keys behave identically
-/// going forward, so only the lowest-penalty one needs expanding.
-type VisitedKey = (
-    NodeIndex,
-    HaystackPos,
-    MatchStart,
-    MatchEnd,
-    NumEdits,
-    NumEdits,
-    NumEdits,
-    NumEdits,
-);
+/// Key for the per-window state-dedup map: automaton position, matched span, and the four
+/// per-edit-type counts packed into one `u32` (one byte each). Two states with equal keys behave
+/// identically going forward, so only the lowest-penalty one needs expanding. Packing the counts
+/// keeps the key at five fields, so the per-state hash mixes five words instead of eight.
+type VisitedKey = (NodeIndex, HaystackPos, MatchStart, MatchEnd, u32);
 
 #[allow(unused_macros)]
 #[cfg(test)]
@@ -311,10 +303,10 @@ impl FuzzyAhoCorasick {
                     j,
                     matched_start,
                     matched_end,
-                    insertions,
-                    deletions,
-                    substitutions,
-                    swaps,
+                    u32::from(insertions)
+                        | (u32::from(deletions) << 8)
+                        | (u32::from(substitutions) << 16)
+                        | (u32::from(swaps) << 24),
                 );
                 // Use the entry API so the key is hashed once (a plain `get` followed by `insert`
                 // hashes it twice); this map is probed on every expanded state, so that second hash
