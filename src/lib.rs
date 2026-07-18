@@ -232,6 +232,15 @@ impl FuzzyAhoCorasick {
         // because the key is an integer tuple hashed once per expanded state (the hottest map).
         let mut visited: FxHashMap<VisitedKey, f32> = FxHashMap::default();
 
+        // A state can only ever yield a match above the threshold while its accumulated penalties
+        // stay under this ceiling: even in the best case (a pattern of maximal length) the score is
+        // `(max_len - penalties) / max_len`, so `penalties <= max_len * (1 - threshold)`. Any edit
+        // only adds penalties, so once a state exceeds this it (and all its descendants) are dead.
+        // Precomputing the ceiling turns the per-state prune into a single comparison and lets us
+        // reject penalty-adding transitions *before* they are enqueued.
+        let max_penalties =
+            self.max_pattern_grapheme_len as f32 * (1.0 - similarity_threshold).max(0.0);
+
         trace!(
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
         );
@@ -308,11 +317,10 @@ impl FuzzyAhoCorasick {
                     }
                 }
 
-                // Early pruning: check if this state can possibly produce a match
-                // above the threshold. Use the maximum pattern length as the best case.
-                let max_possible_similarity = (self.max_pattern_grapheme_len as f32 - penalties)
-                    / self.max_pattern_grapheme_len as f32;
-                if max_possible_similarity < similarity_threshold {
+                // Early pruning: a state whose penalties already exceed the ceiling cannot yield a
+                // match above the threshold (see `max_penalties`). Most such states are rejected at
+                // push time below; this guards the initial state and any that slip through.
+                if penalties > max_penalties {
                     continue;
                 }
 
@@ -440,6 +448,11 @@ impl FuzzyAhoCorasick {
                             let sim = self.get_similarity(g_ch, current_ch);
                             let penalty = self.penalties.substitution * (1.0 - sim);
 
+                            // Skip substitutions that would push the state past the score ceiling.
+                            if penalties + penalty > max_penalties {
+                                continue;
+                            }
+
                             trace!(
                                 "  subst {:>8?} ─sub→ {current_grapheme:?} \
                                  node={}  sim={:.2} pen={:.2} edits->{}",
@@ -474,7 +487,8 @@ impl FuzzyAhoCorasick {
                     //
                     // 2) Swap (transposition of two neighboring graphemes)
                     //
-                    if j + 1 < text_chars.len() {
+                    if j + 1 < text_chars.len() && penalties + self.penalties.swap <= max_penalties
+                    {
                         let a = &text_chars[j];
                         let b = &text_chars[j + 1];
                         if let Some(&node2) = transitions
@@ -515,6 +529,7 @@ impl FuzzyAhoCorasick {
                     // 3a) Insertion (skip a haystack character)
                     //
                     if (matched_start != matched_end || matched_start != j)
+                        && penalties + self.penalties.insertion <= max_penalties
                         && self.within_limits_insertion_ahead(node_limits, edits, insertions)
                     {
                         #[cfg(debug_assertions)]
@@ -546,7 +561,9 @@ impl FuzzyAhoCorasick {
                 //
                 // 3b) Deletion (skip a pattern character) — always, even if j == len
                 //
-                if self.within_limits_deletion_ahead(node_limits, edits, deletions) {
+                if penalties + self.penalties.deletion <= max_penalties
+                    && self.within_limits_deletion_ahead(node_limits, edits, deletions)
+                {
                     #[allow(unused_variables)]
                     for (edge_g2, &next_node2) in transitions {
                         trace!(
