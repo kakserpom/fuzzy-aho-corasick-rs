@@ -17,8 +17,8 @@
 //!     .case_insensitive(true)
 //!     .build(["hello", "world"]);
 //!
-//! // Two OCR-style typos: '3'→'e', '0'→'o'.
-//! let matches = engine.search_non_overlapping("H3llo W0rld!", 0.7);
+//! // Two typos: an extra 'l' (insertion) and swapped 'lr' (transposition).
+//! let matches = engine.search_non_overlapping("helllo wolrd", 0.8);
 //! let found: Vec<&str> = matches.iter().map(|m| m.pattern.as_str()).collect();
 //! assert!(found.contains(&"hello") && found.contains(&"world"));
 //! ```

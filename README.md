@@ -44,16 +44,13 @@ fn main() {
         .case_insensitive(true)
         .build(["hello", "world"]);
 
-    // "H3llo W0rld!" contains two OCR-style typos ('3'→'e', '0'→'o').
-    for m in engine.search_non_overlapping("H3llo W0rld!", 0.7).iter() {
+    // "helllo wolrd" has two typos: an extra 'l' (insertion) and swapped 'lr' (transposition).
+    for m in engine.search_non_overlapping("helllo wolrd", 0.8).iter() {
         println!("matched '{}' as '{}' (score {:.2})", m.pattern, m.text, m.similarity);
     }
     // Output:
-    //   matched 'hello' as 'H3llo' (score 0.71)
-    //   matched 'world' as 'W0rld' (score 0.89)
-    //
-    // Note: 'W0rld' scores higher because the default similarity table treats '0'↔'o'
-    // as a near-match, whereas '3'↔'e' is unrelated and costs a full substitution.
+    //   matched 'hello' as 'helllo' (score 0.90)
+    //   matched 'world' as 'wolrd' (score 0.90)
 }
 ```
 
