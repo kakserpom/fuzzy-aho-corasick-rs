@@ -341,6 +341,10 @@ pub struct FuzzyAhoCorasick {
     pub(crate) has_pattern_limits: bool,
     /// Beam width for search - limits state explosion (None = unlimited)
     pub(crate) beam_width: Option<usize>,
+    /// Automatic beam: `(budget, width)`. Once a search has expanded more than `budget` states it
+    /// beams the frontier to `width` for the remainder. Bounds pathological blow-ups while leaving
+    /// ordinary searches exact. Ignored when `beam_width` is set.
+    pub(crate) auto_beam: Option<(usize, usize)>,
 }
 
 #[allow(clippy::missing_fields_in_debug)]

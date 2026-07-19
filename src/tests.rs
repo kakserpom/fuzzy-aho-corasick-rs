@@ -662,3 +662,49 @@ fn test_long_token_no_blowup_regression() {
         "expected the JSC token to match"
     );
 }
+
+#[test]
+fn test_auto_beam_exact_below_budget_and_bounded_above() {
+    // A budget far above what any small search reaches: auto_beam must never engage, so results are
+    // byte-for-byte identical to the unlimited search.
+    let patterns = [
+        "saddam",
+        "hussein",
+        "tincidunt",
+        "porta",
+        "vestibulum",
+        "accumsan",
+    ];
+    let text = "this is a saddamhu example with multiple saddam and tincidutn matches";
+    let exact = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2))
+        .case_insensitive(true)
+        .build(patterns);
+    let huge_budget = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2))
+        .case_insensitive(true)
+        .auto_beam(usize::MAX, 8)
+        .build(patterns);
+    assert_eq!(
+        exact.search(text, 0.6).inner,
+        huge_budget.search(text, 0.6).inner,
+        "auto_beam must be exact when the budget is never reached"
+    );
+
+    // A tiny budget forces the beam on almost immediately; the obvious high-similarity matches must
+    // still be found (the beam keeps the lowest-penalty candidates).
+    let beamed = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2))
+        .case_insensitive(true)
+        .auto_beam(1, 16)
+        .build(patterns);
+    let matched: Vec<&str> = beamed
+        .search(text, 0.6)
+        .iter()
+        .map(|m| m.pattern.as_str())
+        .collect();
+    assert!(
+        matched.contains(&"saddam"),
+        "expected saddam, got {matched:?}"
+    );
+}

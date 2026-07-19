@@ -244,6 +244,13 @@ impl FuzzyAhoCorasick {
         let root = &self.nodes[0];
         let max_penalties = root.prune_len - root.prune_len_over_weight * similarity_threshold;
 
+        // Effective beam width. Starts at the explicit `beam_width` (if any); otherwise it stays
+        // `None` (exact) until the automatic-beam budget is exhausted, at which point it drops to the
+        // configured width to bound a runaway exploration. `states_expanded` is counted across all
+        // start windows so the budget caps total work, not per-window work.
+        let mut effective_beam = self.beam_width;
+        let mut states_expanded = 0usize;
+
         trace!(
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
         );
@@ -275,7 +282,7 @@ impl FuzzyAhoCorasick {
             let mut q_idx = 0;
             while q_idx < queue.len() {
                 // Beam pruning: if queue grows too large, keep only best candidates
-                if let Some(bw) = self.beam_width {
+                if let Some(bw) = effective_beam {
                     let remaining = queue.len() - q_idx;
                     if remaining > bw * 2 {
                         // Sort remaining items by penalties (lowest first = best candidates)
@@ -626,6 +633,19 @@ impl FuzzyAhoCorasick {
                             notes,
                         });
                     }
+                }
+            }
+
+            // Automatic beam: accumulate the states this window expanded and, once the running total
+            // crosses the budget, beam the frontier for all remaining windows. Checked per window
+            // (not per state) so the exact default path carries no hot-loop cost. `queue.len()` is
+            // the number of states expanded this window (the frontier is drained to the end).
+            if let Some((budget, width)) = self.auto_beam
+                && effective_beam.is_none()
+            {
+                states_expanded += queue.len();
+                if states_expanded > budget {
+                    effective_beam = Some(width);
                 }
             }
         }

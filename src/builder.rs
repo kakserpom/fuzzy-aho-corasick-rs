@@ -24,6 +24,7 @@ pub struct FuzzyAhoCorasickBuilder {
     penalties: FuzzyPenalties,
     case_insensitive: bool,
     beam_width: Option<usize>,
+    auto_beam: Option<(usize, usize)>,
 }
 
 impl FuzzyAhoCorasickBuilder {
@@ -37,6 +38,7 @@ impl FuzzyAhoCorasickBuilder {
             penalties: FuzzyPenalties::default(),
             case_insensitive: false,
             beam_width: None,
+            auto_beam: None,
         }
     }
 
@@ -86,6 +88,21 @@ impl FuzzyAhoCorasickBuilder {
     #[must_use]
     pub fn beam_width(mut self, width: usize) -> Self {
         self.beam_width = Some(width);
+        self
+    }
+
+    /// Enable an *automatic* beam that only engages on pathological inputs. The search runs the
+    /// exact unlimited exploration until the number of states it has expanded (across all start
+    /// positions) exceeds `budget`; from that point on it beams the frontier to `width` lowest-
+    /// penalty candidates for the rest of the search.
+    ///
+    /// This bounds the worst case (very high edit limits combined with a low similarity threshold,
+    /// where the state space explodes but yields few if any extra matches) while leaving ordinary
+    /// searches — which never approach `budget` — exact and unaffected. An explicit
+    /// [`beam_width`](Self::beam_width) always takes precedence over this.
+    #[must_use]
+    pub fn auto_beam(mut self, budget: usize, width: usize) -> Self {
+        self.auto_beam = Some((budget, width));
         self
     }
 
@@ -369,6 +386,7 @@ impl FuzzyAhoCorasickBuilder {
             case_insensitive: self.case_insensitive,
             has_pattern_limits,
             beam_width: self.beam_width,
+            auto_beam: self.auto_beam,
         }
     }
 }
