@@ -221,6 +221,20 @@ impl FuzzyAhoCorasick {
         haystack: &'a str,
         similarity_threshold: f32,
     ) -> FuzzyMatches<'a> {
+        // Dispatch on whether any mappings exist so the multi-character-mapping branch is compiled
+        // out entirely for the common (no-mapping) case, keeping the hot loop identical to before.
+        if self.mappings.is_empty() {
+            self.search_unsorted_impl::<false>(haystack, similarity_threshold)
+        } else {
+            self.search_unsorted_impl::<true>(haystack, similarity_threshold)
+        }
+    }
+
+    fn search_unsorted_impl<'a, const MAPPINGS: bool>(
+        &'a self,
+        haystack: &'a str,
+        similarity_threshold: f32,
+    ) -> FuzzyMatches<'a> {
         let grapheme_idx: Vec<(usize, &str)> = haystack.grapheme_indices(true).collect();
         if grapheme_idx.is_empty() {
             return FuzzyMatches {
@@ -502,7 +516,8 @@ impl FuzzyAhoCorasick {
                     // Substitutions require scanning every outgoing edge, so only do so when a
                     // substitution is still within limits. When it is not, the exact lookup above
                     // already covered the only reachable transition.
-                    if self.within_limits_subst(node_limits, edits, substitutions) {
+                    let subst_ok = self.within_limits_subst(node_limits, edits, substitutions);
+                    if subst_ok {
                         let current_ch = current_grapheme.chars().next().unwrap_or('\0');
                         for edge in edges {
                             let next_node = edge.next;
@@ -550,6 +565,58 @@ impl FuzzyAhoCorasick {
                                 #[cfg(debug_assertions)]
                                 notes,
                             });
+                        }
+
+                        //
+                        // 1b) Multi-character mappings (opt-in; e.g. "æ"↔"ae", "ks"↔"x")
+                        //
+                        // Compiled out entirely when `MAPPINGS` is false (the common case), so the hot
+                        // loop is unchanged for callers without mappings. Each precomputed mapping
+                        // consumes a fixed haystack grapheme sequence and jumps to the node the
+                        // mapping's pattern-side reaches, counting as one substitution.
+                        if MAPPINGS && let Some(mapping_transitions) = self.mappings.get(&node) {
+                            for mt in mapping_transitions {
+                                // A mapping's haystack side is a handful of graphemes at most.
+                                #[allow(clippy::cast_possible_truncation)]
+                                let hlen = mt.haystack.len() as u32;
+                                if j + hlen > text_len {
+                                    continue;
+                                }
+                                let hay_matches = mt.haystack.iter().enumerate().all(|(k, g)| {
+                                    text_chars[j as usize + k].as_ref() == g.as_ref()
+                                });
+                                if !hay_matches {
+                                    continue;
+                                }
+                                let new_penalties = penalties + mt.penalty;
+                                if new_penalties > max_penalties {
+                                    continue;
+                                }
+                                #[cfg(debug_assertions)]
+                                let mut notes = notes.clone();
+                                #[cfg(debug_assertions)]
+                                notes.push(format!(
+                                    "map {:?} (pen={:.2}) (subst->{}, edits->{})",
+                                    mt.haystack,
+                                    mt.penalty,
+                                    substitutions + 1,
+                                    edits + 1
+                                ));
+                                queue.push(State {
+                                    node: mt.next,
+                                    j: j + hlen,
+                                    matched_start: matched_start_next,
+                                    matched_end: j + hlen,
+                                    penalties: new_penalties,
+                                    edits: edits + 1,
+                                    insertions,
+                                    deletions,
+                                    substitutions: substitutions + 1,
+                                    swaps,
+                                    #[cfg(debug_assertions)]
+                                    notes,
+                                });
+                            }
                         }
                     }
 

@@ -10,6 +10,7 @@ High-performance, Unicode-aware, safe Rust implementation of the Aho–Corasick 
 - **Exact & Fuzzy Matching**: Match literal patterns or allow configurable approximate matching with edit operations
   (Levenshtein-style + transposition).
 - **Unicode-Aware**: Operates over grapheme clusters, with optional case-insensitive matching.
+- **Multi-Character Mappings**: Register equivalences like `æ`↔`ae`, `ß`↔`ss`, `ks`↔`x` (bidirectional, scored).
 - **Fine-Grained Limits**: Global or per-pattern caps on insertions, deletions, substitutions, swaps, and total edits.
 - **Non-Overlapping Selection**: Choose a maximal set of non-overlapping matches with configurable heuristics.
 - **Fuzzy Replacer**: Find-and-replace fuzzily while preserving surrounding context.
@@ -299,6 +300,37 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .similarity(&SIMILARITY)
     .build(["cat"]);
 ```
+
+## Multi-Character Mappings
+
+The similarity table maps single graphemes to single graphemes. For equivalences that span **several
+graphemes** — ligatures and transliterations like `æ`↔`ae`, `ß`↔`ss`, `ks`↔`x` — register a mapping.
+Either side may stand in for the other (mappings are **bidirectional**), and a mapping counts as one
+substitution against the edit limits, exactly like a single-character similarity substitution.
+
+```rust
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+
+let engine = FuzzyAhoCorasickBuilder::new()
+    .case_insensitive(true)
+    .fuzzy(FuzzyLimits::new().edits(1))
+    .mapping("æ", "ae")          // exact equivalence (score 1.0, penalty-free)
+    .mapping("ks", "x")
+    .mapping_scored("ph", "f", 0.9) // a near-equivalence that carries a small penalty
+    .build(["encyclopaedia", "alexander"]);
+
+// 'æ' in the haystack matches the "ae" in the pattern (and vice versa):
+assert_eq!(engine.search("encyclopædia", 0.95).len(), 1);
+// 'x' in the pattern matches "ks" in the haystack:
+assert_eq!(engine.search("aleksander", 0.95).len(), 1);
+```
+
+- **[`mapping(a, b)`](https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/struct.FuzzyAhoCorasickBuilder.html#method.mapping)** — exact equivalence (score `1.0`, no penalty).
+- **`mapping_scored(a, b, score)`** — near-equivalence; the applied penalty is `substitution * (1 - score)`.
+
+Because a mapping counts as a substitution, it obeys `.edits()` / `.substitutions()`: with `edits(0)`
+even `æ`↔`ae` is rejected, just like `0`↔`o`. Mappings are precomputed at build time and stored
+out-of-line, so configuring none leaves the search hot path completely unchanged.
 
 ## Performance
 

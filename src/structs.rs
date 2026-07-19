@@ -159,6 +159,19 @@ pub(crate) struct Edge {
     pub(crate) next: usize,
 }
 
+/// A precomputed multi-character mapping transition available from a node. It consumes a fixed
+/// sequence of haystack graphemes and jumps to the node reached by walking the mapping's pattern-side
+/// sequence through the trie, counting as one substitution (see [`FuzzyAhoCorasickBuilder::mapping`]).
+#[derive(Clone, Debug)]
+pub(crate) struct MappingTransition {
+    /// Haystack graphemes that must appear (in order) starting at the current position.
+    pub(crate) haystack: Box<[Box<str>]>,
+    /// Node reached after walking the mapping's pattern-side sequence from this node.
+    pub(crate) next: usize,
+    /// Penalty added when the mapping is applied: `substitution * (1 - score)`.
+    pub(crate) penalty: f32,
+}
+
 /// A single node inside the internal Aho–Corasick automaton.
 #[derive(Clone, Debug)]
 pub(crate) struct Node {
@@ -339,6 +352,10 @@ pub struct FuzzyAhoCorasick {
     /// Whether any pattern carries its own [`FuzzyLimits`]. When false, the per-node limit lookup on
     /// the search hot path is skipped entirely and the global `limits` are used directly.
     pub(crate) has_pattern_limits: bool,
+    /// Multi-character mapping transitions, keyed by the node they apply from. Stored out-of-line
+    /// (rather than on every `Node`) so the common no-mapping path keeps `Node` compact and pays
+    /// only a single `is_empty()` check. Empty unless mappings were configured.
+    pub(crate) mappings: FxHashMap<usize, Box<[MappingTransition]>>,
     /// Beam width for search - limits state explosion (None = unlimited)
     pub(crate) beam_width: Option<usize>,
     /// Automatic beam: `(budget, width)`. Once a search has expanded more than `budget` states it

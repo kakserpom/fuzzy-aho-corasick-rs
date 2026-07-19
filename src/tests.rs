@@ -708,3 +708,98 @@ fn test_auto_beam_exact_below_budget_and_bounded_above() {
         "expected saddam, got {matched:?}"
     );
 }
+
+#[test]
+fn test_multi_char_mapping_bidirectional() {
+    // "æ" <-> "ae" applies in both directions and, at score 1.0, yields a perfect-quality match
+    // (it still counts as one substitution).
+    let ae = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .mapping("æ", "ae")
+        .build(["encyclopaedia"]);
+    let m = ae.search("encyclopædia", 0.95);
+    assert_eq!(
+        m.len(),
+        1,
+        "æ in the haystack should match the 'ae' pattern"
+    );
+    assert_eq!(m[0].substitutions, 1);
+    assert!(
+        m[0].similarity > 0.999,
+        "score-1.0 mapping should be penalty-free"
+    );
+
+    let ea = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .mapping("æ", "ae")
+        .build(["encyclopædia"]);
+    assert_eq!(
+        ea.search("encyclopaedia", 0.95).len(),
+        1,
+        "'ae' in the haystack should match the 'æ' pattern"
+    );
+}
+
+#[test]
+fn test_multi_char_mapping_many_to_one() {
+    // "ks" <-> "x", covering both the 2->1 and 1->2 grapheme directions.
+    let mk = |patterns: [&str; 1]| {
+        FuzzyAhoCorasickBuilder::new()
+            .case_insensitive(true)
+            .fuzzy(FuzzyLimits::new().edits(1))
+            .mapping("ks", "x")
+            .build(patterns)
+    };
+    assert_eq!(mk(["alexandr"]).search("aleksandr", 0.95).len(), 1);
+    assert_eq!(mk(["aleksandr"]).search("alexandr", 0.95).len(), 1);
+}
+
+#[test]
+fn test_multi_char_mapping_counts_as_edit() {
+    // Consistent with single-character substitutions: a mapping consumes the edit budget.
+    let build = |edits| {
+        FuzzyAhoCorasickBuilder::new()
+            .case_insensitive(true)
+            .fuzzy(FuzzyLimits::new().edits(edits))
+            .mapping("ß", "ss")
+            .build(["strasse"])
+    };
+    assert!(
+        build(0u8).search("straße", 0.9).is_empty(),
+        "with edits(0) the mapping must be rejected, like any substitution"
+    );
+    assert_eq!(build(1u8).search("straße", 0.9).len(), 1);
+}
+
+#[test]
+fn test_multi_char_mapping_scored_penalty() {
+    let exact = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .mapping("ks", "x")
+        .build(["alexandr"]);
+    let scored = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .mapping_scored("ks", "x", 0.8)
+        .build(["alexandr"]);
+    let se = exact.search("aleksandr", 0.5)[0].similarity;
+    let ss = scored.search("aleksandr", 0.5)[0].similarity;
+    assert!(se > 0.999, "score 1.0 is penalty-free (got {se})");
+    assert!(
+        ss < se,
+        "a scored (<1.0) mapping must lower the similarity (got {ss} vs {se})"
+    );
+}
+
+#[test]
+fn test_no_mapping_is_unaffected() {
+    // Without a mapping, 'æ' is unrelated to "ae" and must not match.
+    let e = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .build(["encyclopaedia"]);
+    assert!(e.search("encyclopædia", 0.9).is_empty());
+}

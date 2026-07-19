@@ -1,5 +1,8 @@
 use crate::structs::{FxHashMap, Similarity};
-use crate::{Edge, FuzzyAhoCorasick, FuzzyLimits, FuzzyPenalties, FuzzyReplacer, Node, Pattern};
+use crate::{
+    Edge, FuzzyAhoCorasick, FuzzyLimits, FuzzyPenalties, FuzzyReplacer, MappingTransition, Node,
+    Pattern,
+};
 use std::collections::VecDeque;
 use std::sync::LazyLock;
 use unicode_segmentation::UnicodeSegmentation;
@@ -25,6 +28,8 @@ pub struct FuzzyAhoCorasickBuilder {
     case_insensitive: bool,
     beam_width: Option<usize>,
     auto_beam: Option<(usize, usize)>,
+    /// Multi-character mapping rules `(seq_a, seq_b, score)`, applied bidirectionally.
+    mappings: Vec<(String, String, f32)>,
 }
 
 impl FuzzyAhoCorasickBuilder {
@@ -39,6 +44,7 @@ impl FuzzyAhoCorasickBuilder {
             case_insensitive: false,
             beam_width: None,
             auto_beam: None,
+            mappings: Vec::new(),
         }
     }
 
@@ -103,6 +109,32 @@ impl FuzzyAhoCorasickBuilder {
     #[must_use]
     pub fn auto_beam(mut self, budget: usize, width: usize) -> Self {
         self.auto_beam = Some((budget, width));
+        self
+    }
+
+    /// Register a multi-character equivalence between two grapheme sequences (e.g. `"æ"` ↔ `"ae"`,
+    /// `"ß"` ↔ `"ss"`, `"ks"` ↔ `"x"`). During search either side may stand in for the other; the
+    /// substitution is exact (score `1.0`, no penalty) but still counts as one substitution against
+    /// the edit limits, exactly like a single-character similarity substitution.
+    ///
+    /// Mappings are applied bidirectionally. Use [`mapping_scored`](Self::mapping_scored) for a
+    /// near-equivalence that should carry a penalty.
+    #[must_use]
+    pub fn mapping(self, a: impl Into<String>, b: impl Into<String>) -> Self {
+        self.mapping_scored(a, b, 1.0)
+    }
+
+    /// Like [`mapping`](Self::mapping) but with a similarity `score` in `0.0..=1.0`. The applied
+    /// penalty is `substitution * (1 - score)`, so `1.0` is a free exact equivalence and lower
+    /// scores make the mapping progressively more expensive.
+    #[must_use]
+    pub fn mapping_scored(
+        mut self,
+        a: impl Into<String>,
+        b: impl Into<String>,
+        score: f32,
+    ) -> Self {
+        self.mappings.push((a.into(), b.into(), score));
         self
     }
 
@@ -375,6 +407,67 @@ impl FuzzyAhoCorasickBuilder {
             node.prune_len_over_weight = len / reach_weight[i];
         }
 
+        // Precompute multi-character mapping transitions, keyed by the node they apply from. Each
+        // configured rule becomes two directed rules (bidirectional); for every node we walk the
+        // rule's pattern-side grapheme sequence through the trie and, when it forms a valid path,
+        // record a transition that consumes the haystack-side sequence and jumps to the node the walk
+        // reached. Both sides are grapheme-split and case-folded exactly like patterns, so they line
+        // up with the trie edges and the (also folded) haystack graphemes at search time. Only nodes
+        // with at least one applicable mapping get an entry.
+        let mut mappings: FxHashMap<usize, Box<[MappingTransition]>> = FxHashMap::default();
+        if !self.mappings.is_empty() {
+            let fold = |s: &str| -> Vec<String> {
+                UnicodeSegmentation::graphemes(s, true)
+                    .map(|g| {
+                        if self.case_insensitive {
+                            g.to_lowercase()
+                        } else {
+                            g.to_string()
+                        }
+                    })
+                    .collect()
+            };
+            let mut directed: Vec<(Vec<String>, Vec<String>, f32)> = Vec::new();
+            for (a, b, score) in &self.mappings {
+                let (ga, gb) = (fold(a), fold(b));
+                if ga.is_empty() || gb.is_empty() || ga == gb {
+                    continue;
+                }
+                let penalty = self.penalties.substitution * (1.0 - score);
+                directed.push((ga.clone(), gb.clone(), penalty));
+                directed.push((gb, ga, penalty));
+            }
+            for start in 0..nodes.len() {
+                let mut mts: Vec<MappingTransition> = Vec::new();
+                for (pat, hay, penalty) in &directed {
+                    let mut cur = start;
+                    let mut ok = true;
+                    for g in pat {
+                        if let Some(&nx) = nodes[cur].transitions.get(g) {
+                            cur = nx;
+                        } else {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if ok {
+                        mts.push(MappingTransition {
+                            haystack: hay
+                                .iter()
+                                .map(|g| g.as_str().into())
+                                .collect::<Vec<Box<str>>>()
+                                .into_boxed_slice(),
+                            next: cur,
+                            penalty: *penalty,
+                        });
+                    }
+                }
+                if !mts.is_empty() {
+                    mappings.insert(start, mts.into_boxed_slice());
+                }
+            }
+        }
+
         let has_pattern_limits = patterns.iter().any(|p| p.limits.is_some());
 
         FuzzyAhoCorasick {
@@ -385,6 +478,7 @@ impl FuzzyAhoCorasickBuilder {
             penalties: self.penalties,
             case_insensitive: self.case_insensitive,
             has_pattern_limits,
+            mappings,
             beam_width: self.beam_width,
             auto_beam: self.auto_beam,
         }
