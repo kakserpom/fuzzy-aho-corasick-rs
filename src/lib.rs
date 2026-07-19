@@ -18,11 +18,11 @@ pub use structs::*;
 /// Automaton trie node index.
 type NodeIndex = usize;
 /// Current position (grapheme index) in the haystack.
-type HaystackPos = usize;
+type HaystackPos = u32;
 /// Start grapheme index of the matched span in the haystack.
-type MatchStart = usize;
+type MatchStart = u32;
 /// End grapheme index of the matched span in the haystack.
-type MatchEnd = usize;
+type MatchEnd = u32;
 
 /// Key for the per-window state-dedup map: automaton position, matched span, and the four
 /// per-edit-type counts packed into one `u32` (one byte each). Two states with equal keys behave
@@ -215,6 +215,11 @@ impl FuzzyAhoCorasick {
                 }
             })
             .collect();
+        // Grapheme count as `u32` for comparisons against the `u32` state positions. Grapheme
+        // indices are stored as `u32` throughout the search; a haystack with >4 billion graphemes
+        // (≥4 GiB) is well outside what this fuzzy search is usable for.
+        #[allow(clippy::cast_possible_truncation)]
+        let text_len = text_chars.len() as u32;
 
         // Keyed by (start_byte, end_byte, pattern_index). Uses the fast FxHash hasher instead of
         // the default SipHash: keys are small integer tuples looked up on every accepted match.
@@ -250,6 +255,8 @@ impl FuzzyAhoCorasick {
 
             queue.clear();
             visited.clear();
+            #[allow(clippy::cast_possible_truncation)]
+            let start = start as u32;
             queue.push(State {
                 node: 0,
                 j: start,
@@ -365,9 +372,11 @@ impl FuzzyAhoCorasick {
                         ) {
                             continue;
                         }
-                        let start_byte = grapheme_idx.get(matched_start).map_or(0, |&(b, _)| b);
+                        let start_byte = grapheme_idx
+                            .get(matched_start as usize)
+                            .map_or(0, |&(b, _)| b);
                         let end_byte = grapheme_idx
-                            .get(matched_end)
+                            .get(matched_end as usize)
                             .map_or_else(|| haystack.len(), |&(b, _)| b);
                         let key = (start_byte, end_byte, pattern_index);
 
@@ -421,8 +430,8 @@ impl FuzzyAhoCorasick {
                 //
                 // 1) Same or similar symbol — только внутри текста
                 //
-                if j < text_chars.len() {
-                    let current_grapheme = text_chars[j].as_ref();
+                if j < text_len {
+                    let current_grapheme = text_chars[j as usize].as_ref();
                     let matched_start_next = if matched_end == matched_start {
                         j
                     } else {
@@ -510,10 +519,9 @@ impl FuzzyAhoCorasick {
                     //
                     // 2) Swap (transposition of two neighboring graphemes)
                     //
-                    if j + 1 < text_chars.len() && penalties + self.penalties.swap <= max_penalties
-                    {
-                        let a = &text_chars[j];
-                        let b = &text_chars[j + 1];
+                    if j + 1 < text_len && penalties + self.penalties.swap <= max_penalties {
+                        let a = &text_chars[j as usize];
+                        let b = &text_chars[(j + 1) as usize];
                         // The two map lookups below each hash a grapheme string, so gate them behind
                         // the cheap penalty check above rather than the other way around.
                         if let Some(&node2) = transitions
@@ -562,7 +570,7 @@ impl FuzzyAhoCorasick {
                         #[cfg(debug_assertions)]
                         notes.push(format!(
                             "ins {:?} (ins->{} , edits->{})",
-                            text_chars[j],
+                            text_chars[j as usize],
                             insertions + 1,
                             edits + 1
                         ));

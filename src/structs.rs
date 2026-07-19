@@ -129,13 +129,14 @@ pub type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 /// Edit count type - u8 is sufficient for practical edit distances (max 255)
 pub type NumEdits = u8;
 
-/// Internal search state
+/// Internal search state. The grapheme positions are `u32` (haystacks far below 4 GiB) to keep the
+/// struct — copied on every enqueue — compact and cache-dense.
 #[derive(Clone)]
 pub(crate) struct State {
     pub(crate) node: usize,
-    pub(crate) j: usize,
-    pub(crate) matched_start: usize,
-    pub(crate) matched_end: usize,
+    pub(crate) j: u32,
+    pub(crate) matched_start: u32,
+    pub(crate) matched_end: u32,
     pub(crate) penalties: f32,
     pub(crate) edits: NumEdits,
     pub(crate) insertions: NumEdits,
