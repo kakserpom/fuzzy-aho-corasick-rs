@@ -376,6 +376,13 @@ pub struct Pattern {
     pub limits: Option<FuzzyLimits>,
 }
 
+impl fmt::Display for Pattern {
+    /// Formats the pattern as its underlying string.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.pattern)
+    }
+}
+
 impl Pattern {
     #[must_use]
     pub fn as_str(&self) -> &str {

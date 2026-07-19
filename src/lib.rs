@@ -1,5 +1,35 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+//! Unicode-aware Aho–Corasick automaton with **fuzzy matching**: substitutions, insertions,
+//! deletions, and transpositions, over grapheme clusters, with optional case-insensitive folding.
+//!
+//! Build an immutable engine with [`FuzzyAhoCorasickBuilder`], then query it. Similarity for a
+//! candidate match against a length-`N` pattern is `(N - penalties) / N * weight`, and a match is
+//! kept when it meets the caller's threshold. Edit limits can be set globally on the builder or
+//! per [`Pattern`], and edit costs are tuned via [`FuzzyPenalties`].
+//!
+//! # Example
+//! ```
+//! use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+//!
+//! let engine = FuzzyAhoCorasickBuilder::new()
+//!     .fuzzy(FuzzyLimits::new().edits(1))
+//!     .case_insensitive(true)
+//!     .build(["hello", "world"]);
+//!
+//! // Two OCR-style typos: '3'→'e', '0'→'o'.
+//! let matches = engine.search_non_overlapping("H3llo W0rld!", 0.7);
+//! let found: Vec<&str> = matches.iter().map(|m| m.pattern.as_str()).collect();
+//! assert!(found.contains(&"hello") && found.contains(&"world"));
+//! ```
+//!
+//! # Bounding worst-case work
+//! The search is exact by default. When a high edit budget is combined with a low threshold the
+//! state space can explode; [`FuzzyAhoCorasickBuilder::beam_width`] caps the active frontier, and
+//! [`FuzzyAhoCorasickBuilder::auto_beam`] stays exact until a state budget is exceeded and only
+//! then engages a beam — leaving ordinary searches unaffected.
+//!
+//! See the [README](https://github.com/kakserpom/fuzzy-aho-corasick-rs) for a full guide.
 mod builder;
 mod matches;
 mod replacer;
@@ -878,7 +908,7 @@ impl FuzzyAhoCorasick {
     ///
     /// # Behavior
     ///
-    /// - Conducts a non‐overlapping fuzzy search (via [`search_non_overlapping`]).
+    /// - Conducts a non‐overlapping fuzzy search (via [`Self::search_non_overlapping`]).
     /// - Skips all trailing [`Segment::Matched`] variants.
     /// - Skips any trailing [`Segment::Unmatched`] variants consisting solely of whitespace.
     /// - The last non‐whitespace [`Segment::Unmatched`]:
@@ -923,7 +953,7 @@ impl FuzzyAhoCorasick {
     /// # Behavior
     ///
     /// - Performs a non-overlapping fuzzy search over `haystack` using
-    ///   [`search_non_overlapping`].
+    ///   [`Self::search_non_overlapping`].
     /// - Delegates to the `split()` method on the resulting `FuzzyMatches`.
     /// - Produces one `String` per unmatched segment in order, including empty
     ///   segments if matches occur at the very start or end.
