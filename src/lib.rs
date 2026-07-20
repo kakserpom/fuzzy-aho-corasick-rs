@@ -45,8 +45,8 @@ use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
 pub use structs::*;
 
-/// Automaton trie node index.
-type NodeIndex = usize;
+/// Automaton node index (u32 for compact struct packing; >4B nodes is unrealistic).
+type NodeIndex = u32;
 /// Current position (grapheme index) in the haystack.
 type HaystackPos = u32;
 /// Start grapheme index of the matched span in the haystack.
@@ -75,8 +75,8 @@ impl FuzzyAhoCorasick {
     /// Get the per-node limits if this node corresponds to a pattern that has
     /// its own `FuzzyLimits`.
     #[inline]
-    fn get_node_limits(&self, node: usize) -> Option<&FuzzyLimits> {
-        self.nodes[node]
+    fn get_node_limits(&self, node: u32) -> Option<&FuzzyLimits> {
+        self.nodes[node as usize]
             .pattern_index
             .and_then(|i| self.patterns.get(i).and_then(|p| p.limits.as_ref()))
     }
@@ -381,7 +381,7 @@ impl FuzzyAhoCorasick {
                     }
                 }
 
-                let node_ref = &self.nodes[node];
+                let node_ref = &self.nodes[node as usize];
 
                 // Early pruning against this node's own (tight) ceiling: a state whose penalties
                 // exceed what the longest/heaviest pattern still reachable from here allows cannot
@@ -413,6 +413,7 @@ impl FuzzyAhoCorasick {
 
                 if !output.is_empty() {
                     for &pattern_index in output {
+                        let pattern_index = pattern_index as usize;
                         if !self.within_limits(
                             self.patterns[pattern_index].limits.as_ref(),
                             edits,
@@ -630,7 +631,7 @@ impl FuzzyAhoCorasick {
                         // the cheap penalty check above rather than the other way around.
                         if let Some(&node2) = transitions
                             .get(b.as_ref())
-                            .and_then(|&x| self.nodes[x].transitions.get(a.as_ref()))
+                            .and_then(|&x| self.nodes[x as usize].transitions.get(a.as_ref()))
                             && self.within_limits_swap_ahead(
                                 self.get_node_limits(node2),
                                 edits,

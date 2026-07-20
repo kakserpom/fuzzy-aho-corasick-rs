@@ -185,7 +185,7 @@ impl FuzzyAhoCorasickBuilder {
         )];
 
         for (i, pattern) in patterns.iter().enumerate() {
-            let mut current = 0;
+            let mut current: usize = 0;
             let word_iter: Vec<String> = if self.case_insensitive {
                 UnicodeSegmentation::graphemes(pattern.pattern.as_str(), true)
                     .map(str::to_lowercase)
@@ -198,15 +198,17 @@ impl FuzzyAhoCorasickBuilder {
 
             for (j, grapheme) in word_iter.iter().enumerate() {
                 let next = if let Some(&next_index) = nodes[current].transitions.get(grapheme) {
-                    next_index
+                    next_index as usize
                 } else {
                     let new_index = nodes.len();
                     nodes[current]
                         .transitions
-                        .insert(grapheme.clone(), new_index);
+                        .insert(grapheme.clone(), new_index as u32);
+                    #[cfg_attr(not(debug_assertions), allow(unused_variables))]
+                    let parent = current as u32;
                     nodes.push(Node::new(
                         #[cfg(debug_assertions)]
-                        current,
+                        parent,
                         #[cfg(debug_assertions)]
                         Some(grapheme),
                     ));
@@ -222,20 +224,21 @@ impl FuzzyAhoCorasickBuilder {
                 nodes[current].weight = nodes[current].weight.max(updated_weight);
             }
 
-            nodes[current].output.push(i);
+            nodes[current].output.push(i as u32);
             nodes[current].weight = nodes[current].weight.max(pattern.weight);
         }
 
         // build failure links...
-        let mut queue = VecDeque::new();
-        let root_children: Vec<usize> = nodes[0].transitions.values().copied().collect();
+        let mut queue: VecDeque<u32> = VecDeque::new();
+        let root_children: Vec<u32> = nodes[0].transitions.values().copied().collect();
         for child in root_children {
-            nodes[child].fail = 0;
+            nodes[child as usize].fail = 0;
             queue.push_back(child);
         }
 
-        while let Some(current) = queue.pop_front() {
-            let transitions: Vec<(String, usize)> = nodes[current]
+        while let Some(current_u32) = queue.pop_front() {
+            let current = current_u32 as usize;
+            let transitions: Vec<(String, u32)> = nodes[current]
                 .transitions
                 .iter()
                 .map(|(g, &n)| (g.clone(), n))
@@ -243,21 +246,21 @@ impl FuzzyAhoCorasickBuilder {
 
             for (g, next) in transitions {
                 let mut fail = nodes[current].fail;
-                while fail != 0 && !nodes[fail].transitions.contains_key(&g) {
-                    fail = nodes[fail].fail;
+                while fail != 0 && !nodes[fail as usize].transitions.contains_key(&g) {
+                    fail = nodes[fail as usize].fail;
                 }
 
-                let fallback = *nodes[fail].transitions.get(&g).unwrap_or(&0);
-                nodes[next].fail = fallback;
+                let fallback = *nodes[fail as usize].transitions.get(&g).unwrap_or(&0);
+                nodes[next as usize].fail = fallback;
 
-                for &entry in &nodes[fallback].output.clone() {
-                    if !nodes[next].output.contains(&entry) {
-                        nodes[next].output.push(entry);
+                for &entry in &nodes[fallback as usize].output.clone() {
+                    if !nodes[next as usize].output.contains(&entry) {
+                        nodes[next as usize].output.push(entry);
                     }
                 }
 
-                if nodes[next].weight < nodes[fallback].weight {
-                    nodes[next].weight = nodes[fallback].weight;
+                if nodes[next as usize].weight < nodes[fallback as usize].weight {
+                    nodes[next as usize].weight = nodes[fallback as usize].weight;
                 }
 
                 queue.push_back(next);
@@ -266,7 +269,7 @@ impl FuzzyAhoCorasickBuilder {
 
         // propagate weights up the fail chain (Horák)
         for i in (1..nodes.len()).rev() {
-            let f = nodes[i].fail;
+            let f = nodes[i].fail as usize;
             if nodes[f].weight > nodes[i].weight {
                 nodes[i].weight = nodes[f].weight;
             }
@@ -294,13 +297,13 @@ impl FuzzyAhoCorasickBuilder {
             // remap all internal links
             for rep in &mut reprs {
                 if let Some(e) = rep.epsilon {
-                    rep.epsilon = Some(classes[e]);
+                    rep.epsilon = Some(classes[e as usize] as u32);
                 }
-                rep.fail = classes[rep.fail];
+                rep.fail = classes[rep.fail as usize] as u32;
                 rep.transitions = rep
                     .transitions
                     .iter()
-                    .map(|(k, &v)| (k.clone(), classes[v]))
+                    .map(|(k, &v)| (k.clone(), classes[v as usize] as u32))
                     .collect();
             }
 
@@ -376,8 +379,8 @@ impl FuzzyAhoCorasickBuilder {
         let mut reach_weight: Vec<f32> = vec![0.0; nodes.len()];
         for (i, node) in nodes.iter().enumerate() {
             for &p in &node.output {
-                reach_len[i] = reach_len[i].max(patterns[p].grapheme_len);
-                reach_weight[i] = reach_weight[i].max(patterns[p].weight);
+                reach_len[i] = reach_len[i].max(patterns[p as usize].grapheme_len);
+                reach_weight[i] = reach_weight[i].max(patterns[p as usize].weight);
             }
         }
         // Iterate high index → low: in the freshly built trie a child always has a higher index
@@ -390,8 +393,8 @@ impl FuzzyAhoCorasickBuilder {
             for i in (0..nodes.len()).rev() {
                 let (mut best_len, mut best_weight) = (reach_len[i], reach_weight[i]);
                 for &child in nodes[i].transitions.values() {
-                    best_len = best_len.max(reach_len[child]);
-                    best_weight = best_weight.max(reach_weight[child]);
+                    best_len = best_len.max(reach_len[child as usize]);
+                    best_weight = best_weight.max(reach_weight[child as usize]);
                 }
                 // `max` is monotone, so a change can only be an increase.
                 if best_len > reach_len[i] || best_weight > reach_weight[i] {
@@ -414,7 +417,7 @@ impl FuzzyAhoCorasickBuilder {
         // reached. Both sides are grapheme-split and case-folded exactly like patterns, so they line
         // up with the trie edges and the (also folded) haystack graphemes at search time. Only nodes
         // with at least one applicable mapping get an entry.
-        let mut mappings: FxHashMap<usize, Box<[MappingTransition]>> = FxHashMap::default();
+        let mut mappings: FxHashMap<u32, Box<[MappingTransition]>> = FxHashMap::default();
         if !self.mappings.is_empty() {
             let fold = |s: &str| -> Vec<String> {
                 UnicodeSegmentation::graphemes(s, true)
@@ -440,11 +443,11 @@ impl FuzzyAhoCorasickBuilder {
             for start in 0..nodes.len() {
                 let mut mts: Vec<MappingTransition> = Vec::new();
                 for (pat, hay, penalty) in &directed {
-                    let mut cur = start;
+                    let mut cur: usize = start;
                     let mut ok = true;
                     for g in pat {
                         if let Some(&nx) = nodes[cur].transitions.get(g) {
-                            cur = nx;
+                            cur = nx as usize;
                         } else {
                             ok = false;
                             break;
@@ -457,13 +460,13 @@ impl FuzzyAhoCorasickBuilder {
                                 .map(|g| g.as_str().into())
                                 .collect::<Vec<Box<str>>>()
                                 .into_boxed_slice(),
-                            next: cur,
+                            next: cur as u32,
                             penalty: *penalty,
                         });
                     }
                 }
                 if !mts.is_empty() {
-                    mappings.insert(start, mts.into_boxed_slice());
+                    mappings.insert(start as u32, mts.into_boxed_slice());
                 }
             }
         }

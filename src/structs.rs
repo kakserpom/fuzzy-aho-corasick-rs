@@ -133,7 +133,7 @@ pub type NumEdits = u8;
 /// struct — copied on every enqueue — compact and cache-dense.
 #[derive(Clone)]
 pub(crate) struct State {
-    pub(crate) node: usize,
+    pub(crate) node: u32,
     pub(crate) j: u32,
     pub(crate) matched_start: u32,
     pub(crate) matched_end: u32,
@@ -156,7 +156,7 @@ pub(crate) struct Edge {
     /// First `char` of the edge's grapheme, precomputed for the similarity lookup.
     pub(crate) first_char: char,
     /// Target node index.
-    pub(crate) next: usize,
+    pub(crate) next: u32,
 }
 
 /// A precomputed multi-character mapping transition available from a node. It consumes a fixed
@@ -167,7 +167,7 @@ pub(crate) struct MappingTransition {
     /// Haystack graphemes that must appear (in order) starting at the current position.
     pub(crate) haystack: Box<[Box<str>]>,
     /// Node reached after walking the mapping's pattern-side sequence from this node.
-    pub(crate) next: usize,
+    pub(crate) next: u32,
     /// Penalty added when the mapping is applied: `substitution * (1 - score)`.
     pub(crate) penalty: f32,
 }
@@ -176,16 +176,16 @@ pub(crate) struct MappingTransition {
 #[derive(Clone, Debug)]
 pub(crate) struct Node {
     pub(crate) pattern_index: Option<PatternIndex>,
-    pub(crate) epsilon: Option<usize>,
+    pub(crate) epsilon: Option<u32>,
     /// Outgoing edges keyed by the next character (used for O(1) exact/swap lookups).
-    pub(crate) transitions: FxHashMap<String, usize>,
+    pub(crate) transitions: FxHashMap<String, u32>,
     /// Same edges as `transitions`, in a flat layout for hot-path iteration. Derived from
     /// `transitions` in a final build pass; must be kept consistent with it.
     pub(crate) edges: Vec<Edge>,
     /// Failure link (classic AC fallback state).
-    pub(crate) fail: usize,
+    pub(crate) fail: u32,
     /// All patterns that end in this state.
-    pub(crate) output: Vec<usize>,
+    pub(crate) output: Vec<u32>,
     /// Two precomputed coefficients of this node's pruning ceiling. A state at this node can only
     /// complete a pattern still reachable from here (its own `output` plus its transition subtree);
     /// for the longest/heaviest such pattern `(len - pen) / len * weight >= threshold` rearranges to
@@ -200,7 +200,7 @@ pub(crate) struct Node {
     /// visualising / debugging the trie easier.
     #[cfg(debug_assertions)]
     #[allow(dead_code)]
-    pub(crate) parent: usize,
+    pub(crate) parent: u32,
     /// Character that leads from `parent` to this node – stored only in
     /// *debug* builds for introspection.
     #[allow(dead_code)]
@@ -314,7 +314,7 @@ impl FuzzyPenalties {
 impl Node {
     /// Helper used by the builder to create a brand‑new node.
     pub(crate) fn new(
-        #[cfg(debug_assertions)] parent: usize,
+        #[cfg(debug_assertions)] parent: u32,
         #[cfg(debug_assertions)] grapheme: Option<&str>,
     ) -> Node {
         Self {
@@ -355,7 +355,7 @@ pub struct FuzzyAhoCorasick {
     /// Multi-character mapping transitions, keyed by the node they apply from. Stored out-of-line
     /// (rather than on every `Node`) so the common no-mapping path keeps `Node` compact and pays
     /// only a single `is_empty()` check. Empty unless mappings were configured.
-    pub(crate) mappings: FxHashMap<usize, Box<[MappingTransition]>>,
+    pub(crate) mappings: FxHashMap<u32, Box<[MappingTransition]>>,
     /// Beam width for search - limits state explosion (None = unlimited)
     pub(crate) beam_width: Option<usize>,
     /// Automatic beam: `(budget, width)`. Once a search has expanded more than `budget` states it
