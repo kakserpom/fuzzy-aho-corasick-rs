@@ -9,6 +9,7 @@ repository = "https://github.com/kakserpom/fuzzy-aho-corasick-rs"
 unicode-segmentation = "1.12"
 [dev-dependencies]
 criterion = "0.8"
+indicatif = "0.18.6"
 [[bench]]
 name = "benchmark"
 harness = false

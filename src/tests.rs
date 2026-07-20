@@ -803,3 +803,90 @@ fn test_no_mapping_is_unaffected() {
         .build(["encyclopaedia"]);
     assert!(e.search("encyclopædia", 0.9).is_empty());
 }
+
+#[test]
+fn test_streaming_apis_match_whole_input() {
+    // A >512 KiB input exercises several 256 KiB windows (incl. boundary-spanning needles). Needles
+    // are separated by filler that cannot fuzzy-match "needle", so per-window and whole-input
+    // non-overlapping selection agree and results can be compared directly.
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["needle"]);
+    let filler = "the quick brown fox ".repeat(50);
+    let mut input = String::new();
+    while input.len() < 600_000 {
+        input.push_str(&filler);
+        input.push_str("needle ");
+    }
+
+    // Ground truth: search the whole thing in one shot (input is < 4 GiB).
+    let mut truth: Vec<(u64, u64, usize)> = engine
+        .search_non_overlapping(&input, 0.8)
+        .iter()
+        .map(|m| (m.start as u64, m.end as u64, m.pattern_index))
+        .collect();
+    truth.sort_unstable();
+    assert!(
+        truth.len() > 300,
+        "expected many needles across several windows"
+    );
+
+    let collect_sorted = |mut v: Vec<(u64, u64, usize)>| {
+        v.sort_unstable();
+        v
+    };
+
+    // 1) callback
+    let mut cb = Vec::new();
+    engine
+        .search_stream(input.as_bytes(), 0.8, |m| {
+            cb.push((m.start, m.end, m.pattern_index));
+        })
+        .unwrap();
+    assert_eq!(
+        collect_sorted(cb),
+        truth,
+        "search_stream must equal whole-input search"
+    );
+
+    // 2) iterator
+    let it: Vec<_> = engine
+        .stream_matches(input.as_bytes(), 0.8)
+        .map(Result::unwrap)
+        .map(|m| (m.start, m.end, m.pattern_index))
+        .collect();
+    assert_eq!(
+        collect_sorted(it),
+        truth,
+        "stream_matches must equal whole-input search"
+    );
+
+    // 3) parallel
+    let mut par = Vec::new();
+    engine
+        .search_stream_parallel(input.as_bytes(), 0.8, 4, |m| {
+            par.push((m.start, m.end, m.pattern_index));
+        })
+        .unwrap();
+    assert_eq!(
+        collect_sorted(par),
+        truth,
+        "parallel stream must equal whole-input search"
+    );
+
+    // Offsets/text are consistent with the source.
+    engine
+        .search_stream(input.as_bytes(), 0.8, |m| {
+            assert_eq!(&input[m.start as usize..m.end as usize], m.text);
+        })
+        .unwrap();
+}
+
+#[test]
+fn test_streaming_empty_input() {
+    let engine = FuzzyAhoCorasickBuilder::new().build(["x"]);
+    let mut hits = 0;
+    let n = engine.search_stream(&b""[..], 0.8, |_| hits += 1).unwrap();
+    assert_eq!((hits, n), (0, 0));
+}

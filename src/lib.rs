@@ -40,6 +40,7 @@
 mod builder;
 mod matches;
 mod replacer;
+mod stream;
 pub mod structs;
 #[cfg(test)]
 mod tests;
@@ -48,6 +49,7 @@ pub use builder::FuzzyAhoCorasickBuilder;
 pub use replacer::FuzzyReplacer;
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
+pub use stream::{StreamMatch, StreamMatches};
 use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
 pub use structs::*;

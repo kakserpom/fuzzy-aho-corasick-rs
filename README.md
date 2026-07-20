@@ -17,6 +17,7 @@ High-performance, Unicode-aware, safe Rust implementation of the Aho–Corasick 
 - **Segmentation API**: Split input into matched / unmatched segments via `segment_iter` / `segment_text`.
 - **Customizable Scoring**: Weighting and penalty tuning for substitution, insertion, deletion, and swap.
 - **Bounded Worst Case**: Optional beam search and an opt-in automatic beam keep pathological inputs from blowing up.
+- **Streaming**: Search a `Read` source incrementally in constant memory (files, sockets, pipes — any size) via callback, iterator, or parallel APIs, with absolute `u64` offsets.
 
 ## Installation
 
@@ -212,6 +213,49 @@ let engine = FuzzyAhoCorasickBuilder::new()
 ```
 
 An explicit `beam_width` always takes precedence over `auto_beam`.
+
+## Streaming
+
+Search a `Read` source incrementally instead of loading it all into memory. The streaming API
+consumes the reader in bounded, overlapping windows, so it runs in **constant memory** regardless of
+input size, works on files/sockets/pipes as data arrives, and — as one consequence — handles inputs
+beyond the ~4 GiB a single `search` call supports (grapheme positions are `u32` internally). Matches
+are reported at **absolute `u64` byte offsets**. The overlap is derived automatically from the
+patterns and edit limits (the longest possible match), so no match is ever split at a window
+boundary and each is emitted exactly once — no configuration, no deduplication on your side.
+
+Three entry points, all yielding `StreamMatch { start, end, pattern_index, similarity, edits…, text }`:
+
+```rust
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use std::fs::File;
+
+let engine = FuzzyAhoCorasickBuilder::new()
+    .fuzzy(FuzzyLimits::new().edits(1))
+    .case_insensitive(true)
+    .build(["needle"]);
+
+// 1) Callback (single-threaded)
+engine.search_stream(File::open("huge.txt")?, 0.8, |m| {
+    println!("{}..{}: pattern #{} ({:.2})", m.start, m.end, m.pattern_index, m.similarity);
+})?;
+
+// 2) Iterator
+for m in engine.stream_matches(File::open("huge.txt")?, 0.8) {
+    let m = m?; // io::Result<StreamMatch>
+    println!("{}..{}", m.start, m.end);
+}
+
+// 3) Parallel (fans windows across a thread pool; dependency-free `std::thread`)
+let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+engine.search_stream_parallel(File::open("huge.txt")?, 0.8, threads, |m| { /* ... */ })?;
+```
+
+The search itself is CPU-bound (a BFS from every position, ~independent of window size), so the
+parallel form is how you go fast: windows are independent and share the immutable engine, scaling
+close to linearly with cores. `max_match_graphemes()` exposes the auto-computed overlap if you want
+to window the input yourself. See [`examples/streaming.rs`](examples/streaming.rs) for a full
+multi-GiB demo with a progress bar.
 
 ## Segmentation and Reconstruction
 
