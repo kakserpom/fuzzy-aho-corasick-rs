@@ -1,5 +1,12 @@
 #![warn(clippy::pedantic)]
-#![allow(clippy::too_many_lines, clippy::cast_precision_loss)]
+// The automaton deliberately stores node indices and grapheme positions as `u32` to keep the
+// hot-path structs compact; the corresponding `usize -> u32` casts are sound for any realistic
+// input (fewer than ~4 billion nodes, haystacks under ~4 GiB — see `search_unsorted`).
+#![allow(
+    clippy::too_many_lines,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation
+)]
 //! Unicode-aware Aho–Corasick automaton with **fuzzy matching**: substitutions, insertions,
 //! deletions, and transpositions, over grapheme clusters, with optional case-insensitive folding.
 //!
@@ -259,10 +266,8 @@ impl FuzzyAhoCorasick {
                 }
             })
             .collect();
-        // Grapheme count as `u32` for comparisons against the `u32` state positions. Grapheme
-        // indices are stored as `u32` throughout the search; a haystack with >4 billion graphemes
-        // (≥4 GiB) is well outside what this fuzzy search is usable for.
-        #[allow(clippy::cast_possible_truncation)]
+        // Grapheme count as `u32` for comparisons against the `u32` state positions (see the
+        // crate-level note on the index/position width).
         let text_len = text_chars.len() as u32;
 
         // Keyed by (start_byte, end_byte, pattern_index). Uses the fast FxHash hasher instead of
@@ -306,7 +311,6 @@ impl FuzzyAhoCorasick {
 
             queue.clear();
             visited.clear();
-            #[allow(clippy::cast_possible_truncation)]
             let start = start as u32;
             queue.push(State {
                 node: 0,
@@ -578,7 +582,6 @@ impl FuzzyAhoCorasick {
                         if MAPPINGS && let Some(mapping_transitions) = self.mappings.get(&node) {
                             for mt in mapping_transitions {
                                 // A mapping's haystack side is a handful of graphemes at most.
-                                #[allow(clippy::cast_possible_truncation)]
                                 let hlen = mt.haystack.len() as u32;
                                 if j + hlen > text_len {
                                     continue;
