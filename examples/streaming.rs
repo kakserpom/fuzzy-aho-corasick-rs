@@ -86,9 +86,9 @@ fn main() {
     let gib: f64 = std::env::args()
         .nth(1)
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0.0625);
+        .unwrap_or(1.);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let total_bytes = (gib * 1024.0 * 1024.0 * 1024.0) as u64;
+    let total_bytes = (gib * 1024. * 1024. * 1024.) as u64;
     let threads: usize = std::env::args()
         .nth(2)
         .and_then(|s| s.parse().ok())
