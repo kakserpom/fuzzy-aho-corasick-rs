@@ -12,15 +12,18 @@
 //! falls in its non-overlap prefix — so every match is emitted exactly once with no cross-window
 //! deduplication.
 //!
-//! Three entry points, all yielding [`StreamMatch`] with absolute offsets:
+//! Three search entry points, all yielding [`StreamMatch`] with absolute offsets:
 //! * [`search_stream`](crate::FuzzyAhoCorasick::search_stream) — callback, single-threaded.
 //! * [`stream_matches`](crate::FuzzyAhoCorasick::stream_matches) — an [`Iterator`].
 //! * [`search_stream_parallel`](crate::FuzzyAhoCorasick::search_stream_parallel) — callback, fanned
 //!   across a thread pool.
+//!
+//! And a streaming find-and-replace that writes the transformed stream to a [`Write`] sink:
+//! * [`replace_stream`](crate::FuzzyAhoCorasick::replace_stream) — callback, single-threaded.
 
-use crate::{FuzzyAhoCorasick, FuzzyLimits, NumEdits};
+use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, NumEdits};
 use std::collections::VecDeque;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex, mpsc};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -409,5 +412,104 @@ impl FuzzyAhoCorasick {
             }
             producer.join().expect("stream producer panicked")
         })
+    }
+
+    /// Streaming fuzzy find-and-replace: read from `reader`, write the transformed stream to
+    /// `writer` in **constant memory**. For each non-overlapping match above `threshold`, `callback`
+    /// is invoked — returning `Some(replacement)` substitutes the matched span, `None` keeps the
+    /// original text — and everything between matches is copied through verbatim. Returns the number
+    /// of bytes written to `writer`.
+    ///
+    /// This is the streaming counterpart of [`replace`](Self::replace). Matches are selected per
+    /// window (as in the streaming search), so at a window boundary overlap is resolved
+    /// left-to-right — the earlier-starting match wins — rather than by the global ranking a
+    /// whole-input [`replace`](Self::replace) would use. For inputs where matches are separated by
+    /// non-matching text the two agree exactly.
+    ///
+    /// The replacement type is independent of the match, so it may borrow external data (e.g. a
+    /// table of replacements) but **not** the transient matched text; return an owned `String` if you
+    /// need to derive the replacement from `m.text`.
+    ///
+    /// Wrap `writer` in a [`BufWriter`](std::io::BufWriter) for best throughput.
+    ///
+    /// ```
+    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+    /// let engine = FuzzyAhoCorasickBuilder::new()
+    ///     .fuzzy(FuzzyLimits::new().edits(1))
+    ///     .case_insensitive(true)
+    ///     .build(["needle"]);
+    /// let mut out = Vec::new();
+    /// // "neeedle" has one extra 'e' (an insertion); it is replaced, the rest copied through.
+    /// engine
+    ///     .replace_stream("a neeedle b".as_bytes(), &mut out, |_m| Some("X"), 0.8)
+    ///     .unwrap();
+    /// assert_eq!(String::from_utf8(out).unwrap(), "a X b");
+    /// ```
+    ///
+    /// # Errors
+    /// Propagates any [`io::Error`] from `reader` or `writer`.
+    pub fn replace_stream<R, W, F, S>(
+        &self,
+        reader: R,
+        mut writer: W,
+        mut callback: F,
+        threshold: f32,
+    ) -> io::Result<u64>
+    where
+        R: Read,
+        W: Write,
+        F: FnMut(&FuzzyMatch) -> Option<S>,
+        S: AsRef<str>,
+    {
+        let mut wr = WindowReader::new(reader, DEFAULT_WINDOW, self.stream_overlap());
+        // Absolute byte offset up to which output has been written. Monotonically increasing, and
+        // always >= the current window's base, so `emitted - base` indexes into the window's text.
+        let mut emitted: u64 = 0;
+        let mut written: u64 = 0;
+
+        while let Some(w) = wr.next_window()? {
+            let bytes = w.text.as_bytes();
+            let fm = self.search_non_overlapping(&w.text, threshold);
+            // This window owns matches whose start is before the commit boundary; process them in
+            // position order so the verbatim runs between them come out correctly.
+            let mut owned: Vec<&FuzzyMatch> = fm.iter().filter(|m| m.start < w.commit).collect();
+            owned.sort_unstable_by_key(|m| (m.start, m.end));
+
+            for m in owned {
+                let match_start = w.base + m.start as u64;
+                if match_start < emitted {
+                    // Overlaps a span already written (a match from an earlier window that extended
+                    // past its commit boundary); the earlier match won, so skip this one.
+                    continue;
+                }
+                // Verbatim run between the previous emission and this match.
+                if emitted < match_start {
+                    let lo = (emitted - w.base) as usize;
+                    writer.write_all(&bytes[lo..m.start])?;
+                    written += (m.start - lo) as u64;
+                }
+                // The replacement, or the original text when the callback declines.
+                if let Some(repl) = callback(m) {
+                    let repl = repl.as_ref().as_bytes();
+                    writer.write_all(repl)?;
+                    written += repl.len() as u64;
+                } else {
+                    writer.write_all(&bytes[m.start..m.end])?;
+                    written += (m.end - m.start) as u64;
+                }
+                emitted = w.base + m.end as u64;
+            }
+
+            // Flush verbatim up to this window's commit boundary (the whole window on EOF, where
+            // commit == text.len()). Skipped if a replacement already carried `emitted` past it.
+            let commit_abs = w.base + w.commit as u64;
+            if emitted < commit_abs {
+                let lo = (emitted - w.base) as usize;
+                writer.write_all(&bytes[lo..w.commit])?;
+                written += (w.commit - lo) as u64;
+                emitted = commit_abs;
+            }
+        }
+        Ok(written)
     }
 }

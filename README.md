@@ -17,7 +17,7 @@ High-performance, Unicode-aware, safe Rust implementation of the Aho–Corasick 
 - **Segmentation API**: Split input into matched / unmatched segments via `segment_iter` / `segment_text`.
 - **Customizable Scoring**: Weighting and penalty tuning for substitution, insertion, deletion, and swap.
 - **Bounded Worst Case**: Optional beam search and an opt-in automatic beam keep pathological inputs from blowing up.
-- **Streaming**: Search a `Read` source incrementally in constant memory (files, sockets, pipes — any size) via callback, iterator, or parallel APIs, with absolute `u64` offsets.
+- **Streaming**: Search a `Read` source incrementally in constant memory (files, sockets, pipes — any size) via callback, iterator, or parallel APIs, with absolute `u64` offsets — or stream fuzzy find-and-replace straight to a `Write` sink.
 - **Bit-Parallel Pre-Filter**: Opt-in fast lane that skips regions that provably can't match, with **identical results** — a multiple-× speedup on large, sparse inputs.
 
 ## Installation
@@ -257,6 +257,33 @@ parallel form is how you go fast: windows are independent and share the immutabl
 close to linearly with cores. `max_match_graphemes()` exposes the auto-computed overlap if you want
 to window the input yourself. See [`examples/streaming.rs`](examples/streaming.rs) for a full
 multi-GiB demo with a progress bar.
+
+### Streaming replace
+
+`replace_stream` is the streaming counterpart of [`replace`](#fuzzy-replacer): it reads from a `Read`,
+writes the transformed stream to a `Write` in **constant memory**, substituting matches as they are
+found and copying everything else through verbatim. It returns the number of bytes written.
+
+```rust
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+
+let engine = FuzzyAhoCorasickBuilder::new()
+    .fuzzy(FuzzyLimits::new().edits(1))
+    .case_insensitive(true)
+    .build(["needle"]);
+
+let mut out = Vec::new();
+// "neeedle" has one extra 'e' (an insertion); it is replaced, the rest copied through.
+engine.replace_stream("a neeedle b".as_bytes(), &mut out, |_m| Some("X"), 0.8).unwrap();
+assert_eq!(String::from_utf8(out).unwrap(), "a X b");
+```
+
+Matches are selected per window, so at a window boundary overlap is resolved left-to-right (the
+earlier-starting match wins) rather than by the global ranking a whole-input `replace` would use; for
+inputs where matches are separated by non-matching text the two agree exactly. The replacement may
+borrow external data but not the transient matched text — return an owned `String` if you need to
+derive it from `m.text`. `FuzzyReplacer` exposes the turnkey `replace_stream(reader, writer, threshold)`
+using its configured `(pattern → replacement)` table. Wrap the writer in a `BufWriter` for throughput.
 
 ## Bit-Parallel Pre-Filter
 

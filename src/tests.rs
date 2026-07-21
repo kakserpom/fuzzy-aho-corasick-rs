@@ -892,6 +892,92 @@ fn test_streaming_empty_input() {
 }
 
 #[test]
+fn test_replace_stream_small_cases() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["needle"]);
+
+    let run = |input: &str| {
+        let mut out = Vec::new();
+        let n = engine
+            .replace_stream(input.as_bytes(), &mut out, |_m| Some("X"), 0.8)
+            .unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert_eq!(n as usize, s.len(), "returned byte count must match output");
+        s
+    };
+
+    // Verbatim before/after, at the start, at the end, back-to-back, and a fuzzy hit.
+    assert_eq!(run("a needle b"), "a X b");
+    assert_eq!(run("needle b"), "X b");
+    assert_eq!(run("a needle"), "a X");
+    assert_eq!(run("needle needle"), "X X");
+    assert_eq!(run("a neeedle b"), "a X b"); // one insertion
+    assert_eq!(run("nothing here"), "nothing here");
+
+    // `None` keeps the original span.
+    let mut out = Vec::new();
+    engine
+        .replace_stream("a needle b".as_bytes(), &mut out, |_m| None::<&str>, 0.8)
+        .unwrap();
+    assert_eq!(String::from_utf8(out).unwrap(), "a needle b");
+}
+
+#[test]
+fn test_replace_stream_matches_whole_input() {
+    // Mirrors `test_streaming_apis_match_whole_input`: a >600 KiB input spanning several windows,
+    // with needles separated by filler that cannot fuzzy-match, so per-window and whole-input
+    // non-overlapping selection agree and streaming replace must equal whole-input replace.
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["needle"]);
+    let filler = "the quick brown fox ".repeat(50);
+    let mut input = String::new();
+    while input.len() < 600_000 {
+        input.push_str(&filler);
+        input.push_str("needle ");
+    }
+
+    let truth = engine.replace(&input, |m| Some(format!("<{}>", m.pattern_index)), 0.8);
+
+    let mut out = Vec::new();
+    let n = engine
+        .replace_stream(
+            input.as_bytes(),
+            &mut out,
+            |m| Some(format!("<{}>", m.pattern_index)),
+            0.8,
+        )
+        .unwrap();
+    let streamed = String::from_utf8(out).unwrap();
+    assert_eq!(n as usize, streamed.len());
+    assert_eq!(
+        streamed, truth,
+        "streaming replace must equal whole-input replace"
+    );
+    assert!(
+        streamed.contains("<0>"),
+        "expected replacements to be applied"
+    );
+}
+
+#[test]
+fn test_fuzzy_replacer_replace_stream() {
+    let replacer = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .build_replacer([("hello", "hi"), ("world", "earth")]);
+
+    let mut out = Vec::new();
+    replacer
+        .replace_stream("hell0 w0rld!".as_bytes(), &mut out, 0.8)
+        .unwrap();
+    assert_eq!(String::from_utf8(out).unwrap(), "hi earth!");
+}
+
+#[test]
 fn test_min_symbol_similarity_floor() {
     // "vxstibulum" matches "vestibulum" via one e->x substitution. That pair has zero similarity
     // (vowel vs consonant), so the additive model still accepts it in a long pattern...
