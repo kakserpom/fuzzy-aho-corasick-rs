@@ -5,6 +5,8 @@
 High-performance, Unicode-aware, safe Rust implementation of the Aho–Corasick automaton with **fuzzy matching**
 (insertions, deletions, substitutions, transpositions).
 
+📖 **[Guide (mdBook)](https://kakserpom.github.io/fuzzy-aho-corasick-rs/)** · [API docs (docs.rs)](https://docs.rs/fuzzy-aho-corasick)
+
 ## Key Features
 
 - **Exact & Fuzzy Matching**: Match literal patterns or allow configurable approximate matching with edit operations
