@@ -98,7 +98,7 @@ Builder options:
 | `beam_width(usize)` | Cap the active frontier to the K lowest-penalty states (approximate; faster). |
 | `auto_beam(budget, width)` | Stay exact until `budget` states are explored, then beam to `width` (see below). |
 | `similarity(&'static Similarity)` | Provide a custom grapheme similarity table (see [Custom Similarity](#custom-similarity)). |
-| `minimize(f32)` | Merge near-equivalent automaton states within a tolerance to shrink the automaton. |
+| `min_symbol_similarity(f32)` | Reject substitutions below a per-character similarity floor (see [Weakest-link floor](#weakest-link-floor)). |
 | `build(patterns)` | Build the immutable engine. |
 | `build_replacer(pairs)` | Build a [`FuzzyReplacer`] from `(pattern, replacement)` pairs. |
 

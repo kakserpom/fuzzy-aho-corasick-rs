@@ -21,7 +21,6 @@ use unicode_segmentation::UnicodeSegmentation;
 /// ```
 #[derive(Debug, Default)]
 pub struct FuzzyAhoCorasickBuilder {
-    minimize_lambda: Option<f32>,
     similarity: Option<&'static Similarity>,
     limits: Option<FuzzyLimits>,
     penalties: FuzzyPenalties,
@@ -38,7 +37,6 @@ impl FuzzyAhoCorasickBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            minimize_lambda: None,
             similarity: None,
             limits: None,
             penalties: FuzzyPenalties::default(),
@@ -48,13 +46,6 @@ impl FuzzyAhoCorasickBuilder {
             mappings: Vec::new(),
             min_symbol_similarity: 0.0,
         }
-    }
-
-    /// Enables λ-minimisation with given tolerance.
-    #[must_use]
-    pub fn minimize(mut self, lambda: f32) -> Self {
-        self.minimize_lambda = Some(lambda);
-        self
     }
 
     /// Provide custom similarity data.
@@ -286,41 +277,6 @@ impl FuzzyAhoCorasickBuilder {
             if nodes[f].weight > nodes[i].weight {
                 nodes[i].weight = nodes[f].weight;
             }
-        }
-
-        if let Some(lambda) = self.minimize_lambda {
-            let mut classes: Vec<usize> = (0..nodes.len()).collect();
-            let mut reprs: Vec<Node> = Vec::new();
-
-            for (i, node) in nodes.iter().enumerate() {
-                if let Some((j, _)) = reprs.iter().enumerate().find(|(_, rep)| {
-                    (rep.weight - node.weight).abs() <= lambda
-                        && rep.output == node.output
-                        && rep.transitions == node.transitions
-                        && rep.fail == node.fail
-                        && rep.epsilon == node.epsilon
-                }) {
-                    classes[i] = j;
-                } else {
-                    classes[i] = reprs.len();
-                    reprs.push(node.clone());
-                }
-            }
-
-            // remap all internal links
-            for rep in &mut reprs {
-                if let Some(e) = rep.epsilon {
-                    rep.epsilon = Some(classes[e as usize] as u32);
-                }
-                rep.fail = classes[rep.fail as usize] as u32;
-                rep.transitions = rep
-                    .transitions
-                    .iter()
-                    .map(|(k, &v)| (k.clone(), classes[v as usize] as u32))
-                    .collect();
-            }
-
-            nodes = reprs;
         }
 
         // Compute effective limits: if no global limits are set but patterns have limits,

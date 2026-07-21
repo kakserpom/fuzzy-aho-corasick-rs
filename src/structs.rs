@@ -176,7 +176,6 @@ pub(crate) struct MappingTransition {
 #[derive(Clone, Debug)]
 pub(crate) struct Node {
     pub(crate) pattern_index: Option<PatternIndex>,
-    pub(crate) epsilon: Option<u32>,
     /// Outgoing edges keyed by the next character (used for O(1) exact/swap lookups).
     pub(crate) transitions: FxHashMap<String, u32>,
     /// Same edges as `transitions`, in a flat layout for hot-path iteration. Derived from
@@ -330,7 +329,6 @@ impl Node {
             parent,
             #[cfg(debug_assertions)]
             grapheme: grapheme.map(str::to_string),
-            epsilon: None,
         }
     }
 }
