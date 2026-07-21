@@ -1,6 +1,6 @@
 [package]
 name = "fuzzy-aho-corasick"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "MIT"
 description = "Aho–Corasick automaton with fuzzy matching"
