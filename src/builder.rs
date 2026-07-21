@@ -30,6 +30,7 @@ pub struct FuzzyAhoCorasickBuilder {
     auto_beam: Option<(usize, usize)>,
     /// Multi-character mapping rules `(seq_a, seq_b, score)`, applied bidirectionally.
     mappings: Vec<(String, String, f32)>,
+    min_symbol_similarity: f32,
 }
 
 impl FuzzyAhoCorasickBuilder {
@@ -45,6 +46,7 @@ impl FuzzyAhoCorasickBuilder {
             beam_width: None,
             auto_beam: None,
             mappings: Vec::new(),
+            min_symbol_similarity: 0.0,
         }
     }
 
@@ -135,6 +137,17 @@ impl FuzzyAhoCorasickBuilder {
         score: f32,
     ) -> Self {
         self.mappings.push((a.into(), b.into(), score));
+        self
+    }
+
+    /// Require every character-level substitution to have at least this similarity (`0.0..=1.0`;
+    /// default `0.0`, i.e. no floor). A substitution whose similarity falls below the floor is
+    /// rejected outright — a "weakest link" bound (see the Horák et al. paper) that prevents a
+    /// single wildly-dissimilar character from being masked by an otherwise-good long match. Exact
+    /// matches and explicit [`mapping`](Self::mapping)s (which carry their own scores) are unaffected.
+    #[must_use]
+    pub fn min_symbol_similarity(mut self, min: f32) -> Self {
+        self.min_symbol_similarity = min;
         self
     }
 
@@ -484,6 +497,7 @@ impl FuzzyAhoCorasickBuilder {
             mappings,
             beam_width: self.beam_width,
             auto_beam: self.auto_beam,
+            min_symbol_similarity: self.min_symbol_similarity,
         }
     }
 }

@@ -362,6 +362,11 @@ pub struct FuzzyAhoCorasick {
     /// beams the frontier to `width` for the remainder. Bounds pathological blow-ups while leaving
     /// ordinary searches exact. Ignored when `beam_width` is set.
     pub(crate) auto_beam: Option<(usize, usize)>,
+    /// Minimum per-character similarity for a substitution to be allowed (0.0 = no floor). A
+    /// substitution whose similarity is below this is rejected outright, regardless of the overall
+    /// score — the paper's "weakest link" bound, so one wildly-dissimilar character can't be hidden
+    /// by an otherwise-good long match. Exact matches and explicit mappings are unaffected.
+    pub(crate) min_symbol_similarity: f32,
 }
 
 #[allow(clippy::missing_fields_in_debug)]

@@ -345,6 +345,29 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .build(["cat"]);
 ```
 
+### Weakest-link floor
+
+The default scoring is *additive*: a single very-dissimilar character costs a fixed penalty that a
+long pattern dilutes (one `sim=0` substitution in a 20-grapheme pattern still scores ~0.93). If you
+instead want *no* substitution to be too weak — the "weakest link" bound from the underlying
+[paper](DOCS/ias10_horak.pdf) — set a per-character floor:
+
+```rust
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+
+let engine = FuzzyAhoCorasickBuilder::new()
+    .fuzzy(FuzzyLimits::new().edits(1))
+    .case_insensitive(true)
+    .min_symbol_similarity(0.3) // reject any substitution below 0.3 similarity
+    .build(["vestibulum"]);
+
+assert!(engine.search("vxstibulum", 0.8).is_empty()); // e↔x has similarity 0 -> rejected
+assert_eq!(engine.search("vestibulom", 0.8).len(), 1); // u↔o (0.6) is fine
+```
+
+The floor applies only to character-level substitutions; exact matches and explicit mappings (which
+carry their own scores) are unaffected. Default is `0.0` (no floor).
+
 ## Multi-Character Mappings
 
 The similarity table maps single graphemes to single graphemes. For equivalences that span **several

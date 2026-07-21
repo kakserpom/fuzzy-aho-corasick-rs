@@ -294,6 +294,8 @@ impl FuzzyAhoCorasick {
         // `Node::prune_len` for the derivation.
         let root = &self.nodes[0];
         let max_penalties = root.prune_len - root.prune_len_over_weight * similarity_threshold;
+        // Per-substitution similarity floor (0.0 = no floor); hoisted out of the hot loop.
+        let min_symbol_similarity = self.min_symbol_similarity;
 
         // Effective beam width. Starts at the explicit `beam_width` (if any); otherwise it stays
         // `None` (exact) until the automatic-beam budget is exhausted, at which point it drops to the
@@ -537,6 +539,10 @@ impl FuzzyAhoCorasick {
                             }
                             // substitution
                             let sim = self.get_similarity(edge.first_char, current_ch);
+                            // Weakest-link floor: reject a too-dissimilar character outright.
+                            if sim < min_symbol_similarity {
+                                continue;
+                            }
                             let penalty = self.penalties.substitution * (1.0 - sim);
 
                             // Skip substitutions that would push the state past the global ceiling.

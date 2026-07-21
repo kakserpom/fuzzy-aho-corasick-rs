@@ -890,3 +890,26 @@ fn test_streaming_empty_input() {
     let n = engine.search_stream(&b""[..], 0.8, |_| hits += 1).unwrap();
     assert_eq!((hits, n), (0, 0));
 }
+
+#[test]
+fn test_min_symbol_similarity_floor() {
+    // "vxstibulum" matches "vestibulum" via one e->x substitution. That pair has zero similarity
+    // (vowel vs consonant), so the additive model still accepts it in a long pattern...
+    let no_floor = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["vestibulum"]);
+    assert_eq!(no_floor.search_non_overlapping("vxstibulum", 0.8).len(), 1);
+
+    // ...but a floor rejects the weakest-link substitution outright.
+    let floored = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .min_symbol_similarity(0.3)
+        .build(["vestibulum"]);
+    assert!(floored.search_non_overlapping("vxstibulum", 0.8).is_empty());
+
+    // A substitution above the floor (u<->o, similarity 0.6) is still accepted; exact still matches.
+    assert_eq!(floored.search_non_overlapping("vestibulom", 0.8).len(), 1);
+    assert_eq!(floored.search_non_overlapping("vestibulum", 0.8).len(), 1);
+}
