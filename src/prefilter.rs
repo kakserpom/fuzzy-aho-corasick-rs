@@ -469,10 +469,16 @@ mod tests {
 
             let threshold = 0.6 + (rng.next() % 4) as f32 * 0.1; // 0.6..=0.9
 
-            let mut expected: Vec<_> =
-                engine.search_unsorted(&hay, threshold).iter().map(key).collect();
-            let mut got: Vec<_> =
-                pf.search_unsorted(&hay, threshold).iter().map(key).collect();
+            let mut expected: Vec<_> = engine
+                .search_unsorted(&hay, threshold)
+                .iter()
+                .map(key)
+                .collect();
+            let mut got: Vec<_> = pf
+                .search_unsorted(&hay, threshold)
+                .iter()
+                .map(key)
+                .collect();
             expected.sort_unstable();
             got.sort_unstable();
             assert_eq!(

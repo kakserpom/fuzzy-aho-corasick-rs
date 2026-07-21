@@ -108,7 +108,8 @@ fn fuzz_correctness() {
         bitap(&pattern, &text, k, &mut ends);
         let reference = brute_force_ends(&pattern, &text, k);
         assert_eq!(
-            ends, reference,
+            ends,
+            reference,
             "mismatch: pattern={:?} text={:?} k={k}",
             String::from_utf8_lossy(&pattern),
             String::from_utf8_lossy(&text),
@@ -157,10 +158,20 @@ fn main() {
     let engine_secs = t.elapsed().as_secs_f64() / f64::from(iters);
     let engine_mbps = bytes.len() as f64 / 1e6 / engine_secs;
 
-    println!("input: {} MiB, pattern {:?}, k={k}", bytes.len() / (1024 * 1024), String::from_utf8_lossy(pattern));
-    println!("  bitap  : {bitap_mbps:8.1} MB/s ({} end positions)", ends.len());
+    println!(
+        "input: {} MiB, pattern {:?}, k={k}",
+        bytes.len() / (1024 * 1024),
+        String::from_utf8_lossy(pattern)
+    );
+    println!(
+        "  bitap  : {bitap_mbps:8.1} MB/s ({} end positions)",
+        ends.len()
+    );
     println!("  engine : {engine_mbps:8.1} MB/s");
-    println!("  speedup: {:.1}x  (raw detection ceiling)", bitap_mbps / engine_mbps);
+    println!(
+        "  speedup: {:.1}x  (raw detection ceiling)",
+        bitap_mbps / engine_mbps
+    );
 
     // -----------------------------------------------------------------------------------------
     // Integrated pre-filter: Prefiltered::search vs FuzzyAhoCorasick::search, IDENTICAL results.
@@ -177,12 +188,19 @@ fn main() {
     let threshold = 0.85;
 
     let pf = engine.with_prefilter();
-    assert!(pf.is_active(), "config should be reducible to the bit model");
+    assert!(
+        pf.is_active(),
+        "config should be reducible to the bit model"
+    );
 
     // Correctness: the pre-filtered results must equal the full search exactly.
     let full = engine.search(&sparse, threshold);
     let filtered = pf.search(&sparse, threshold);
-    assert_eq!(full.len(), filtered.len(), "pre-filter changed the match set!");
+    assert_eq!(
+        full.len(),
+        filtered.len(),
+        "pre-filter changed the match set!"
+    );
 
     let _ = pf.search(&sparse, threshold); // warm
     let t = Instant::now();
