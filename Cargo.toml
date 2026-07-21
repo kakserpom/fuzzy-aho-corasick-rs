@@ -8,6 +8,9 @@ repository = "https://github.com/kakserpom/fuzzy-aho-corasick-rs"
 documentation = "https://kakserpom.github.io/fuzzy-aho-corasick-rs/"
 keywords = ["aho-corasick", "fuzzy", "levenshtein", "string-matching", "unicode"]
 categories = ["text-processing", "algorithms"]
+# Keep the published crate lean: the guide sources, the paper PDF, and CI config aren't needed by
+# consumers (the book is hosted, and README/docs link the PDF on GitHub).
+exclude = ["/book", "/DOCS", "/.github"]
 [dependencies]
 unicode-segmentation = "1.13"
 [dev-dependencies]
