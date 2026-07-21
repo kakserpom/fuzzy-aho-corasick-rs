@@ -5,8 +5,11 @@ edition = "2024"
 license = "MIT"
 description = "Aho–Corasick automaton with fuzzy matching"
 repository = "https://github.com/kakserpom/fuzzy-aho-corasick-rs"
+documentation = "https://kakserpom.github.io/fuzzy-aho-corasick-rs/"
+keywords = ["aho-corasick", "fuzzy", "levenshtein", "string-matching", "unicode"]
+categories = ["text-processing", "algorithms"]
 [dependencies]
-unicode-segmentation = "1.12"
+unicode-segmentation = "1.13"
 [dev-dependencies]
 criterion = "0.8"
 indicatif = "0.18"
