@@ -39,6 +39,7 @@
 //! See the [README](https://github.com/kakserpom/fuzzy-aho-corasick-rs) for a full guide.
 mod builder;
 mod matches;
+mod prefilter;
 mod replacer;
 mod stream;
 pub mod structs;
@@ -46,6 +47,7 @@ pub mod structs;
 mod tests;
 
 pub use builder::FuzzyAhoCorasickBuilder;
+pub use prefilter::Prefiltered;
 pub use replacer::FuzzyReplacer;
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;

@@ -40,6 +40,28 @@ impl Similarity {
         Self { map, ascii_table }
     }
 
+    /// Largest off-diagonal (non-identical-pair) similarity in the table, i.e. the highest score any
+    /// substitution between two *different* symbols can earn. Used by the bit-parallel pre-filter to
+    /// bound the cheapest possible substitution penalty; returns `0.0` when the table has no fuzzy
+    /// pairs (every substitution then costs the full penalty).
+    #[must_use]
+    pub fn max_off_diagonal(&self) -> f32 {
+        let mut max = 0.0f32;
+        for (i, row) in self.ascii_table.iter().enumerate() {
+            for (j, &sim) in row.iter().enumerate() {
+                if i != j {
+                    max = max.max(sim);
+                }
+            }
+        }
+        for (&(a, b), &sim) in &self.map {
+            if a != b {
+                max = max.max(sim);
+            }
+        }
+        max
+    }
+
     /// Get similarity between two characters.
     /// Uses fast ASCII lookup when possible, falls back to hashmap for non-ASCII.
     #[inline]
