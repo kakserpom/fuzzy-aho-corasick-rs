@@ -36,6 +36,12 @@
 //! [`FuzzyAhoCorasickBuilder::auto_beam`] stays exact until a state budget is exceeded and only
 //! then engages a beam — leaving ordinary searches unaffected.
 //!
+//! # Bit-parallel pre-filter
+//! For large, mostly-non-matching inputs, [`FuzzyAhoCorasick::with_prefilter`] returns a
+//! [`Prefiltered`] wrapper that runs a bit-parallel approximate scan to locate candidate regions and
+//! only re-searches those with the full engine. Results are identical to [`FuzzyAhoCorasick::search`];
+//! it falls back to a plain full search when the configuration can't be reduced to the bit model.
+//!
 //! See the [README](https://github.com/kakserpom/fuzzy-aho-corasick-rs) for a full guide.
 mod builder;
 mod matches;

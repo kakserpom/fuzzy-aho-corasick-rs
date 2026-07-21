@@ -18,6 +18,7 @@ High-performance, Unicode-aware, safe Rust implementation of the Aho–Corasick 
 - **Customizable Scoring**: Weighting and penalty tuning for substitution, insertion, deletion, and swap.
 - **Bounded Worst Case**: Optional beam search and an opt-in automatic beam keep pathological inputs from blowing up.
 - **Streaming**: Search a `Read` source incrementally in constant memory (files, sockets, pipes — any size) via callback, iterator, or parallel APIs, with absolute `u64` offsets.
+- **Bit-Parallel Pre-Filter**: Opt-in fast lane that skips regions that provably can't match, with **identical results** — a multiple-× speedup on large, sparse inputs.
 
 ## Installation
 
@@ -25,7 +26,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fuzzy-aho-corasick = "0.3"
+fuzzy-aho-corasick = "0.4"
 ```
 
 Then in code:
@@ -256,6 +257,45 @@ parallel form is how you go fast: windows are independent and share the immutabl
 close to linearly with cores. `max_match_graphemes()` exposes the auto-computed overlap if you want
 to window the input yourself. See [`examples/streaming.rs`](examples/streaming.rs) for a full
 multi-GiB demo with a progress bar.
+
+## Bit-Parallel Pre-Filter
+
+The core search is thorough but pays a per-position cost. When you search large inputs that are mostly
+non-matching text, `with_prefilter()` adds an opt-in fast lane: a bit-parallel
+([Bitap](https://en.wikipedia.org/wiki/Bitap_algorithm) / Wu–Manber) approximate scan runs first at
+hundreds of MB/s to locate *candidate regions*, and the full weighted engine then re-searches only
+those. Results are **identical** to `search` / `search_unsorted` — the filter is a conservative
+over-approximation, so it never drops a real match; it only spares the engine from scanning text that
+cannot contain one.
+
+```rust
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+
+let engine = FuzzyAhoCorasickBuilder::new()
+    .fuzzy(FuzzyLimits::new().edits(1))
+    .build(["vestibulum", "consectetur"]);
+
+let pf = engine.with_prefilter(); // build once, reuse across searches
+let hits = pf.search("… lorem vestibulm ipsum …", 0.85);
+// Same matches as engine.search(…), just faster on large, sparse inputs.
+```
+
+**How the budget is derived.** The score threshold bounds the total penalty a kept match may carry
+(`P_max = N·(1 − θ/weight)`), and every edit costs at least some minimum penalty, so the number of edit
+operations is bounded. That bound becomes the bit-parallel scan's Levenshtein budget `k` (a
+transposition counts as two), guaranteeing every match the engine would accept survives the filter.
+
+**Graceful fallback.** When the configuration can't be reduced to the bit model — multi-character
+mappings present, a pattern longer than 63 graphemes, a penalty so low an edit is effectively free, or
+a budget too large to stay selective — the wrapper transparently runs the full search instead. Check
+`pf.is_active()` to see whether the filter was built. Either way results are correct; the fallback
+merely forgoes the speedup.
+
+**When it helps.** The win scales inversely with match density: on sparse inputs the engine sees only a
+small fraction of the text (an ~8× end-to-end speedup on a 16 MiB sample), while match-saturated inputs
+gain little (a wasted scan, then roughly baseline). See
+[`examples/bitap_prototype.rs`](examples/bitap_prototype.rs) for the standalone algorithm, a
+brute-force correctness verifier, and a throughput comparison.
 
 ## Segmentation and Reconstruction
 
