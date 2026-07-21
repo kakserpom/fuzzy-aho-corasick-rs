@@ -30,6 +30,29 @@ use unicode_segmentation::UnicodeSegmentation;
 const MAX_PATTERN_GRAPHEMES: usize = 63;
 /// Beyond this edit budget the filter stops pruning meaningfully; fall back to the full search.
 const MAX_USEFUL_K: usize = 24;
+/// Most distinct symbols the filter supports. Kept at 255 so the id stream fits `u8` (id `0` is the
+/// "other" bucket); configs with more distinct grapheme symbols fall back to the full search.
+const MAX_ALPHABET: usize = 255;
+
+/// Grapheme-index → byte-offset mapping for a transcoded haystack.
+enum Offsets {
+    /// All-ASCII haystack: every byte is its own grapheme, so the offset *is* the index. Storing
+    /// this avoids materialising an `n+1` element table (the single largest transcode allocation).
+    Identity,
+    /// Non-ASCII: explicit grapheme-start byte offsets with a trailing sentinel = `haystack.len()`.
+    Table(Vec<usize>),
+}
+
+impl Offsets {
+    /// Byte offset of grapheme `i` (or the sentinel for `i == grapheme count`).
+    #[inline]
+    fn byte(&self, i: usize) -> usize {
+        match self {
+            Offsets::Identity => i,
+            Offsets::Table(t) => t[i],
+        }
+    }
+}
 
 /// A [`FuzzyAhoCorasick`] wrapped with an optional bit-parallel pre-filter.
 ///
@@ -50,7 +73,7 @@ struct BitapFilter {
     /// Fast path for all-ASCII haystacks: byte → symbol id (already case-folded), `0` = other. Every
     /// ASCII byte is its own grapheme, so this reproduces the grapheme path exactly without
     /// segmenting or hashing.
-    ascii_id: Box<[u32; 128]>,
+    ascii_id: [u8; 128],
     case_insensitive: bool,
     patterns: Vec<BitapPattern>,
     /// `max(1/p_ins, 1/p_del, 1/p_sub_min, 2/p_swap)` — Levenshtein ops per unit of penalty budget.
@@ -162,6 +185,9 @@ impl BitapFilter {
             for g in graphemes {
                 let next_id = symbol_ids.len() as u32 + 1; // ids start at 1; 0 = "other"
                 let id = *symbol_ids.entry(g).or_insert(next_id);
+                if id as usize > MAX_ALPHABET {
+                    return None; // more distinct symbols than the u8 id stream can hold
+                }
                 ids.push(id);
             }
             let applicable = pat.limits.as_ref().or(engine.limits.as_ref());
@@ -175,7 +201,7 @@ impl BitapFilter {
         }
 
         // ASCII fast-path table: fold each ASCII char the way the engine would, then look up its id.
-        let mut ascii_id = Box::new([0u32; 128]);
+        let mut ascii_id = [0u8; 128];
         for (b, slot) in ascii_id.iter_mut().enumerate() {
             let ch = b as u8 as char;
             let folded = if engine.case_insensitive {
@@ -184,7 +210,7 @@ impl BitapFilter {
                 ch.to_string()
             };
             if let Some(&id) = symbol_ids.get(&folded) {
-                *slot = id;
+                *slot = id as u8; // <= MAX_ALPHABET, checked above
             }
         }
 
@@ -208,16 +234,19 @@ impl BitapFilter {
         })
     }
 
-    /// Transcode the haystack to a symbol-id stream plus a parallel table of grapheme byte offsets
-    /// (with a trailing sentinel = `haystack.len()`), in one linear pass.
-    fn transcode(&self, haystack: &str) -> (Vec<u32>, Vec<usize>) {
-        // Fast path: every ASCII byte is its own grapheme, so index the precomputed byte table
-        // directly — no segmentation, no hashing.
+    /// Transcode the haystack to a `u8` symbol-id stream plus the grapheme→byte mapping, in one
+    /// linear pass. For all-ASCII input the offset table is left implicit ([`Offsets::Identity`]) and
+    /// ids come straight from the precomputed byte table — no segmentation, hashing, or `n+1` offset
+    /// vector.
+    fn transcode(&self, haystack: &str) -> (Vec<u8>, Offsets) {
+        // Fast path: every ASCII byte is its own grapheme.
         if haystack.is_ascii() {
-            let bytes = haystack.as_bytes();
-            let ids: Vec<u32> = bytes.iter().map(|&b| self.ascii_id[b as usize]).collect();
-            let offsets: Vec<usize> = (0..=bytes.len()).collect();
-            return (ids, offsets);
+            let ids = haystack
+                .as_bytes()
+                .iter()
+                .map(|&b| self.ascii_id[b as usize])
+                .collect();
+            return (ids, Offsets::Identity);
         }
 
         let mut ids = Vec::new();
@@ -234,10 +263,11 @@ impl BitapFilter {
             } else {
                 self.symbol_ids.get(g).copied()
             };
-            ids.push(id.unwrap_or(0));
+            // ids are <= MAX_ALPHABET (255) by construction, so this fits u8.
+            ids.push(id.unwrap_or(0) as u8);
         }
         offsets.push(haystack.len());
-        (ids, offsets)
+        (ids, Offsets::Table(offsets))
     }
 
     /// Effective edit budget for `pat` at this `threshold`, or `None` to fall back to full search
@@ -304,8 +334,8 @@ impl BitapFilter {
         // Run the full engine on each window slice; collect the best match per (span, pattern).
         let mut best: FxHashMap<(usize, usize, usize), FuzzyMatch<'a>> = FxHashMap::default();
         for (gs, ge) in merged {
-            let bstart = offsets[gs];
-            let bend = offsets[ge.min(n)];
+            let bstart = offsets.byte(gs);
+            let bend = offsets.byte(ge.min(n));
             let sub = &haystack[bstart..bend];
             for m in engine.search_unsorted(sub, threshold) {
                 let start = bstart + m.start;
@@ -367,7 +397,7 @@ fn k_from_limits(lim: &FuzzyLimits) -> Option<usize> {
 /// Bit-parallel approximate scan (Wu–Manber, shift-AND). For every grapheme end position where some
 /// start gives `levenshtein(pattern, window) <= k`, push the candidate window `[end-m-k, end]` (in
 /// grapheme indices) onto `out`.
-fn bitap_windows(mask: &[u64], m: usize, k: usize, ids: &[u32], out: &mut Vec<(usize, usize)>) {
+fn bitap_windows(mask: &[u64], m: usize, k: usize, ids: &[u8], out: &mut Vec<(usize, usize)>) {
     let match_bit = 1u64 << (m - 1);
     let mut r = vec![0u64; k + 1];
     let mut nr = vec![0u64; k + 1];
@@ -422,14 +452,11 @@ mod tests {
         )
     }
 
-    #[test]
-    fn prefilter_matches_full_search_differential() {
-        let alphabet = b"abcde 1o0l";
-        let vocab = ["hello", "world", "vestibulum", "abc", "lorem", "cell"];
-        let mut rng = Rng(0x1234_5678_9abc_def1);
-        let mut checked = 0u32;
-
-        for trial in 0..4000u32 {
+    /// Assert the pre-filter reproduces the full search exactly across `trials` random configs and
+    /// inputs, drawing patterns from `vocab` and filler graphemes from `filler`.
+    fn differential(seed: u64, vocab: &[&str], filler: &[&str], trials: u32) {
+        let mut rng = Rng(seed);
+        for trial in 0..trials {
             // Random engine config.
             let npat = 1 + (rng.next() % 3) as usize;
             let patterns: Vec<&str> = (0..npat)
@@ -459,11 +486,11 @@ mod tests {
             let mut hay = String::new();
             for _ in 0..len {
                 if rng.next().is_multiple_of(7) {
-                    // Splice in a (possibly mutated) vocab word to force near-matches.
+                    // Splice in a vocab word to force near-matches.
                     hay.push_str(patterns[(rng.next() as usize) % patterns.len()]);
                     hay.push(' ');
                 } else {
-                    hay.push(alphabet[(rng.next() as usize) % alphabet.len()] as char);
+                    hay.push_str(filler[(rng.next() as usize) % filler.len()]);
                 }
             }
 
@@ -486,9 +513,24 @@ mod tests {
                 "mismatch (trial {trial}): patterns={patterns:?} edits={edits} ci={case_insensitive} \
                  threshold={threshold} hay={hay:?}",
             );
-            checked += 1;
         }
-        assert_eq!(checked, 4000);
+    }
+
+    #[test]
+    fn prefilter_matches_full_search_ascii() {
+        // ASCII haystacks exercise the byte fast-path (Offsets::Identity, ascii_id table).
+        let vocab = ["hello", "world", "vestibulum", "abc", "lorem", "cell"];
+        let filler = ["a", "b", "c", "d", "e", " ", "1", "o", "0", "l"];
+        differential(0x1234_5678_9abc_def1, &vocab, &filler, 4000);
+    }
+
+    #[test]
+    fn prefilter_matches_full_search_unicode() {
+        // Non-ASCII haystacks exercise the grapheme path (Offsets::Table): multi-byte codepoints
+        // and a combining-mark grapheme cluster ("e\u{0301}" = é).
+        let vocab = ["café", "naïve", "Ωμέγα", "Москва", "señor", "e\u{0301}cole"];
+        let filler = ["a", "é", "ñ", "ω", "м", " ", "o", "0", "e\u{0301}"];
+        differential(0xdead_beef_0bad_f00d, &vocab, &filler, 4000);
     }
 
     #[test]
