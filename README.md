@@ -285,6 +285,11 @@ borrow external data but not the transient matched text — return an owned `Str
 derive it from `m.text`. `FuzzyReplacer` exposes the turnkey `replace_stream(reader, writer, threshold)`
 using its configured `(pattern → replacement)` table. Wrap the writer in a `BufWriter` for throughput.
 
+`replace_stream_parallel(reader, writer, threads, callback, threshold)` fans the (CPU-bound) search
+across a thread pool while reassembling the output **in stream order** on the calling thread — so it
+produces byte-identical output to `replace_stream`, and the callback and writer stay single-threaded
+(no `Send`/`Sync` bounds). Because output is inherently ordered, only the search is parallelised.
+
 ## Bit-Parallel Pre-Filter
 
 The core search is thorough but pays a per-position cost. When you search large inputs that are mostly

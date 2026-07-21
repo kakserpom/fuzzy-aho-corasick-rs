@@ -961,6 +961,46 @@ fn test_replace_stream_matches_whole_input() {
         streamed.contains("<0>"),
         "expected replacements to be applied"
     );
+
+    // Parallel replace must produce byte-identical output (assembled in stream order).
+    let mut par_out = Vec::new();
+    let np = engine
+        .replace_stream_parallel(
+            input.as_bytes(),
+            &mut par_out,
+            4,
+            |m| Some(format!("<{}>", m.pattern_index)),
+            0.8,
+        )
+        .unwrap();
+    let par = String::from_utf8(par_out).unwrap();
+    assert_eq!(np as usize, par.len());
+    assert_eq!(
+        par, truth,
+        "parallel streaming replace must equal whole-input replace"
+    );
+}
+
+#[test]
+fn test_replace_stream_parallel_small_cases() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["needle"]);
+
+    // Even with 1 window and 8 threads, output order and bytes must be exact.
+    let run = |input: &str, threads: usize| {
+        let mut out = Vec::new();
+        engine
+            .replace_stream_parallel(input.as_bytes(), &mut out, threads, |_m| Some("X"), 0.8)
+            .unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    assert_eq!(run("a needle b", 8), "a X b");
+    assert_eq!(run("needle needle", 4), "X X");
+    assert_eq!(run("a neeedle b", 2), "a X b");
+    assert_eq!(run("nothing here", 4), "nothing here");
+    assert_eq!(run("", 4), "");
 }
 
 #[test]

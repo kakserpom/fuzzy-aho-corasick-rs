@@ -20,10 +20,13 @@
 //!
 //! And a streaming find-and-replace that writes the transformed stream to a [`Write`] sink:
 //! * [`replace_stream`](crate::FuzzyAhoCorasick::replace_stream) — callback, single-threaded.
+//! * [`replace_stream_parallel`](crate::FuzzyAhoCorasick::replace_stream_parallel) — parallel search,
+//!   output reassembled in stream order on the calling thread.
 
 use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, NumEdits};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -462,54 +465,287 @@ impl FuzzyAhoCorasick {
         S: AsRef<str>,
     {
         let mut wr = WindowReader::new(reader, DEFAULT_WINDOW, self.stream_overlap());
-        // Absolute byte offset up to which output has been written. Monotonically increasing, and
-        // always >= the current window's base, so `emitted - base` indexes into the window's text.
-        let mut emitted: u64 = 0;
-        let mut written: u64 = 0;
-
+        let mut cursor = ReplaceCursor::default();
         while let Some(w) = wr.next_window()? {
-            let bytes = w.text.as_bytes();
-            let fm = self.search_non_overlapping(&w.text, threshold);
-            // This window owns matches whose start is before the commit boundary; process them in
-            // position order so the verbatim runs between them come out correctly.
-            let mut owned: Vec<&FuzzyMatch> = fm.iter().filter(|m| m.start < w.commit).collect();
-            owned.sort_unstable_by_key(|m| (m.start, m.end));
-
-            for m in owned {
-                let match_start = w.base + m.start as u64;
-                if match_start < emitted {
-                    // Overlaps a span already written (a match from an earlier window that extended
-                    // past its commit boundary); the earlier match won, so skip this one.
-                    continue;
-                }
-                // Verbatim run between the previous emission and this match.
-                if emitted < match_start {
-                    let lo = (emitted - w.base) as usize;
-                    writer.write_all(&bytes[lo..m.start])?;
-                    written += (m.start - lo) as u64;
-                }
-                // The replacement, or the original text when the callback declines.
-                if let Some(repl) = callback(m) {
-                    let repl = repl.as_ref().as_bytes();
-                    writer.write_all(repl)?;
-                    written += repl.len() as u64;
-                } else {
-                    writer.write_all(&bytes[m.start..m.end])?;
-                    written += (m.end - m.start) as u64;
-                }
-                emitted = w.base + m.end as u64;
-            }
-
-            // Flush verbatim up to this window's commit boundary (the whole window on EOF, where
-            // commit == text.len()). Skipped if a replacement already carried `emitted` past it.
-            let commit_abs = w.base + w.commit as u64;
-            if emitted < commit_abs {
-                let lo = (emitted - w.base) as usize;
-                writer.write_all(&bytes[lo..w.commit])?;
-                written += (w.commit - lo) as u64;
-                emitted = commit_abs;
-            }
+            let matches = self.window_replace_matches(&w.text, w.commit, threshold);
+            cursor.emit_window(
+                &mut writer,
+                &mut callback,
+                w.base,
+                &w.text,
+                w.commit,
+                &matches,
+            )?;
         }
-        Ok(written)
+        Ok(cursor.written)
+    }
+
+    /// The matches a window owns for replacement: non-overlapping, starting before `commit`, sorted
+    /// by position. Returned owned so the parallel path can move them across threads.
+    fn window_replace_matches<'a>(
+        &'a self,
+        text: &'a str,
+        commit: usize,
+        threshold: f32,
+    ) -> Vec<FuzzyMatch<'a>> {
+        let mut matches: Vec<FuzzyMatch> = self
+            .search_non_overlapping(text, threshold)
+            .into_iter()
+            .filter(|m| m.start < commit)
+            .collect();
+        matches.sort_unstable_by_key(|m| (m.start, m.end));
+        matches
+    }
+
+    /// Parallel [`replace_stream`](Self::replace_stream): a producer cuts windows, `threads` workers
+    /// run the (CPU-bound) search in parallel, and this thread reassembles the output **in stream
+    /// order**, calling `callback` and writing to `writer`. Because output is inherently ordered,
+    /// only the search is parallelised; the callback and writer stay on the calling thread (no
+    /// `Send`/`Sync` bounds, exactly as in the single-threaded form). Returns the bytes written.
+    ///
+    /// Semantics are identical to [`replace_stream`](Self::replace_stream). `threads` is clamped to
+    /// at least 1; pass [`std::thread::available_parallelism`] for "all cores".
+    ///
+    /// # Errors
+    /// Propagates any [`io::Error`] from `reader` or `writer`.
+    ///
+    /// # Panics
+    /// Propagates a panic from a worker or the producer thread, re-raised on the calling thread.
+    pub fn replace_stream_parallel<R, W, F, S>(
+        &self,
+        reader: R,
+        mut writer: W,
+        threads: usize,
+        mut callback: F,
+        threshold: f32,
+    ) -> io::Result<u64>
+    where
+        R: Read + Send,
+        W: Write,
+        F: FnMut(&FuzzyMatch) -> Option<S>,
+        S: AsRef<str>,
+    {
+        let threads = threads.max(1);
+        let cancel = Arc::new(AtomicBool::new(false));
+        std::thread::scope(|scope| {
+            // Bounded so the producer can't read the whole stream ahead of the workers.
+            let (work_tx, work_rx) = mpsc::sync_channel::<(u64, StreamWindow)>(threads * 2);
+            let work_rx = Arc::new(Mutex::new(work_rx));
+            // Unbounded: with in-order reassembly a bounded results channel can deadlock (the worker
+            // holding the next-needed window blocks on a full channel while the collector waits for
+            // exactly that window).
+            let (res_tx, res_rx) = mpsc::channel::<ReplaceResult>();
+
+            for _ in 0..threads {
+                let work_rx = Arc::clone(&work_rx);
+                let res_tx = res_tx.clone();
+                scope.spawn(move || {
+                    loop {
+                        let Ok((seq, w)) = work_rx.lock().unwrap().recv() else {
+                            break;
+                        };
+                        let matches = self
+                            .window_replace_matches(&w.text, w.commit, threshold)
+                            .iter()
+                            .map(OwnedMatch::from)
+                            .collect();
+                        let res = ReplaceResult {
+                            seq,
+                            base: w.base,
+                            text: w.text,
+                            commit: w.commit,
+                            matches,
+                        };
+                        if res_tx.send(res).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(res_tx); // only the workers' clones keep the results channel open
+
+            let producer = {
+                let cancel = Arc::clone(&cancel);
+                scope.spawn(move || -> io::Result<u64> {
+                    let mut wr = WindowReader::new(reader, DEFAULT_WINDOW, self.stream_overlap());
+                    let mut seq = 0u64;
+                    while !cancel.load(Ordering::Relaxed) {
+                        let Some(w) = wr.next_window()? else { break };
+                        if work_tx.send((seq, w)).is_err() {
+                            break; // workers gone
+                        }
+                        seq += 1;
+                    }
+                    Ok(wr.total)
+                    // work_tx dropped here -> workers observe the channel close and exit.
+                })
+            };
+
+            // Collector: reassemble windows in producer order, emitting output as each becomes ready.
+            let mut cursor = ReplaceCursor::default();
+            let mut next_seq = 0u64;
+            let mut pending: HashMap<u64, ReplaceResult> = HashMap::new();
+            let mut write_err: Option<io::Error> = None;
+            'collect: for res in res_rx {
+                pending.insert(res.seq, res);
+                while let Some(r) = pending.remove(&next_seq) {
+                    let matches: Vec<FuzzyMatch> = r
+                        .matches
+                        .iter()
+                        .map(|om| om.to_match(self, &r.text))
+                        .collect();
+                    if let Err(e) = cursor.emit_window(
+                        &mut writer,
+                        &mut callback,
+                        r.base,
+                        &r.text,
+                        r.commit,
+                        &matches,
+                    ) {
+                        write_err = Some(e);
+                        cancel.store(true, Ordering::Relaxed); // stop the producer promptly
+                        break 'collect;
+                    }
+                    next_seq += 1;
+                }
+            }
+
+            let read_result = producer.join().expect("stream producer panicked");
+            match write_err {
+                Some(e) => Err(e),
+                None => read_result.map(|_| cursor.written),
+            }
+        })
+    }
+}
+
+/// Tracks output progress across windows for streaming replace. `emitted` is the absolute byte
+/// offset up to which output has been written; it is monotonic and always `>=` the current window's
+/// base, so `emitted - base` indexes into that window's text.
+#[derive(Default)]
+struct ReplaceCursor {
+    emitted: u64,
+    written: u64,
+}
+
+impl ReplaceCursor {
+    /// Emit one window's output: verbatim runs interleaved with replacements, then verbatim up to
+    /// the commit boundary. `matches` must be this window's owned matches (start `< commit`, sorted
+    /// by position). Cross-window overlap is resolved by skipping any match already covered.
+    fn emit_window<W, F, S>(
+        &mut self,
+        writer: &mut W,
+        callback: &mut F,
+        base: u64,
+        text: &str,
+        commit: usize,
+        matches: &[FuzzyMatch],
+    ) -> io::Result<()>
+    where
+        W: Write,
+        F: FnMut(&FuzzyMatch) -> Option<S>,
+        S: AsRef<str>,
+    {
+        let bytes = text.as_bytes();
+        for m in matches {
+            let match_start = base + m.start as u64;
+            if match_start < self.emitted {
+                // Overlaps a span already written (a match from an earlier window that extended past
+                // its commit boundary); the earlier match won, so skip this one.
+                continue;
+            }
+            // Verbatim run between the previous emission and this match.
+            if self.emitted < match_start {
+                let lo = (self.emitted - base) as usize;
+                writer.write_all(&bytes[lo..m.start])?;
+                self.written += (m.start - lo) as u64;
+            }
+            // The replacement, or the original text when the callback declines.
+            if let Some(repl) = callback(m) {
+                let repl = repl.as_ref().as_bytes();
+                writer.write_all(repl)?;
+                self.written += repl.len() as u64;
+            } else {
+                writer.write_all(&bytes[m.start..m.end])?;
+                self.written += (m.end - m.start) as u64;
+            }
+            self.emitted = base + m.end as u64;
+        }
+
+        // Flush verbatim up to this window's commit boundary (the whole window on EOF, where
+        // commit == text.len()). Skipped if a replacement already carried `emitted` past it.
+        let commit_abs = base + commit as u64;
+        if self.emitted < commit_abs {
+            let lo = (self.emitted - base) as usize;
+            writer.write_all(&bytes[lo..commit])?;
+            self.written += (commit - lo) as u64;
+            self.emitted = commit_abs;
+        }
+        Ok(())
+    }
+}
+
+/// A window's owned matches shipped from a worker to the collector, tagged with the window's
+/// producer order (`seq`) so output can be reassembled in stream order.
+struct ReplaceResult {
+    seq: u64,
+    base: u64,
+    text: String,
+    commit: usize,
+    matches: Vec<OwnedMatch>,
+}
+
+/// The scalar fields of a [`FuzzyMatch`], owned so it can cross a thread boundary. The borrowed
+/// `pattern` and `text` are re-attached on the collector via [`OwnedMatch::to_match`].
+struct OwnedMatch {
+    start: usize,
+    end: usize,
+    pattern_index: usize,
+    similarity: f32,
+    insertions: NumEdits,
+    deletions: NumEdits,
+    substitutions: NumEdits,
+    swaps: NumEdits,
+    edits: NumEdits,
+    #[cfg(debug_assertions)]
+    notes: Vec<String>,
+}
+
+impl From<&FuzzyMatch<'_>> for OwnedMatch {
+    fn from(m: &FuzzyMatch<'_>) -> Self {
+        Self {
+            start: m.start,
+            end: m.end,
+            pattern_index: m.pattern_index,
+            similarity: m.similarity,
+            insertions: m.insertions,
+            deletions: m.deletions,
+            substitutions: m.substitutions,
+            swaps: m.swaps,
+            edits: m.edits,
+            #[cfg(debug_assertions)]
+            notes: m.notes.clone(),
+        }
+    }
+}
+
+impl OwnedMatch {
+    /// Rebuild a borrowed [`FuzzyMatch`] over the window `text` and `engine`'s pattern table.
+    fn to_match<'a>(&self, engine: &'a FuzzyAhoCorasick, text: &'a str) -> FuzzyMatch<'a> {
+        FuzzyMatch {
+            insertions: self.insertions,
+            deletions: self.deletions,
+            substitutions: self.substitutions,
+            swaps: self.swaps,
+            edits: self.edits,
+            pattern_index: self.pattern_index,
+            pattern: &engine.patterns[self.pattern_index],
+            start: self.start,
+            end: self.end,
+            similarity: self.similarity,
+            text: &text[self.start..self.end],
+            #[cfg(debug_assertions)]
+            notes: self.notes.clone(),
+        }
     }
 }
