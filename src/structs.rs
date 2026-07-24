@@ -10,7 +10,7 @@ pub struct Similarity {
     /// Similarity map for non-ASCII fallback
     map: FxHashMap<(char, char), f32>,
     /// Precomputed ASCII similarity table indexed by [char1][char2] for chars < 128
-    ascii_table: Box<[[f32; 128]]>,
+    ascii_table: Box<[[f32; 128]; 128]>,
 }
 
 impl fmt::Debug for Similarity {
@@ -21,8 +21,14 @@ impl fmt::Debug for Similarity {
 
 impl Similarity {
     /// Build similarity data from a hashmap.
+    // The `try_into` below is infallible — the vec is built with exactly 128 rows — so the `expect`
+    // can never fire; hence no `# Panics` section is warranted.
+    #[allow(clippy::missing_panics_doc)]
     #[must_use]
     pub fn from_map(map: FxHashMap<(char, char), f32>) -> Self {
+        // Build directly on the heap as a boxed slice (avoids a 64 KiB stack temporary), then narrow
+        // to a fixed-size `[[f32; 128]; 128]` so the row count lives in the type and `get` can index
+        // safely without bounds checks.
         let mut ascii_table = vec![[0.0f32; 128]; 128].into_boxed_slice();
 
         // Set diagonal to 1.0 (exact matches)
@@ -37,7 +43,10 @@ impl Similarity {
             }
         }
 
-        Self { map, ascii_table }
+        Self {
+            map,
+            ascii_table: ascii_table.try_into().expect("built with 128 rows"),
+        }
     }
 
     /// Largest off-diagonal (non-identical-pair) similarity in the table, i.e. the highest score any
@@ -70,13 +79,9 @@ impl Similarity {
         let a_idx = a as u32;
         let b_idx = b as u32;
         if a_idx < 128 && b_idx < 128 {
-            // SAFETY: bounds checked above
-            unsafe {
-                *self
-                    .ascii_table
-                    .get_unchecked(a_idx as usize)
-                    .get_unchecked(b_idx as usize)
-            }
+            // Both indices are provably < 128 here, and `ascii_table` is a fixed `[[f32; 128]; 128]`,
+            // so the optimizer elides these bounds checks — safe indexing, no `unsafe` needed.
+            self.ascii_table[a_idx as usize][b_idx as usize]
         } else {
             *self.map.get(&(a, b)).unwrap_or(&0.0)
         }
