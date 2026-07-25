@@ -380,7 +380,7 @@ impl Node {
         if bytes.len() == 1 {
             let ch = bytes[0] as char;
             for edge in &self.edges {
-                if edge.grapheme_len == 1 && edge.first_char == ch {
+                if edge.first_char == ch && edge.grapheme_len == 1 {
                     return Some(edge.next);
                 }
             }
