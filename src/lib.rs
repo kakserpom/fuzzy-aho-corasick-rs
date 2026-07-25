@@ -562,6 +562,10 @@ impl FuzzyAhoCorasick {
 
                 let Node { output, edges, .. } = node_ref;
 
+                // Remaining penalty budget for push-time guards. Computing this once saves
+                // an FP add per guard (substitution, swap, insertion, deletion).
+                let remaining = max_penalties - penalties;
+
                 // Per-node limits are the same for every edit-type check below; compute once instead
                 // of re-deriving them (a pattern lookup) up to four times per state. Skip the lookup
                 // entirely in the common case where no pattern has its own limits.
@@ -711,7 +715,7 @@ impl FuzzyAhoCorasick {
                             let penalty = self.penalties.substitution * (1.0 - sim);
 
                             // Skip substitutions that would push the state past the global ceiling.
-                            if penalties + penalty > max_penalties {
+                            if penalty > remaining {
                                 continue;
                             }
 
@@ -794,7 +798,7 @@ impl FuzzyAhoCorasick {
                     //
                     // 2) Swap (transposition of two neighboring graphemes)
                     //
-                    if j + 1 < text_len && penalties + self.penalties.swap <= max_penalties {
+                    if j + 1 < text_len && self.penalties.swap <= remaining {
                         // Reuse `current_grapheme` (already loaded above) instead of calling gs_text again.
                         let b = graphemes.gs_text((j + 1) as usize);
                         // The two transition lookups below are gated behind the cheap penalty
@@ -838,7 +842,7 @@ impl FuzzyAhoCorasick {
                     // 3a) Insertion (skip a haystack character)
                     //
                     if (matched_start != matched_end || matched_start != j)
-                        && penalties + self.penalties.insertion <= max_penalties
+                        && self.penalties.insertion <= remaining
                         && (if max_edits_fast != 255 {
                             edits < max_edits_fast
                         } else {
@@ -871,7 +875,7 @@ impl FuzzyAhoCorasick {
                 //
                 // 3b) Deletion (skip a pattern character) — always, even if j == len
                 //
-                if penalties + self.penalties.deletion <= max_penalties
+                if self.penalties.deletion <= remaining
                     && (if max_edits_fast != 255 {
                         edits < max_edits_fast
                     } else {
