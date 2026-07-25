@@ -7,6 +7,7 @@
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation
 )]
+
 //! Unicode-aware Aho–Corasick automaton with **fuzzy matching**: substitutions, insertions,
 //! deletions, and transpositions, over grapheme clusters, with optional case-insensitive folding.
 //!
@@ -62,6 +63,29 @@ pub use stream::{StreamMatch, StreamMatches};
 use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
 pub use structs::*;
+
+/// Compile-time table of bytes `[0x00, 0x01, …, 0x7F]` so that we can return a `&'static str`
+/// for any single ASCII byte without allocating. Used by the ASCII case-insensitive fast path
+/// to avoid `Cow::Owned(String)` per uppercase character — each such allocation was a heap
+/// miss on every grapheme access during the search.
+const fn make_ascii_bytes() -> [u8; 128] {
+    let mut arr = [0u8; 128];
+    let mut i = 0;
+    while i < 128 {
+        arr[i] = i as u8;
+        i += 1;
+    }
+    arr
+}
+static ASCII_BYTES: [u8; 128] = make_ascii_bytes();
+
+/// Return a `&'static str` for a single ASCII byte (0–127) without allocating.
+#[inline(always)]
+fn ascii_byte_to_str(b: u8) -> &'static str {
+    debug_assert!(b < 128);
+    // SAFETY: all bytes 0–127 are valid one-byte UTF-8 sequences.
+    unsafe { std::str::from_utf8_unchecked(&ASCII_BYTES[b as usize..b as usize + 1]) }
+}
 
 /// Automaton node index (u32 for compact struct packing; >4B nodes is unrealistic).
 type NodeIndex = u32;
@@ -286,8 +310,9 @@ impl FuzzyAhoCorasick {
             let mut vec = Vec::with_capacity(bytes.len());
             for (i, &b) in bytes.iter().enumerate() {
                 let text = if self.case_insensitive && b.is_ascii_uppercase() {
-                    // ASCII uppercase → single-char lowercase String
-                    Cow::Owned(String::from(b.to_ascii_lowercase() as char))
+                    // Zero-allocation lowercased ASCII: look up a &'static str from a static
+                    // byte table instead of creating a heap-allocated String per character.
+                    Cow::Borrowed(ascii_byte_to_str(b.to_ascii_lowercase()))
                 } else {
                     // SAFETY: `haystack.is_ascii()` guarantees every byte is a valid 1-byte
                     // UTF-8 sequence, so `i..i+1` is always a valid char boundary.
