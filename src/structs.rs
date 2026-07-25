@@ -204,16 +204,14 @@ pub(crate) struct MappingTransition {
 }
 
 /// A single node inside the internal Aho–Corasick automaton.
+///
+/// Field order is deliberate: the hot-path fields (`edges`, `output`, prune
+/// coefficients) are placed first so they share a single L1 cache line.
 #[derive(Clone, Debug)]
 pub(crate) struct Node {
-    pub(crate) pattern_index: Option<PatternIndex>,
-    /// Outgoing edges keyed by the next character (used for O(1) exact/swap lookups).
-    pub(crate) transitions: FxHashMap<String, u32>,
     /// Same edges as `transitions`, in a flat layout for hot-path iteration. Derived from
     /// `transitions` in a final build pass; must be kept consistent with it.
     pub(crate) edges: Vec<Edge>,
-    /// Failure link (classic AC fallback state).
-    pub(crate) fail: u32,
     /// All patterns that end in this state.
     pub(crate) output: Vec<u32>,
     /// Two precomputed coefficients of this node's pruning ceiling. A state at this node can only
@@ -226,6 +224,12 @@ pub(crate) struct Node {
     pub(crate) prune_len_over_weight: f32,
     /// Pre‑computed prefix weight (see [`FuzzyAhoCorasickBuilder::pmf`]).
     pub(crate) weight: f32,
+    /// Failure link (classic AC fallback state).
+    pub(crate) fail: u32,
+    // ---- cold fields (second cache line) ----
+    pub(crate) pattern_index: Option<PatternIndex>,
+    /// Outgoing edges keyed by the next character (used for O(1) exact/swap lookups).
+    pub(crate) transitions: FxHashMap<String, u32>,
     /// Index of the parent state – only present in *debug* builds to make
     /// visualising / debugging the trie easier.
     #[cfg(debug_assertions)]
