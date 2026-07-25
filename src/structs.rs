@@ -400,6 +400,19 @@ impl Node {
         }
         false
     }
+
+    /// Like `find_transition` but takes a `char` directly, skipping the `&str` creation,
+    /// `as_bytes()`, and byte-length check. Correct only for single-byte graphemes
+    /// (guaranteed by the caller via `GraphemeStorage::gs_find_transition`).
+    #[inline]
+    pub(crate) fn find_transition_char(&self, ch: char) -> Option<u32> {
+        for edge in &self.edges {
+            if edge.first_char == ch && edge.grapheme_len == 1 {
+                return Some(edge.next);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Clone)]

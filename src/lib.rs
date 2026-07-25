@@ -100,6 +100,13 @@ trait GraphemeStorage {
     /// First `char` of the (case-folded) grapheme at position `idx`.
     /// Used by the substitution scan to avoid the `&str → chars().next().unwrap_or()` chain.
     fn gs_first_char(&self, idx: usize) -> char;
+    /// Find the automaton transition from `node` for the grapheme at position `idx`.
+    /// The caller passes the already-computed first `char` (`ch`) to avoid a redundant
+    /// `gs_first_char` call. For ASCII storage this skips the `&str` creation, `as_bytes()`,
+    /// and byte-length check that `Node::find_transition` would do, by going straight to the
+    /// char-based linear scan. For Unicode storage it delegates to `find_transition` since
+    /// multi-byte graphemes need the full `&str` HashMap lookup path.
+    fn gs_find_transition(&self, node: &Node, idx: usize, ch: char) -> Option<u32>;
 }
 
 impl GraphemeStorage for Vec<(usize, Cow<'_, str>)> {
@@ -118,6 +125,10 @@ impl GraphemeStorage for Vec<(usize, Cow<'_, str>)> {
     #[inline]
     fn gs_first_char(&self, idx: usize) -> char {
         self[idx].1.chars().next().unwrap_or('\0')
+    }
+    #[inline]
+    fn gs_find_transition(&self, node: &Node, idx: usize, _ch: char) -> Option<u32> {
+        node.find_transition(self.gs_text(idx))
     }
 }
 
@@ -165,6 +176,12 @@ impl<'a> GraphemeStorage for AsciiGraphemes<'a> {
         } else {
             b as char
         }
+    }
+    #[inline]
+    fn gs_find_transition(&self, node: &Node, _idx: usize, ch: char) -> Option<u32> {
+        // All graphemes are single-byte ASCII, so skip the &str creation and
+        // byte-length check in `find_transition` and go straight to the char scan.
+        node.find_transition_char(ch)
     }
 }
 
@@ -668,7 +685,7 @@ impl FuzzyAhoCorasick {
                 //
                 let is_last_edit = max_edits_fast != 255 && edits + 1 >= max_edits_fast;
                 if j < text_len {
-                    let current_grapheme = graphemes.gs_text(j as usize);
+                    let current_ch = graphemes.gs_first_char(j as usize);
                     // For dead-end filtering: if at the last edit level, check
                     // whether text[j+1] can match any child's outgoing edge.
                     let next_ch_opt = if is_last_edit && j + 1 < text_len {
@@ -682,13 +699,13 @@ impl FuzzyAhoCorasick {
                         matched_start
                     };
 
-                    // Exact transition: linear scan of flat edges for single-byte graphemes
-                    // (avoiding HashMap hashing + probing), HashMap fallback for multi-byte.
-                    let exact_next = node_ref.find_transition(current_grapheme);
+                    // Exact transition: for ASCII storage, `gs_find_transition` goes straight
+                    // to the char-based edge scan, skipping `&str` creation and byte-length check.
+                    let exact_next = graphemes.gs_find_transition(node_ref, j as usize, current_ch);
                     if let Some(next_node) = exact_next {
                         trace!(
                             "  match   {:>8} ─ok→ node={}  sim=1.00",
-                            current_grapheme, next_node
+                            graphemes.gs_text(j as usize), next_node
                         );
                         queue.push(State {
                             node: next_node,
@@ -712,7 +729,7 @@ impl FuzzyAhoCorasick {
                         self.within_limits_subst(node_limits, edits, (packed_counts >> 16) as NumEdits)
                     };
                     if subst_ok {
-                        let current_ch = graphemes.gs_first_char(j as usize);
+                        // `current_ch` was already computed above from `gs_first_char(j)`.
                         for edge in edges {
                             let next_node = edge.next;
                             // Skip the exact transition (already enqueued above). Its target is
@@ -748,7 +765,7 @@ impl FuzzyAhoCorasick {
                             }
 
                             trace!(
-                                "  subst {:>8?} ─sub→ {current_grapheme:?} \
+                                "  subst {:>8?} ─sub→ {current_ch:?} \
                                  node={}  sim={:.2} pen={:.2} edits->{}",
                                 edge.first_char,
                                 next_node,
@@ -827,13 +844,12 @@ impl FuzzyAhoCorasick {
                     // 2) Swap (transposition of two neighboring graphemes)
                     //
                     if j + 1 < text_len && self.penalties.swap <= remaining {
-                        // Reuse `current_grapheme` (already loaded above) instead of calling gs_text again.
-                        let b = graphemes.gs_text((j + 1) as usize);
-                        // The two transition lookups below are gated behind the cheap penalty
-                        // check above rather than the other way around.
-                        if let Some(node2) = node_ref
-                            .find_transition(b)
-                            .and_then(|x| self.nodes[x as usize].find_transition(current_grapheme))
+                        // Use gs_find_transition to skip &str creation for ASCII storage.
+                        // Pre-compute the next char so both lookups reuse it.
+                        let next_ch = graphemes.gs_first_char((j + 1) as usize);
+                        if let Some(node2) = graphemes
+                            .gs_find_transition(node_ref, (j + 1) as usize, next_ch)
+                            .and_then(|x| graphemes.gs_find_transition(&self.nodes[x as usize], j as usize, current_ch))
                             && (if max_edits_fast != 255 {
                                 edits < max_edits_fast
                             } else {
