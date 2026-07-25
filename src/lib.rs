@@ -302,8 +302,8 @@ impl FuzzyAhoCorasick {
                 "within_limits_subst_ahead() -- max: {max:?} edits: {edits:?} substitutions: {substitutions:?}\
                 \nresult = {result:?}\n"
             );*/
-            max.edits.is_none_or(|max| edits <= max)
-                && max.substitutions.is_none_or(|max| substitutions <= max)
+            max.edits.is_none_or(|max| edits < max)
+                && max.substitutions.is_none_or(|max| substitutions < max)
         } else {
             edits == 0 && substitutions == 0
         }
@@ -687,7 +687,7 @@ impl FuzzyAhoCorasick {
                     // substitution is still within limits. When it is not, the exact lookup above
                     // already covered the only reachable transition.
                     let subst_ok = if max_edits_fast != 255 {
-                        edits <= max_edits_fast
+                        edits < max_edits_fast
                     } else {
                         self.within_limits_subst(node_limits, edits, (packed_counts >> 16) as NumEdits)
                     };
