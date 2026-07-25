@@ -867,18 +867,19 @@ impl FuzzyAhoCorasick {
                 }
             }
         }
-        // `best.into_values()` yields matches in hash-bucket order, which is unrelated to their
-        // position in the haystack. Downstream consumers (`default_sort`, the non-overlapping
-        // selectors) sort *stably*, so that arbitrary order would leak through into tie-breaking.
-        // Sort by the stable match identity so the output is deterministic before any of that runs.
-        let mut inner: Vec<FuzzyMatch> = best
+        // Collect matches from the `best` map. The order is the hash-bucket order of FxHashMap,
+        // which is deterministic (FxHash has no random seed) but unrelated to match position.
+        // Downstream sort functions (`default_sort`, `non_overlapping`) use `sort_unstable_by`,
+        // which produces deterministic results given a deterministic input order, so no pre-sort
+        // is needed here. Users of `search_unsorted` are documented to receive matches "in no
+        // particular order."
+        let inner: Vec<FuzzyMatch> = best
             .into_values()
             .map(|mut m| {
                 m.text = &haystack[m.start..m.end];
                 m
             })
             .collect();
-        inner.sort_unstable_by_key(|m| (m.start, m.end, m.pattern_index));
         FuzzyMatches { haystack, inner }
     }
 

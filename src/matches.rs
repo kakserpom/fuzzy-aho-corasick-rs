@@ -1,12 +1,12 @@
 use crate::{FuzzyMatch, FuzzyMatches, Segment, UniqueId, UnmatchedSegment};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 impl<'a> FuzzyMatches<'a> {
     /// Default ranking: prefers higher similarity, then longer pattern, then
     /// longer matched text, then earlier occurrence.
     #[inline]
     pub fn default_sort(&mut self) {
-        self.inner.sort_by(|left, right| {
+        self.inner.sort_unstable_by(|left, right| {
             right
                 .similarity
                 .total_cmp(&left.similarity)
@@ -21,7 +21,7 @@ impl<'a> FuzzyMatches<'a> {
     /// score tie-breaking.
     #[inline]
     pub fn greedy_sort(&mut self) {
-        self.inner.sort_by(|left, right| {
+        self.inner.sort_unstable_by(|left, right| {
             right
                 .pattern
                 .len()
@@ -37,7 +37,7 @@ impl<'a> FuzzyMatches<'a> {
     /// Useful when short high-similarity matches should not beat longer good matches.
     #[inline]
     pub fn coverage_weighted_sort(&mut self) {
-        self.inner.sort_by(|left, right| {
+        self.inner.sort_unstable_by(|left, right| {
             // Use similarity squared to heavily penalize lower-similarity matches
             // Use pattern length (not text length) to avoid preferring over-matched text
             let left_score = left.similarity * left.similarity * left.pattern.len() as f32;
@@ -53,18 +53,21 @@ impl<'a> FuzzyMatches<'a> {
     /// order and keeps a match only if its span does not intersect any already
     /// accepted span. The kept matches are finally re-sorted by `start`.
     pub fn non_overlapping(&mut self) {
-        let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
+        // Track accepted intervals in a sorted Vec for better cache locality than BTreeMap.
+        // Typical match counts are small (<100), so binary search + insert is faster than
+        // the BTreeMap's per-node pointer chasing.
+        let mut occupied: Vec<(usize, usize)> = Vec::new();
         self.inner.retain(|m| {
-            if occupied_intervals
-                .range(..=m.start)
-                .next_back()
-                .is_none_or(|(_, &end)| end <= m.start)
-                && occupied_intervals
-                    .range(m.start..)
-                    .next()
-                    .is_none_or(|(&start, _)| start >= m.end)
-            {
-                occupied_intervals.insert(m.start, m.end);
+            // Binary search for the insertion point (first interval with start > m.start).
+            let pos = occupied
+                .binary_search_by(|(s, _)| s.cmp(&m.start))
+                .unwrap_or_else(|p| p);
+            // Check the interval before `pos` doesn't extend past m.start.
+            let prev_ok = pos == 0 || occupied[pos - 1].1 <= m.start;
+            // Check the interval at `pos` doesn't start before m.end.
+            let next_ok = pos == occupied.len() || occupied[pos].0 >= m.end;
+            if prev_ok && next_ok {
+                occupied.insert(pos, (m.start, m.end));
                 #[cfg(test)]
                 println!("ACCEPTING: \t{m:?}");
                 true
@@ -74,42 +77,44 @@ impl<'a> FuzzyMatches<'a> {
                 false
             }
         });
-        self.inner.sort_by_key(|m| m.start);
+        self.inner.sort_unstable_by_key(|m| m.start);
     }
 
     /// Like `non_overlapping`, but also enforces that each pattern (by its
     /// `custom_unique_id` if present, otherwise by index) is used at most once.
     pub fn non_overlapping_unique(&mut self) {
         let mut used_patterns = BTreeSet::new();
-        let mut occupied_intervals: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut occupied: Vec<(usize, usize)> = Vec::new();
         self.inner.retain(|m| {
             let unique_id = if let Some(custom_unique_id) = m.pattern.custom_unique_id {
                 UniqueId::Custom(custom_unique_id)
             } else {
                 UniqueId::Automatic(m.pattern_index)
             };
-            if !used_patterns.contains(&unique_id)
-                && occupied_intervals
-                    .range(..=m.start)
-                    .next_back()
-                    .is_none_or(|(_, &end)| end <= m.start)
-                && occupied_intervals
-                    .range(m.start..)
-                    .next()
-                    .is_none_or(|(&start, _)| start >= m.end)
-            {
-                used_patterns.insert(unique_id);
-                occupied_intervals.insert(m.start, m.end);
-                #[cfg(test)]
-                println!("ACCEPTING: \t{m:?}");
-                true
+            if !used_patterns.contains(&unique_id) {
+                let pos = occupied
+                    .binary_search_by(|(s, _)| s.cmp(&m.start))
+                    .unwrap_or_else(|p| p);
+                let prev_ok = pos == 0 || occupied[pos - 1].1 <= m.start;
+                let next_ok = pos == occupied.len() || occupied[pos].0 >= m.end;
+                if prev_ok && next_ok {
+                    used_patterns.insert(unique_id);
+                    occupied.insert(pos, (m.start, m.end));
+                    #[cfg(test)]
+                    println!("ACCEPTING: \t{m:?}");
+                    true
+                } else {
+                    #[cfg(test)]
+                    println!("DISCARDING OVERLAPPING: {m:?}");
+                    false
+                }
             } else {
                 #[cfg(test)]
                 println!("DISCARDING OVERLAPPING: {m:?}");
                 false
             }
         });
-        self.inner.sort_by_key(|m| m.start);
+        self.inner.sort_unstable_by_key(|m| m.start);
     }
 
     /// Performs a **fuzzy** find-and-replace using the current match list.
