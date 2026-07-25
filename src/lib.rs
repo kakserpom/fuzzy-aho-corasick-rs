@@ -365,12 +365,15 @@ impl FuzzyAhoCorasick {
         // in the future, so only the lowest-penalty one needs to be expanded. FxHash is used
         // because the key is an integer tuple hashed once per expanded state (the hottest map).
         let mut visited: FxHashMap<VisitedKey, f32> = FxHashMap::default();
-        // Pre-warm the visited map only for longer texts. For short inputs the incremental
-        // growth (0→4→8→16…) is cheap and a large allocation would hurt cache locality on
-        // every probe. `clear()` between windows retains this capacity, so subsequent windows
-        // benefit too.
-        if text_len > 128 {
-            visited.reserve((text_len as usize).min(512));
+        // Pre-warm the visited map to avoid incremental rehashing (0→4→8→16…) during the
+        // first few windows. Profiling showed `reserve_rehash` at ~3.5% of search time for
+        // texts under 128 graphemes because the map started at capacity 0 and grew on every
+        // window until stabilising. A modest pre-allocation eliminates this: the capacity is
+        // retained by `clear()` between windows, so it's a one-time cost per search call.
+        // For very short inputs (< 16 graphemes) the overhead of even a small allocation
+        // outweighs the rehashing savings, so we skip those.
+        if text_len > 16 {
+            visited.reserve((text_len as usize * 4).min(256));
         }
 
         // Global penalty ceiling, used for the cheap push-time guards below: a state carrying more
