@@ -15,7 +15,7 @@ fn main() {
     }
 
     // Run for profiling
-    for _ in 0..100000 {
+    for _ in 0..2_000_000 {
         let results = automaton.search_non_overlapping(text, 0.6);
         black_box(&results);
     }

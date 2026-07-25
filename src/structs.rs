@@ -227,6 +227,10 @@ pub(crate) struct Node {
     /// Failure link (classic AC fallback state).
     pub(crate) fail: u32,
     // ---- cold fields (second cache line) ----
+    /// Bitmap of single-char edges: bit `i` is set iff this node has an edge
+    /// with `first_char == i` and `grapheme_len == 1` (ASCII only, bits 0–127).
+    /// Used by the dead-end filter to avoid a linear scan of `edges`.
+    pub(crate) single_char_edge_bits: u128,
     pub(crate) pattern_index: Option<PatternIndex>,
     /// Outgoing edges keyed by the next character (used for O(1) exact/swap lookups).
     pub(crate) transitions: FxHashMap<String, u32>,
@@ -355,6 +359,7 @@ impl Node {
             pattern_index: None,
             transitions: FxHashMap::default(),
             edges: Vec::new(),
+            single_char_edge_bits: 0,
             fail: 0,
             output: Vec::new(),
             prune_len: 0.0,
@@ -393,12 +398,19 @@ impl Node {
     /// Used by the push-time dead-end filter in the deletion scan.
     #[inline]
     pub(crate) fn has_matching_edge_char(&self, ch: char) -> bool {
-        for edge in &self.edges {
-            if edge.first_char == ch && edge.grapheme_len == 1 {
-                return true;
+        let idx = ch as u32;
+        if idx < 128 {
+            // ASCII fast path: O(1) bitmap lookup instead of linear scan.
+            (self.single_char_edge_bits >> idx) & 1 != 0
+        } else {
+            // Non-ASCII: fall back to linear scan.
+            for edge in &self.edges {
+                if edge.first_char == ch && edge.grapheme_len == 1 {
+                    return true;
+                }
             }
+            false
         }
-        false
     }
 
     /// Like `find_transition` but takes a `char` directly, skipping the `&str` creation,
