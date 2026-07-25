@@ -787,7 +787,14 @@ impl FuzzyAhoCorasick {
                 if j < text_len {
                     // For dead-end filtering: if at the last edit level, check
                     // whether text[j+1] can match any child's outgoing edge.
-                    let next_ch_opt = if is_last_edit && j + 1 < text_len {
+                    // Only compute when edits are still available (i.e., at the
+                    // last edit level where dead-end filtering is applicable);
+                    // for non-root states with exhausted edit budget, the
+                    // substitution/insertion blocks are skipped, so this is dead.
+                    let next_ch_opt = if is_last_edit
+                        && (MAX_EDITS_FAST == 255 || edits < MAX_EDITS_FAST)
+                        && j + 1 < text_len
+                    {
                         Some(graphemes.gs_first_char((j + 1) as usize))
                     } else {
                         None
