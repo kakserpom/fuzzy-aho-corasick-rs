@@ -392,34 +392,48 @@ impl FuzzyAhoCorasick {
         // out entirely for the common (no-mapping) case, keeping the hot loop identical to before.
         if haystack.is_ascii() {
             let g = AsciiGraphemes::new(haystack, self.case_insensitive);
-            let skip = self.max_edits_fast == 1;
             if self.mappings.is_empty() {
-                if skip {
-                    self.search_unsorted_impl::<false, true, _>(haystack, similarity_threshold, &g)
-                } else {
-                    self.search_unsorted_impl::<false, false, _>(haystack, similarity_threshold, &g)
+                match self.max_edits_fast {
+                    1 => self.search_unsorted_impl::<false, true, 1, _>(haystack, similarity_threshold, &g),
+                    2 => self.search_unsorted_impl::<false, false, 2, _>(haystack, similarity_threshold, &g),
+                    3 => self.search_unsorted_impl::<false, false, 3, _>(haystack, similarity_threshold, &g),
+                    4 => self.search_unsorted_impl::<false, false, 4, _>(haystack, similarity_threshold, &g),
+                    5 => self.search_unsorted_impl::<false, false, 5, _>(haystack, similarity_threshold, &g),
+                    6 => self.search_unsorted_impl::<false, false, 6, _>(haystack, similarity_threshold, &g),
+                    _ => self.search_unsorted_impl::<false, false, 255, _>(haystack, similarity_threshold, &g),
                 }
             } else {
-                if skip {
-                    self.search_unsorted_impl::<true, true, _>(haystack, similarity_threshold, &g)
-                } else {
-                    self.search_unsorted_impl::<true, false, _>(haystack, similarity_threshold, &g)
+                match self.max_edits_fast {
+                    1 => self.search_unsorted_impl::<true, true, 1, _>(haystack, similarity_threshold, &g),
+                    2 => self.search_unsorted_impl::<true, false, 2, _>(haystack, similarity_threshold, &g),
+                    3 => self.search_unsorted_impl::<true, false, 3, _>(haystack, similarity_threshold, &g),
+                    4 => self.search_unsorted_impl::<true, false, 4, _>(haystack, similarity_threshold, &g),
+                    5 => self.search_unsorted_impl::<true, false, 5, _>(haystack, similarity_threshold, &g),
+                    6 => self.search_unsorted_impl::<true, false, 6, _>(haystack, similarity_threshold, &g),
+                    _ => self.search_unsorted_impl::<true, false, 255, _>(haystack, similarity_threshold, &g),
                 }
             }
         } else {
             let g = self.build_unicode_graphemes(haystack);
-            let skip = self.max_edits_fast == 1;
             if self.mappings.is_empty() {
-                if skip {
-                    self.search_unsorted_impl::<false, true, _>(haystack, similarity_threshold, &g)
-                } else {
-                    self.search_unsorted_impl::<false, false, _>(haystack, similarity_threshold, &g)
+                match self.max_edits_fast {
+                    1 => self.search_unsorted_impl::<false, true, 1, _>(haystack, similarity_threshold, &g),
+                    2 => self.search_unsorted_impl::<false, false, 2, _>(haystack, similarity_threshold, &g),
+                    3 => self.search_unsorted_impl::<false, false, 3, _>(haystack, similarity_threshold, &g),
+                    4 => self.search_unsorted_impl::<false, false, 4, _>(haystack, similarity_threshold, &g),
+                    5 => self.search_unsorted_impl::<false, false, 5, _>(haystack, similarity_threshold, &g),
+                    6 => self.search_unsorted_impl::<false, false, 6, _>(haystack, similarity_threshold, &g),
+                    _ => self.search_unsorted_impl::<false, false, 255, _>(haystack, similarity_threshold, &g),
                 }
             } else {
-                if skip {
-                    self.search_unsorted_impl::<true, true, _>(haystack, similarity_threshold, &g)
-                } else {
-                    self.search_unsorted_impl::<true, false, _>(haystack, similarity_threshold, &g)
+                match self.max_edits_fast {
+                    1 => self.search_unsorted_impl::<true, true, 1, _>(haystack, similarity_threshold, &g),
+                    2 => self.search_unsorted_impl::<true, false, 2, _>(haystack, similarity_threshold, &g),
+                    3 => self.search_unsorted_impl::<true, false, 3, _>(haystack, similarity_threshold, &g),
+                    4 => self.search_unsorted_impl::<true, false, 4, _>(haystack, similarity_threshold, &g),
+                    5 => self.search_unsorted_impl::<true, false, 5, _>(haystack, similarity_threshold, &g),
+                    6 => self.search_unsorted_impl::<true, false, 6, _>(haystack, similarity_threshold, &g),
+                    _ => self.search_unsorted_impl::<true, false, 255, _>(haystack, similarity_threshold, &g),
                 }
             }
         }
@@ -446,7 +460,13 @@ impl FuzzyAhoCorasick {
         vec
     }
 
-    fn search_unsorted_impl<'a, const MAPPINGS: bool, const WINDOW_SKIP: bool, G: GraphemeStorage>(
+    fn search_unsorted_impl<
+        'a,
+        const MAPPINGS: bool,
+        const WINDOW_SKIP: bool,
+        const MAX_EDITS_FAST: u8,
+        G: GraphemeStorage,
+    >(
         &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
@@ -489,7 +509,7 @@ impl FuzzyAhoCorasick {
             // Smaller tables reduce `clear()` memset cost between windows. The dead-end
             // filter (opt-17/18) reduces the number of states per window, so smaller
             // reserves suffice. Scale with edit budget: more edits → more states.
-            let cap = match self.max_edits_fast {
+            let cap = match MAX_EDITS_FAST {
                 1 => 64,
                 2 => 128,
                 _ => 256,
@@ -505,10 +525,10 @@ impl FuzzyAhoCorasick {
         let max_penalties = root.prune_len - root.prune_len_over_weight * similarity_threshold;
         // Per-substitution similarity floor (0.0 = no floor); hoisted out of the hot loop.
         let min_symbol_similarity = self.min_symbol_similarity;
-        // Fast-path edit ceiling (see `FuzzyAhoCorasick::max_edits_fast`). `255` disables the
-        // fast path; otherwise the hot loop checks `edits <= max_edits_fast` (or `<` for
-        // ahead-checks) instead of calling `within_limits_*`.
-        let max_edits_fast = self.max_edits_fast;
+        // Fast-path edit ceiling: MAX_EDITS_FAST is a const generic so the compiler can
+        // eliminate the `!= 255` checks and dead-code the `else` (within_limits) branches.
+        // `255` disables the fast path; otherwise the hot loop checks `edits <= MAX_EDITS_FAST`
+        // (or `<` for ahead-checks) instead of calling `within_limits_*`.
         let has_pattern_limits = self.has_pattern_limits;
 
         // 2-gram window skip for 1-edit search: precompute bitmaps of root edge chars
@@ -679,8 +699,8 @@ impl FuzzyAhoCorasick {
                     let swaps = ((packed_counts >> 24) & 0xFF) as NumEdits;
                     for &pattern_index in output {
                         let pattern_index = pattern_index as usize;
-                        if max_edits_fast != 255 {
-                            if edits > max_edits_fast {
+                        if MAX_EDITS_FAST != 255 {
+                            if edits > MAX_EDITS_FAST {
                                 continue;
                             }
                         } else if !self.within_limits(
@@ -755,7 +775,7 @@ impl FuzzyAhoCorasick {
                 //
                 // 1) Same or similar symbol — только внутри текста
                 //
-                let is_last_edit = max_edits_fast != 255 && edits + 1 >= max_edits_fast;
+                let is_last_edit = MAX_EDITS_FAST != 255 && edits + 1 >= MAX_EDITS_FAST;
                 // Compute current_ch once and reuse in both the exact-match section (inside
                 // `if j < text_len`) and the deletion section (outside it), avoiding a
                 // redundant `gs_first_char(j)` call per state.
@@ -802,8 +822,8 @@ impl FuzzyAhoCorasick {
                     // Substitutions require scanning every outgoing edge, so only do so when a
                     // substitution is still within limits. When it is not, the exact lookup above
                     // already covered the only reachable transition.
-                    let subst_ok = if max_edits_fast != 255 {
-                        edits < max_edits_fast
+                    let subst_ok = if MAX_EDITS_FAST != 255 {
+                        edits < MAX_EDITS_FAST
                     } else {
                         self.within_limits_subst(node_limits, edits, (packed_counts >> 16) as NumEdits)
                     };
@@ -932,8 +952,8 @@ impl FuzzyAhoCorasick {
                         if let Some(node2) = graphemes
                             .gs_find_transition(node_ref, (j + 1) as usize, next_ch)
                             .and_then(|x| graphemes.gs_find_transition(&self.nodes[x as usize], j as usize, current_ch))
-                            && (if max_edits_fast != 255 {
-                                edits < max_edits_fast
+                            && (if MAX_EDITS_FAST != 255 {
+                                edits < MAX_EDITS_FAST
                             } else {
                                 self.within_limits_swap_ahead(
                                     self.get_node_limits(node2),
@@ -969,8 +989,8 @@ impl FuzzyAhoCorasick {
                     //
                     if (matched_start != matched_end || matched_start != j)
                         && self.penalties.insertion <= remaining
-                        && (if max_edits_fast != 255 {
-                            edits < max_edits_fast
+                        && (if MAX_EDITS_FAST != 255 {
+                            edits < MAX_EDITS_FAST
                         } else {
                             self.within_limits_insertion_ahead(node_limits, edits, (packed_counts & 0xFF) as NumEdits)
                         })
@@ -1005,8 +1025,8 @@ impl FuzzyAhoCorasick {
                 // 3b) Deletion (skip a pattern character) — always, even if j == len
                 //
                 if self.penalties.deletion <= remaining
-                    && (if max_edits_fast != 255 {
-                        edits < max_edits_fast
+                    && (if MAX_EDITS_FAST != 255 {
+                        edits < MAX_EDITS_FAST
                     } else {
                         self.within_limits_deletion_ahead(node_limits, edits, ((packed_counts >> 8) & 0xFF) as NumEdits)
                     })
