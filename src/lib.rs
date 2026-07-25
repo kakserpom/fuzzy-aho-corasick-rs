@@ -252,33 +252,39 @@ impl FuzzyAhoCorasick {
         haystack: &'a str,
         similarity_threshold: f32,
     ) -> FuzzyMatches<'a> {
-        let grapheme_idx: Vec<(usize, &str)> = haystack.grapheme_indices(true).collect();
-        if grapheme_idx.is_empty() {
+        // Collect grapheme byte offsets and their case-folded text in a single pass. For ASCII
+        // input (the common case) the grapheme count equals the byte count, so pre-allocate
+        // accordingly to avoid incremental Vec growth during collection.
+        let estimated_len = if haystack.is_ascii() {
+            haystack.len()
+        } else {
+            0
+        };
+        let mut graphemes: Vec<(usize, Cow<str>)> = Vec::with_capacity(estimated_len);
+        graphemes.extend(haystack.grapheme_indices(true).map(|(byte, g)| {
+            // Only allocate a lowercased copy when the grapheme could actually change. For an
+            // all-ASCII grapheme with no uppercase byte (spaces, digits, punctuation, and
+            // already-lowercase letters — the bulk of typical text) `to_lowercase()` is a no-op,
+            // so borrow instead. Non-ASCII graphemes may still lowercase, so those go the owned
+            // path.
+            let needs_lowercasing = self.case_insensitive
+                && (!g.is_ascii() || g.bytes().any(|b| b.is_ascii_uppercase()));
+            let text = if needs_lowercasing {
+                Cow::Owned(g.to_lowercase())
+            } else {
+                Cow::Borrowed(g)
+            };
+            (byte, text)
+        }));
+        if graphemes.is_empty() {
             return FuzzyMatches {
                 haystack,
                 inner: vec![],
             };
         }
-        let text_chars: Vec<Cow<str>> = grapheme_idx
-            .iter()
-            .map(|(_, g)| {
-                // Only allocate a lowercased copy when the grapheme could actually change. For an
-                // all-ASCII grapheme with no uppercase byte (spaces, digits, punctuation, and
-                // already-lowercase letters — the bulk of typical text) `to_lowercase()` is a no-op,
-                // so borrow instead. Non-ASCII graphemes may still lowercase, so those go the owned
-                // path.
-                let needs_lowercasing = self.case_insensitive
-                    && (!g.is_ascii() || g.bytes().any(|b| b.is_ascii_uppercase()));
-                if needs_lowercasing {
-                    Cow::Owned(g.to_lowercase())
-                } else {
-                    Cow::Borrowed(*g)
-                }
-            })
-            .collect();
         // Grapheme count as `u32` for comparisons against the `u32` state positions (see the
         // crate-level note on the index/position width).
-        let text_len = text_chars.len() as u32;
+        let text_len = graphemes.len() as u32;
 
         // Keyed by (start_byte, end_byte, pattern_index). Uses the fast FxHash hasher instead of
         // the default SipHash: keys are small integer tuples looked up on every accepted match.
@@ -295,6 +301,13 @@ impl FuzzyAhoCorasick {
         // in the future, so only the lowest-penalty one needs to be expanded. FxHash is used
         // because the key is an integer tuple hashed once per expanded state (the hottest map).
         let mut visited: FxHashMap<VisitedKey, f32> = FxHashMap::default();
+        // Pre-warm the visited map only for longer texts. For short inputs the incremental
+        // growth (0→4→8→16…) is cheap and a large allocation would hurt cache locality on
+        // every probe. `clear()` between windows retains this capacity, so subsequent windows
+        // benefit too.
+        if text_len > 128 {
+            visited.reserve((text_len as usize).min(512));
+        }
 
         // Global penalty ceiling, used for the cheap push-time guards below: a state carrying more
         // penalty than this can never reach the threshold. The root reaches every pattern, so its
@@ -315,10 +328,10 @@ impl FuzzyAhoCorasick {
         trace!(
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
         );
-        for start in 0..text_chars.len() {
+        for start in 0..graphemes.len() {
             trace!(
                 "=== new window at grapheme #{start} ({:?}) ===",
-                text_chars[start]
+                graphemes[start].1
             );
 
             queue.clear();
@@ -411,12 +424,7 @@ impl FuzzyAhoCorasick {
                     continue;
                 }
 
-                let Node {
-                    output,
-                    transitions,
-                    edges,
-                    ..
-                } = node_ref;
+                let Node { output, edges, .. } = node_ref;
 
                 // Per-node limits are the same for every edit-type check below; compute once instead
                 // of re-deriving them (a pattern lookup) up to four times per state. Skip the lookup
@@ -440,10 +448,10 @@ impl FuzzyAhoCorasick {
                         ) {
                             continue;
                         }
-                        let start_byte = grapheme_idx
+                        let start_byte = graphemes
                             .get(matched_start as usize)
                             .map_or(0, |&(b, _)| b);
-                        let end_byte = grapheme_idx
+                        let end_byte = graphemes
                             .get(matched_end as usize)
                             .map_or_else(|| haystack.len(), |&(b, _)| b);
                         let key = (start_byte, end_byte, pattern_index);
@@ -499,16 +507,16 @@ impl FuzzyAhoCorasick {
                 // 1) Same or similar symbol — только внутри текста
                 //
                 if j < text_len {
-                    let current_grapheme = text_chars[j as usize].as_ref();
+                    let current_grapheme = graphemes[j as usize].1.as_ref();
                     let matched_start_next = if matched_end == matched_start {
                         j
                     } else {
                         matched_start
                     };
 
-                    // Exact transition: an O(1) map lookup instead of scanning every edge. This is
-                    // the common case and is always taken when the current grapheme has an edge.
-                    let exact_next = transitions.get(current_grapheme).copied();
+                    // Exact transition: linear scan of flat edges for single-byte graphemes
+                    // (avoiding HashMap hashing + probing), HashMap fallback for multi-byte.
+                    let exact_next = node_ref.find_transition(current_grapheme);
                     if let Some(next_node) = exact_next {
                         trace!(
                             "  match   {:>8} ─ok→ node={}  sim=1.00",
@@ -603,7 +611,7 @@ impl FuzzyAhoCorasick {
                                     continue;
                                 }
                                 let hay_matches = mt.haystack.iter().enumerate().all(|(k, g)| {
-                                    text_chars[j as usize + k].as_ref() == g.as_ref()
+                                    graphemes[j as usize + k].1.as_ref() == g.as_ref()
                                 });
                                 if !hay_matches {
                                     continue;
@@ -644,13 +652,13 @@ impl FuzzyAhoCorasick {
                     // 2) Swap (transposition of two neighboring graphemes)
                     //
                     if j + 1 < text_len && penalties + self.penalties.swap <= max_penalties {
-                        let a = &text_chars[j as usize];
-                        let b = &text_chars[(j + 1) as usize];
-                        // The two map lookups below each hash a grapheme string, so gate them behind
-                        // the cheap penalty check above rather than the other way around.
-                        if let Some(&node2) = transitions
-                            .get(b.as_ref())
-                            .and_then(|&x| self.nodes[x as usize].transitions.get(a.as_ref()))
+                        let a = &graphemes[j as usize].1;
+                        let b = &graphemes[(j + 1) as usize].1;
+                        // The two transition lookups below are gated behind the cheap penalty
+                        // check above rather than the other way around.
+                        if let Some(node2) = node_ref
+                            .find_transition(b.as_ref())
+                            .and_then(|x| self.nodes[x as usize].find_transition(a.as_ref()))
                             && self.within_limits_swap_ahead(
                                 self.get_node_limits(node2),
                                 edits,
@@ -694,7 +702,7 @@ impl FuzzyAhoCorasick {
                         #[cfg(debug_assertions)]
                         notes.push(format!(
                             "ins {:?} (ins->{} , edits->{})",
-                            text_chars[j as usize],
+                            graphemes[j as usize].1,
                             insertions + 1,
                             edits + 1
                         ));

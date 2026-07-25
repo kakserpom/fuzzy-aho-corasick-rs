@@ -336,6 +336,7 @@ impl FuzzyAhoCorasickBuilder {
                 .map(|(g, &next)| Edge {
                     first_char: g.chars().next().unwrap_or('\0'),
                     next,
+                    grapheme_len: g.len() as u8,
                 })
                 .collect();
         }

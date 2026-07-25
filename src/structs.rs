@@ -80,7 +80,7 @@ impl Similarity {
         let b_idx = b as u32;
         if a_idx < 128 && b_idx < 128 {
             // Both indices are provably < 128 here, and `ascii_table` is a fixed `[[f32; 128]; 128]`,
-            // so the optimizer elides these bounds checks — safe indexing, no `unsafe` needed.
+            // so the optimizer elides these bounds checks — safe indexing.
             self.ascii_table[a_idx as usize][b_idx as usize]
         } else {
             *self.map.get(&(a, b)).unwrap_or(&0.0)
@@ -184,6 +184,10 @@ pub(crate) struct Edge {
     pub(crate) first_char: char,
     /// Target node index.
     pub(crate) next: u32,
+    /// Byte length of the edge's grapheme string. When `1`, the grapheme is a single ASCII char
+    /// and `first_char` fully identifies it, so the exact-transition lookup can short-circuit
+    /// on a linear scan of `edges` instead of hashing the `transitions` map.
+    pub(crate) grapheme_len: u8,
 }
 
 /// A precomputed multi-character mapping transition available from a node. It consumes a fixed
@@ -357,6 +361,28 @@ impl Node {
             #[cfg(debug_assertions)]
             grapheme: grapheme.map(str::to_string),
         }
+    }
+
+    /// Look up the target node for an exact transition on `grapheme`.
+    ///
+    /// Fast path: when the grapheme is a single byte (ASCII char), a linear scan of the flat
+    /// `edges` list suffices — a single-byte grapheme can only match a single-char edge, and
+    /// `first_char` then identifies it exactly. This avoids hashing the `transitions` map (the
+    /// hottest lookup on the search path) for the overwhelmingly common ASCII case. Multi-byte
+    /// graphemes fall back to the `HashMap`.
+    #[inline]
+    pub(crate) fn find_transition(&self, grapheme: &str) -> Option<u32> {
+        let bytes = grapheme.as_bytes();
+        if bytes.len() == 1 {
+            let ch = bytes[0] as char;
+            for edge in &self.edges {
+                if edge.grapheme_len == 1 && edge.first_char == ch {
+                    return Some(edge.next);
+                }
+            }
+            return None;
+        }
+        self.transitions.get(grapheme).copied()
     }
 }
 
