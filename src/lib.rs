@@ -942,7 +942,16 @@ impl FuzzyAhoCorasick {
                     //
                     // 2) Swap (transposition of two neighboring graphemes)
                     //
-                    if j + 1 < text_len && self.penalties.swap <= remaining {
+                    // Fast-path edit-limit check before the transition lookups: for 1-edit
+                    // search, most non-root states have edits >= MAX_EDITS_FAST, so the
+                    // two gs_find_transition calls below would be wasted work. The const
+                    // generic lets the compiler dead-code the outer guard for the slow
+                    // path (MAX_EDITS_FAST == 255) and eliminate the inner guard for the
+                    // fast path.
+                    if j + 1 < text_len
+                        && self.penalties.swap <= remaining
+                        && (MAX_EDITS_FAST == 255 || edits < MAX_EDITS_FAST)
+                    {
                         // Reuse next_ch_opt when available (1-edit: always Some here);
                         // fall back to gs_first_char for multi-edit where is_last_edit is false.
                         let next_ch = match next_ch_opt {
@@ -952,15 +961,11 @@ impl FuzzyAhoCorasick {
                         if let Some(node2) = graphemes
                             .gs_find_transition(node_ref, (j + 1) as usize, next_ch)
                             .and_then(|x| graphemes.gs_find_transition(&self.nodes[x as usize], j as usize, current_ch))
-                            && (if MAX_EDITS_FAST != 255 {
-                                edits < MAX_EDITS_FAST
-                            } else {
-                                self.within_limits_swap_ahead(
-                                    self.get_node_limits(node2),
-                                    edits,
-                                    (packed_counts >> 24) as NumEdits,
-                                )
-                            })
+                            && (MAX_EDITS_FAST != 255 || self.within_limits_swap_ahead(
+                                self.get_node_limits(node2),
+                                edits,
+                                (packed_counts >> 24) as NumEdits,
+                            ))
                         {
                             #[cfg(debug_assertions)]
                             let mut notes = notes.clone();
