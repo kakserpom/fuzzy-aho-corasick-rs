@@ -355,8 +355,9 @@ impl FuzzyAhoCorasick {
         let mut best: FxHashMap<(usize, usize, usize), FuzzyMatch> = FxHashMap::default();
         best.reserve(self.patterns.len() * 4);
 
-        // Pre-allocate queue - size based on beam width or a small default
-        let mut queue: Vec<State> = Vec::with_capacity(self.beam_width.unwrap_or(64));
+        // Pre-allocate queue - size based on beam width or a generous default. The default
+        // of 128 avoids the first-window realloc (profiled at ~0.3% of search time with 64).
+        let mut queue: Vec<State> = Vec::with_capacity(self.beam_width.unwrap_or(128));
 
         // Visited set for state deduplication, reused (cleared) per start window. Insertions and
         // deletions can reach the same automaton position via exponentially many distinct paths;
