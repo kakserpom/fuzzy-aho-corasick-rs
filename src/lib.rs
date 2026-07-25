@@ -923,9 +923,12 @@ impl FuzzyAhoCorasick {
                     // 2) Swap (transposition of two neighboring graphemes)
                     //
                     if j + 1 < text_len && self.penalties.swap <= remaining {
-                        // Use gs_find_transition to skip &str creation for ASCII storage.
-                        // Pre-compute the next char so both lookups reuse it.
-                        let next_ch = graphemes.gs_first_char((j + 1) as usize);
+                        // Reuse next_ch_opt when available (1-edit: always Some here);
+                        // fall back to gs_first_char for multi-edit where is_last_edit is false.
+                        let next_ch = match next_ch_opt {
+                            Some(ch) => ch,
+                            None => graphemes.gs_first_char((j + 1) as usize),
+                        };
                         if let Some(node2) = graphemes
                             .gs_find_transition(node_ref, (j + 1) as usize, next_ch)
                             .and_then(|x| graphemes.gs_find_transition(&self.nodes[x as usize], j as usize, current_ch))
