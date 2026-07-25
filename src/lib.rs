@@ -800,7 +800,13 @@ impl FuzzyAhoCorasick {
 
                     // Exact transition: for ASCII storage, `gs_find_transition` goes straight
                     // to the char-based edge scan, skipping `&str` creation and byte-length check.
-                    let exact_next = graphemes.gs_find_transition(node_ref, j as usize, current_ch);
+                    // When MAPPINGS is false, all edges have grapheme_len == 1, so we can skip
+                    // the grapheme_len check entirely for a tighter inner loop.
+                    let exact_next = if MAPPINGS {
+                        graphemes.gs_find_transition(node_ref, j as usize, current_ch)
+                    } else {
+                        node_ref.find_transition_char_no_mappings(current_ch)
+                    };
                     if let Some(next_node) = exact_next {
                         trace!(
                             "  match   {:>8} ─ok→ node={}  sim=1.00",
@@ -958,9 +964,14 @@ impl FuzzyAhoCorasick {
                             Some(ch) => ch,
                             None => graphemes.gs_first_char((j + 1) as usize),
                         };
-                        if let Some(node2) = graphemes
-                            .gs_find_transition(node_ref, (j + 1) as usize, next_ch)
-                            .and_then(|x| graphemes.gs_find_transition(&self.nodes[x as usize], j as usize, current_ch))
+                        if let Some(node2) = if MAPPINGS {
+                            graphemes
+                                .gs_find_transition(node_ref, (j + 1) as usize, next_ch)
+                                .and_then(|x| graphemes.gs_find_transition(&self.nodes[x as usize], j as usize, current_ch))
+                        } else {
+                            node_ref.find_transition_char_no_mappings(next_ch)
+                                .and_then(|x| self.nodes[x as usize].find_transition_char_no_mappings(current_ch))
+                        }
                             && (MAX_EDITS_FAST != 255 || self.within_limits_swap_ahead(
                                 self.get_node_limits(node2),
                                 edits,

@@ -425,6 +425,19 @@ impl Node {
         }
         None
     }
+
+    /// Like `find_transition_char` but skips the `grapheme_len == 1` check.
+    /// Only correct when the caller guarantees no multi-char mapping edges exist
+    /// (i.e., `MAPPINGS == false`), in which case every edge has `grapheme_len == 1`.
+    #[inline]
+    pub(crate) fn find_transition_char_no_mappings(&self, ch: char) -> Option<u32> {
+        for edge in &self.edges {
+            if edge.first_char == ch {
+                return Some(edge.next);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Clone)]
