@@ -97,6 +97,9 @@ trait GraphemeStorage {
     fn gs_byte_offset(&self, idx: usize) -> usize;
     /// The (case-folded) grapheme text at position `idx`.
     fn gs_text(&self, idx: usize) -> &str;
+    /// First `char` of the (case-folded) grapheme at position `idx`.
+    /// Used by the substitution scan to avoid the `&str → chars().next().unwrap_or()` chain.
+    fn gs_first_char(&self, idx: usize) -> char;
 }
 
 impl GraphemeStorage for Vec<(usize, Cow<'_, str>)> {
@@ -111,6 +114,10 @@ impl GraphemeStorage for Vec<(usize, Cow<'_, str>)> {
     #[inline]
     fn gs_text(&self, idx: usize) -> &str {
         self[idx].1.as_ref()
+    }
+    #[inline]
+    fn gs_first_char(&self, idx: usize) -> char {
+        self[idx].1.chars().next().unwrap_or('\0')
     }
 }
 
@@ -148,6 +155,15 @@ impl<'a> GraphemeStorage for AsciiGraphemes<'a> {
             // SAFETY: caller guaranteed `haystack.is_ascii()`; every byte is a valid 1-byte
             // UTF-8 sequence.
             unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&self.bytes[idx])) }
+        }
+    }
+    #[inline]
+    fn gs_first_char(&self, idx: usize) -> char {
+        let b = self.bytes[idx];
+        if self.case_insensitive {
+            b.to_ascii_lowercase() as char
+        } else {
+            b as char
         }
     }
 }
@@ -684,7 +700,7 @@ impl FuzzyAhoCorasick {
                         self.within_limits_subst(node_limits, edits, substitutions)
                     };
                     if subst_ok {
-                        let current_ch = current_grapheme.chars().next().unwrap_or('\0');
+                        let current_ch = graphemes.gs_first_char(j as usize);
                         for edge in edges {
                             let next_node = edge.next;
                             // Skip the exact transition (already enqueued above). Its target is
@@ -793,13 +809,13 @@ impl FuzzyAhoCorasick {
                     // 2) Swap (transposition of two neighboring graphemes)
                     //
                     if j + 1 < text_len && penalties + self.penalties.swap <= max_penalties {
-                        let a = graphemes.gs_text(j as usize);
+                        // Reuse `current_grapheme` (already loaded above) instead of calling gs_text again.
                         let b = graphemes.gs_text((j + 1) as usize);
                         // The two transition lookups below are gated behind the cheap penalty
                         // check above rather than the other way around.
                         if let Some(node2) = node_ref
                             .find_transition(b)
-                            .and_then(|x| self.nodes[x as usize].find_transition(a))
+                            .and_then(|x| self.nodes[x as usize].find_transition(current_grapheme))
                             && (if max_edits_fast != 255 {
                                 edits < max_edits_fast
                             } else {
@@ -814,7 +830,7 @@ impl FuzzyAhoCorasick {
                             let mut notes = notes.clone();
                             #[cfg(debug_assertions)]
                             notes.push(format!(
-                                "swap a:{a:?} b:{b:?} (swaps->{}, edits->{})",
+                                "swap a:{current_grapheme:?} b:{b:?} (swaps->{}, edits->{})",
                                 swaps + 1,
                                 edits + 1
                             ));
