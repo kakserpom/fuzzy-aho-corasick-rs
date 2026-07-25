@@ -392,17 +392,35 @@ impl FuzzyAhoCorasick {
         // out entirely for the common (no-mapping) case, keeping the hot loop identical to before.
         if haystack.is_ascii() {
             let g = AsciiGraphemes::new(haystack, self.case_insensitive);
+            let skip = self.max_edits_fast == 1;
             if self.mappings.is_empty() {
-                self.search_unsorted_impl::<false, _>(haystack, similarity_threshold, &g)
+                if skip {
+                    self.search_unsorted_impl::<false, true, _>(haystack, similarity_threshold, &g)
+                } else {
+                    self.search_unsorted_impl::<false, false, _>(haystack, similarity_threshold, &g)
+                }
             } else {
-                self.search_unsorted_impl::<true, _>(haystack, similarity_threshold, &g)
+                if skip {
+                    self.search_unsorted_impl::<true, true, _>(haystack, similarity_threshold, &g)
+                } else {
+                    self.search_unsorted_impl::<true, false, _>(haystack, similarity_threshold, &g)
+                }
             }
         } else {
             let g = self.build_unicode_graphemes(haystack);
+            let skip = self.max_edits_fast == 1;
             if self.mappings.is_empty() {
-                self.search_unsorted_impl::<false, _>(haystack, similarity_threshold, &g)
+                if skip {
+                    self.search_unsorted_impl::<false, true, _>(haystack, similarity_threshold, &g)
+                } else {
+                    self.search_unsorted_impl::<false, false, _>(haystack, similarity_threshold, &g)
+                }
             } else {
-                self.search_unsorted_impl::<true, _>(haystack, similarity_threshold, &g)
+                if skip {
+                    self.search_unsorted_impl::<true, true, _>(haystack, similarity_threshold, &g)
+                } else {
+                    self.search_unsorted_impl::<true, false, _>(haystack, similarity_threshold, &g)
+                }
             }
         }
     }
@@ -428,7 +446,7 @@ impl FuzzyAhoCorasick {
         vec
     }
 
-    fn search_unsorted_impl<'a, const MAPPINGS: bool, G: GraphemeStorage>(
+    fn search_unsorted_impl<'a, const MAPPINGS: bool, const WINDOW_SKIP: bool, G: GraphemeStorage>(
         &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
@@ -493,6 +511,34 @@ impl FuzzyAhoCorasick {
         let max_edits_fast = self.max_edits_fast;
         let has_pattern_limits = self.has_pattern_limits;
 
+        // 2-gram window skip for 1-edit search: precompute bitmaps of root edge chars
+        // (first chars) and root children's edge chars (second chars). A window can only
+        // yield a match if text[start] is a first or second char (exact match or deletion),
+        // or text[start+1] is a second char (substitution dead-end filter passes). This
+        // skips ~70% of windows for typical inputs, saving the visited-check + edge-scan
+        // overhead for non-matching windows. Only applies when: exactly 1 edit, no
+        // multi-char mappings, root has no output (no empty patterns), and no root child
+        // has an output (no 1-char patterns).
+        let window_skip: Option<(u128, u128)> = if WINDOW_SKIP
+            && !MAPPINGS
+            && root.output.is_empty()
+        {
+            let mut first = root.single_char_edge_bits;
+            let mut second = 0u128;
+            let mut child_output = false;
+            for edge in &root.edges {
+                let child = &self.nodes[edge.next as usize];
+                second |= child.single_char_edge_bits;
+                first |= child.single_char_edge_bits;
+                if !child.output.is_empty() {
+                    child_output = true;
+                }
+            }
+            (!child_output).then_some((first, second))
+        } else {
+            None
+        };
+
         // Effective beam width. Starts at the explicit `beam_width` (if any); otherwise it stays
         // `None` (exact) until the automatic-beam budget is exhausted, at which point it drops to the
         // configured width to bound a runaway exploration. `states_expanded` is counted across all
@@ -504,6 +550,27 @@ impl FuzzyAhoCorasick {
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
         );
         for start in 0..graphemes.gs_len() {
+            // 2-gram window skip: cheaply reject windows that cannot produce a match.
+            if let Some((first_bits, second_bits)) = window_skip {
+                let ch = graphemes.gs_first_char(start);
+                let ch_idx = ch as u32;
+                if ch_idx < 128 && (first_bits >> ch_idx) & 1 == 0 {
+                    // text[start] is not a first or second char.
+                    // Check if text[start+1] is a second char (substitution dead-end filter).
+                    let next_idx = start + 1;
+                    if next_idx >= text_len as usize {
+                        continue; // no next char — no match possible
+                    }
+                    let next_ch = graphemes.gs_first_char(next_idx);
+                    let next_ch_idx = next_ch as u32;
+                    if next_ch_idx < 128 && (second_bits >> next_ch_idx) & 1 == 0 {
+                        continue; // text[start+1] not a second char — skip
+                    }
+                    // Non-ASCII next_ch or in second_chars: don't skip
+                }
+                // text[start] in first_chars or non-ASCII: don't skip
+            }
+
             trace!(
                 "=== new window at grapheme #{start} ({:?}) ===",
                 graphemes.gs_text(start)
