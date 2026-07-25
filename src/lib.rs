@@ -882,8 +882,26 @@ impl FuzzyAhoCorasick {
                         self.within_limits_deletion_ahead(node_limits, edits, ((packed_counts >> 8) & 0xFF) as NumEdits)
                     })
                 {
+                    // At the last edit level the child state can only do exact match
+                    // and output check. If the child has no output and no edge matching
+                    // the current text char, it's a dead end — skip the push to avoid
+                    // wasted pop+dedup+find_transition work.
+                    let is_last_edit = max_edits_fast != 255 && edits + 1 >= max_edits_fast;
+                    let current_ch_opt = if is_last_edit && j < text_len {
+                        Some(graphemes.gs_first_char(j as usize))
+                    } else {
+                        None
+                    };
                     for edge in edges {
                         let next_node2 = edge.next;
+                        if is_last_edit {
+                            let child = &self.nodes[next_node2 as usize];
+                            if child.output.is_empty()
+                                && current_ch_opt.map_or(true, |ch| !child.has_matching_edge_char(ch))
+                            {
+                                continue;
+                            }
+                        }
                         trace!(
                             "  delete to node={next_node2} penalty={:.2}",
                             self.penalties.deletion

@@ -388,6 +388,18 @@ impl Node {
         }
         self.transitions.get(grapheme).copied()
     }
+
+    /// Quick check whether any outgoing single-char edge starts with `ch`.
+    /// Used by the push-time dead-end filter in the deletion scan.
+    #[inline]
+    pub(crate) fn has_matching_edge_char(&self, ch: char) -> bool {
+        for edge in &self.edges {
+            if edge.first_char == ch && edge.grapheme_len == 1 {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[derive(Clone)]
