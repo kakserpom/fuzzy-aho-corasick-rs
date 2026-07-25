@@ -57,6 +57,7 @@ pub use prefilter::Prefiltered;
 pub use replacer::FuzzyReplacer;
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
+use std::hash::{Hash, Hasher};
 pub use stream::{StreamMatch, StreamMatches};
 use unicode_segmentation::UnicodeSegmentation;
 pub type PatternIndex = usize;
@@ -75,7 +76,28 @@ type MatchEnd = u32;
 /// per-edit-type counts packed into one `u32` (one byte each). Two states with equal keys behave
 /// identically going forward, so only the lowest-penalty one needs expanding. Packing the counts
 /// keeps the key at five fields, so the per-state hash mixes five words instead of eight.
-type VisitedKey = (NodeIndex, HaystackPos, MatchStart, MatchEnd, u32);
+///
+/// The custom `Hash` impl packs pairs of `u32`s into `u64`s, reducing FxHash rounds from 5 to 3
+/// (2 × `write_u64` + 1 × `write_u32`) on the hottest map in the search loop.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct VisitedKey {
+    node: NodeIndex,
+    j: HaystackPos,
+    matched_start: MatchStart,
+    matched_end: MatchEnd,
+    packed_counts: u32,
+}
+
+impl Hash for VisitedKey {
+    #[inline]
+    fn hash<H: Hasher>(&self, hasher: &mut H) {
+        hasher.write_u64(u64::from(self.node) | (u64::from(self.j) << 32));
+        hasher.write_u64(
+            u64::from(self.matched_start) | (u64::from(self.matched_end) << 32),
+        );
+        hasher.write_u32(self.packed_counts);
+    }
+}
 
 #[allow(unused_macros)]
 #[cfg(test)]
@@ -385,16 +407,16 @@ impl FuzzyAhoCorasick {
                 // same automaton position, matched span, and per-edit-type counts was already
                 // expanded. This collapses the exponential set of insertion/deletion paths that
                 // reach the same position into a polynomial number of distinct states.
-                let dedup_key = (
+                let dedup_key = VisitedKey {
                     node,
                     j,
                     matched_start,
                     matched_end,
-                    u32::from(insertions)
+                    packed_counts: u32::from(insertions)
                         | (u32::from(deletions) << 8)
                         | (u32::from(substitutions) << 16)
                         | (u32::from(swaps) << 24),
-                );
+                };
                 // Use the entry API so the key is hashed once (a plain `get` followed by `insert`
                 // hashes it twice); this map is probed on every expanded state, so that second hash
                 // was a measurable slice of the hot path.
