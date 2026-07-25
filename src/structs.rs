@@ -166,10 +166,10 @@ pub(crate) struct State {
     pub(crate) matched_end: u32,
     pub(crate) penalties: f32,
     pub(crate) edits: NumEdits,
-    pub(crate) insertions: NumEdits,
-    pub(crate) deletions: NumEdits,
-    pub(crate) substitutions: NumEdits,
-    pub(crate) swaps: NumEdits,
+    /// Packed edit counts: byte 0 = insertions, byte 1 = deletions,
+    /// byte 2 = substitutions, byte 3 = swaps. Storing this directly avoids
+    /// repacking at every dedup-key construction on the hot path.
+    pub(crate) packed_counts: u32,
     #[cfg(debug_assertions)]
     pub(crate) notes: Vec<String>,
 }

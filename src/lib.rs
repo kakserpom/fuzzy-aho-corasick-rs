@@ -489,10 +489,7 @@ impl FuzzyAhoCorasick {
                 matched_end: start,
                 penalties: 0.,
                 edits: 0,
-                insertions: 0,
-                deletions: 0,
-                substitutions: 0,
-                swaps: 0,
+                packed_counts: 0,
                 #[cfg(debug_assertions)]
                 notes: vec![],
             });
@@ -516,10 +513,7 @@ impl FuzzyAhoCorasick {
                     matched_end,
                     penalties,
                     edits,
-                    insertions,
-                    deletions,
-                    substitutions,
-                    swaps,
+                    packed_counts,
                     ..
                 } = queue[q_idx];
                 #[cfg(debug_assertions)]
@@ -535,10 +529,7 @@ impl FuzzyAhoCorasick {
                     j,
                     matched_start,
                     matched_end,
-                    packed_counts: u32::from(insertions)
-                        | (u32::from(deletions) << 8)
-                        | (u32::from(substitutions) << 16)
-                        | (u32::from(swaps) << 24),
+                    packed_counts,
                 };
                 // Use the entry API so the key is hashed once (a plain `get` followed by `insert`
                 // hashes it twice); this map is probed on every expanded state, so that second hash
@@ -581,6 +572,10 @@ impl FuzzyAhoCorasick {
                 };
 
                 if !output.is_empty() {
+                    let insertions = (packed_counts & 0xFF) as NumEdits;
+                    let deletions = ((packed_counts >> 8) & 0xFF) as NumEdits;
+                    let substitutions = ((packed_counts >> 16) & 0xFF) as NumEdits;
+                    let swaps = ((packed_counts >> 24) & 0xFF) as NumEdits;
                     for &pattern_index in output {
                         let pattern_index = pattern_index as usize;
                         if max_edits_fast != 255 {
@@ -682,10 +677,7 @@ impl FuzzyAhoCorasick {
                             matched_end: j + 1,
                             penalties,
                             edits,
-                            insertions,
-                            deletions,
-                            substitutions,
-                            swaps,
+                            packed_counts,
                             #[cfg(debug_assertions)]
                             notes: notes.clone(),
                         });
@@ -697,7 +689,7 @@ impl FuzzyAhoCorasick {
                     let subst_ok = if max_edits_fast != 255 {
                         edits <= max_edits_fast
                     } else {
-                        self.within_limits_subst(node_limits, edits, substitutions)
+                        self.within_limits_subst(node_limits, edits, (packed_counts >> 16) as NumEdits)
                     };
                     if subst_ok {
                         let current_ch = graphemes.gs_first_char(j as usize);
@@ -735,7 +727,7 @@ impl FuzzyAhoCorasick {
                             #[cfg(debug_assertions)]
                             let mut notes = notes.clone();
                             #[cfg(debug_assertions)]
-                            notes.push(format!("sub {:?} -> {current_grapheme:?} (sim={sim:.2}, pen={penalty:.2}) (subst->{}, edits->{})", edge.first_char, substitutions + 1, edits + 1));
+                            notes.push(format!("sub {:?} -> {current_grapheme:?} (sim={sim:.2}, pen={penalty:.2}) (subst->{}, edits->{})", edge.first_char, ((packed_counts >> 16) & 0xFF) + 1, edits + 1));
 
                             queue.push(State {
                                 node: next_node,
@@ -744,10 +736,7 @@ impl FuzzyAhoCorasick {
                                 matched_end: j + 1,
                                 penalties: penalties + penalty,
                                 edits: edits + 1,
-                                insertions,
-                                deletions,
-                                substitutions: substitutions + 1,
-                                swaps,
+                                packed_counts: packed_counts + 0x1_0000,
                                 #[cfg(debug_assertions)]
                                 notes,
                             });
@@ -784,7 +773,7 @@ impl FuzzyAhoCorasick {
                                     "map {:?} (pen={:.2}) (subst->{}, edits->{})",
                                     mt.haystack,
                                     mt.penalty,
-                                    substitutions + 1,
+                                    ((packed_counts >> 16) & 0xFF) + 1,
                                     edits + 1
                                 ));
                                 queue.push(State {
@@ -794,10 +783,7 @@ impl FuzzyAhoCorasick {
                                     matched_end: j + hlen,
                                     penalties: new_penalties,
                                     edits: edits + 1,
-                                    insertions,
-                                    deletions,
-                                    substitutions: substitutions + 1,
-                                    swaps,
+                                    packed_counts: packed_counts + 0x1_0000,
                                     #[cfg(debug_assertions)]
                                     notes,
                                 });
@@ -822,7 +808,7 @@ impl FuzzyAhoCorasick {
                                 self.within_limits_swap_ahead(
                                     self.get_node_limits(node2),
                                     edits,
-                                    swaps,
+                                    (packed_counts >> 24) as NumEdits,
                                 )
                             })
                         {
@@ -831,7 +817,7 @@ impl FuzzyAhoCorasick {
                             #[cfg(debug_assertions)]
                             notes.push(format!(
                                 "swap a:{current_grapheme:?} b:{b:?} (swaps->{}, edits->{})",
-                                swaps + 1,
+                                ((packed_counts >> 24) & 0xFF) + 1,
                                 edits + 1
                             ));
                             queue.push(State {
@@ -841,10 +827,7 @@ impl FuzzyAhoCorasick {
                                 matched_end: j + 2,
                                 penalties: penalties + self.penalties.swap,
                                 edits: edits + 1,
-                                insertions,
-                                deletions,
-                                substitutions,
-                                swaps: swaps + 1,
+                                packed_counts: packed_counts + 0x100_0000,
                                 #[cfg(debug_assertions)]
                                 notes,
                             });
@@ -859,7 +842,7 @@ impl FuzzyAhoCorasick {
                         && (if max_edits_fast != 255 {
                             edits < max_edits_fast
                         } else {
-                            self.within_limits_insertion_ahead(node_limits, edits, insertions)
+                            self.within_limits_insertion_ahead(node_limits, edits, (packed_counts & 0xFF) as NumEdits)
                         })
                     {
                         #[cfg(debug_assertions)]
@@ -868,7 +851,7 @@ impl FuzzyAhoCorasick {
                         notes.push(format!(
                             "ins {:?} (ins->{} , edits->{})",
                             graphemes.gs_text(j as usize),
-                            insertions + 1,
+                            (packed_counts & 0xFF) + 1,
                             edits + 1
                         ));
                         queue.push(State {
@@ -878,10 +861,7 @@ impl FuzzyAhoCorasick {
                             matched_end,
                             penalties: penalties + self.penalties.insertion,
                             edits: edits + 1,
-                            insertions: insertions + 1,
-                            deletions,
-                            substitutions,
-                            swaps,
+                            packed_counts: packed_counts + 1,
                             #[cfg(debug_assertions)]
                             notes,
                         });
@@ -895,7 +875,7 @@ impl FuzzyAhoCorasick {
                     && (if max_edits_fast != 255 {
                         edits < max_edits_fast
                     } else {
-                        self.within_limits_deletion_ahead(node_limits, edits, deletions)
+                        self.within_limits_deletion_ahead(node_limits, edits, ((packed_counts >> 8) & 0xFF) as NumEdits)
                     })
                 {
                     for edge in edges {
@@ -910,7 +890,7 @@ impl FuzzyAhoCorasick {
                         notes.push(format!(
                             "edge_g2 {:?} (del->{:?})",
                             edge.first_char,
-                            deletions + 1
+                            ((packed_counts >> 8) & 0xFF) + 1
                         ));
                         queue.push(State {
                             node: next_node2,
@@ -919,10 +899,7 @@ impl FuzzyAhoCorasick {
                             matched_end,
                             penalties: penalties + self.penalties.deletion,
                             edits: edits + 1,
-                            insertions,
-                            deletions: deletions + 1,
-                            substitutions,
-                            swaps,
+                            packed_counts: packed_counts + 0x100,
                             #[cfg(debug_assertions)]
                             notes,
                         });
