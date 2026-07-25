@@ -274,30 +274,47 @@ impl FuzzyAhoCorasick {
         haystack: &'a str,
         similarity_threshold: f32,
     ) -> FuzzyMatches<'a> {
-        // Collect grapheme byte offsets and their case-folded text in a single pass. For ASCII
-        // input (the common case) the grapheme count equals the byte count, so pre-allocate
-        // accordingly to avoid incremental Vec growth during collection.
-        let estimated_len = if haystack.is_ascii() {
-            haystack.len()
+        // Collect grapheme byte offsets and their case-folded text in a single pass.
+        //
+        // ASCII fast path: when the haystack is all-ASCII (the common case), every byte is a
+        // separate grapheme and we can bypass the `unicode_segmentation` machinery entirely.
+        // The grapheme iterator's `Graphemes::next` — which walks Unicode grapheme boundary
+        // rules through `GraphemeCursor` — was ~7% of the search runtime on the profile.
+        // For non-ASCII text we fall back to full grapheme segmentation.
+        let graphemes: Vec<(usize, Cow<str>)> = if haystack.is_ascii() {
+            let bytes = haystack.as_bytes();
+            let mut vec = Vec::with_capacity(bytes.len());
+            for (i, &b) in bytes.iter().enumerate() {
+                let text = if self.case_insensitive && b.is_ascii_uppercase() {
+                    // ASCII uppercase → single-char lowercase String
+                    Cow::Owned(String::from(b.to_ascii_lowercase() as char))
+                } else {
+                    // SAFETY: `haystack.is_ascii()` guarantees every byte is a valid 1-byte
+                    // UTF-8 sequence, so `i..i+1` is always a valid char boundary.
+                    Cow::Borrowed(unsafe { haystack.get_unchecked(i..i + 1) })
+                };
+                vec.push((i, text));
+            }
+            vec
         } else {
-            0
+            let mut vec = Vec::new();
+            vec.extend(haystack.grapheme_indices(true).map(|(byte, g)| {
+                // Only allocate a lowercased copy when the grapheme could actually change. For
+                // an all-ASCII grapheme with no uppercase byte (spaces, digits, punctuation, and
+                // already-lowercase letters — the bulk of typical text) `to_lowercase()` is a
+                // no-op, so borrow instead. Non-ASCII graphemes may still lowercase, so those
+                // go the owned path.
+                let needs_lowercasing = self.case_insensitive
+                    && (!g.is_ascii() || g.bytes().any(|b| b.is_ascii_uppercase()));
+                let text = if needs_lowercasing {
+                    Cow::Owned(g.to_lowercase())
+                } else {
+                    Cow::Borrowed(g)
+                };
+                (byte, text)
+            }));
+            vec
         };
-        let mut graphemes: Vec<(usize, Cow<str>)> = Vec::with_capacity(estimated_len);
-        graphemes.extend(haystack.grapheme_indices(true).map(|(byte, g)| {
-            // Only allocate a lowercased copy when the grapheme could actually change. For an
-            // all-ASCII grapheme with no uppercase byte (spaces, digits, punctuation, and
-            // already-lowercase letters — the bulk of typical text) `to_lowercase()` is a no-op,
-            // so borrow instead. Non-ASCII graphemes may still lowercase, so those go the owned
-            // path.
-            let needs_lowercasing = self.case_insensitive
-                && (!g.is_ascii() || g.bytes().any(|b| b.is_ascii_uppercase()));
-            let text = if needs_lowercasing {
-                Cow::Owned(g.to_lowercase())
-            } else {
-                Cow::Borrowed(g)
-            };
-            (byte, text)
-        }));
         if graphemes.is_empty() {
             return FuzzyMatches {
                 haystack,
