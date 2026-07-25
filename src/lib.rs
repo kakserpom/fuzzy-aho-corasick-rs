@@ -658,8 +658,16 @@ impl FuzzyAhoCorasick {
                 //
                 // 1) Same or similar symbol — только внутри текста
                 //
+                let is_last_edit = max_edits_fast != 255 && edits + 1 >= max_edits_fast;
                 if j < text_len {
                     let current_grapheme = graphemes.gs_text(j as usize);
+                    // For dead-end filtering: if at the last edit level, check
+                    // whether text[j+1] can match any child's outgoing edge.
+                    let next_ch_opt = if is_last_edit && j + 1 < text_len {
+                        Some(graphemes.gs_first_char((j + 1) as usize))
+                    } else {
+                        None
+                    };
                     let matched_start_next = if matched_end == matched_start {
                         j
                     } else {
@@ -717,6 +725,18 @@ impl FuzzyAhoCorasick {
                             // Skip substitutions that would push the state past the global ceiling.
                             if penalty > remaining {
                                 continue;
+                            }
+
+                            // Dead-end filter: at the last edit level, the child state can
+                            // only do exact match and output check. If the child has no
+                            // output and no edge matching text[j+1], skip the push.
+                            if is_last_edit {
+                                let child = &self.nodes[next_node as usize];
+                                if child.output.is_empty()
+                                    && next_ch_opt.map_or(true, |ch| !child.has_matching_edge_char(ch))
+                                {
+                                    continue;
+                                }
                             }
 
                             trace!(
@@ -848,6 +868,9 @@ impl FuzzyAhoCorasick {
                         } else {
                             self.within_limits_insertion_ahead(node_limits, edits, (packed_counts & 0xFF) as NumEdits)
                         })
+                        && !(is_last_edit
+                            && output.is_empty()
+                            && next_ch_opt.map_or(true, |ch| !node_ref.has_matching_edge_char(ch)))
                     {
                         #[cfg(debug_assertions)]
                         let mut notes = notes.clone();
@@ -886,7 +909,6 @@ impl FuzzyAhoCorasick {
                     // and output check. If the child has no output and no edge matching
                     // the current text char, it's a dead end — skip the push to avoid
                     // wasted pop+dedup+find_transition work.
-                    let is_last_edit = max_edits_fast != 255 && edits + 1 >= max_edits_fast;
                     let current_ch_opt = if is_last_edit && j < text_len {
                         Some(graphemes.gs_first_char(j as usize))
                     } else {
