@@ -87,6 +87,71 @@ fn ascii_byte_to_str(b: u8) -> &'static str {
     unsafe { std::str::from_utf8_unchecked(&ASCII_BYTES[b as usize..b as usize + 1]) }
 }
 
+/// Abstraction over grapheme storage so the BFS hot loop can be monomorphised for both the
+/// ASCII fast path (zero-allocation `&[u8]`) and the full Unicode path (`Vec<(usize, Cow<str>)>`).
+/// The trait is sealed to the two internal implementors so the compiler can devirtualise every
+/// call.
+trait GraphemeStorage {
+    fn gs_len(&self) -> usize;
+    /// Byte offset of the `idx`-th grapheme within the haystack.
+    fn gs_byte_offset(&self, idx: usize) -> usize;
+    /// The (case-folded) grapheme text at position `idx`.
+    fn gs_text(&self, idx: usize) -> &str;
+}
+
+impl GraphemeStorage for Vec<(usize, Cow<'_, str>)> {
+    #[inline]
+    fn gs_len(&self) -> usize {
+        self.len()
+    }
+    #[inline]
+    fn gs_byte_offset(&self, idx: usize) -> usize {
+        self[idx].0
+    }
+    #[inline]
+    fn gs_text(&self, idx: usize) -> &str {
+        self[idx].1.as_ref()
+    }
+}
+
+/// Zero-allocation grapheme storage for all-ASCII haystacks: each byte is a grapheme, and
+/// case-folding is computed on the fly via the static `ascii_byte_to_str` table.
+struct AsciiGraphemes<'a> {
+    bytes: &'a [u8],
+    case_insensitive: bool,
+}
+
+impl<'a> AsciiGraphemes<'a> {
+    fn new(haystack: &'a str, case_insensitive: bool) -> Self {
+        Self {
+            bytes: haystack.as_bytes(),
+            case_insensitive,
+        }
+    }
+}
+
+impl<'a> GraphemeStorage for AsciiGraphemes<'a> {
+    #[inline]
+    fn gs_len(&self) -> usize {
+        self.bytes.len()
+    }
+    #[inline]
+    fn gs_byte_offset(&self, idx: usize) -> usize {
+        idx
+    }
+    #[inline]
+    fn gs_text(&self, idx: usize) -> &str {
+        let b = self.bytes[idx];
+        if self.case_insensitive {
+            ascii_byte_to_str(b.to_ascii_lowercase())
+        } else {
+            // SAFETY: caller guaranteed `haystack.is_ascii()`; every byte is a valid 1-byte
+            // UTF-8 sequence.
+            unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&self.bytes[idx])) }
+        }
+    }
+}
+
 /// Automaton node index (u32 for compact struct packing; >4B nodes is unrealistic).
 type NodeIndex = u32;
 /// Current position (grapheme index) in the haystack.
@@ -99,10 +164,12 @@ type MatchEnd = u32;
 /// Key for the per-window state-dedup map: automaton position, matched span, and the four
 /// per-edit-type counts packed into one `u32` (one byte each). Two states with equal keys behave
 /// identically going forward, so only the lowest-penalty one needs expanding. Packing the counts
-/// keeps the key at five fields, so the per-state hash mixes five words instead of eight.
+/// keeps the key at five fields, so the per-state hash mixes four words instead of eight.
 ///
-/// The custom `Hash` impl packs pairs of `u32`s into `u64`s, reducing FxHash rounds from 5 to 3
-/// (2 × `write_u64` + 1 × `write_u32`) on the hottest map in the search loop.
+/// The custom `Hash` impl packs pairs of `u32`s into `u64`s, reducing FxHash rounds from 5 to 2
+/// (2 × `write_u64`). `packed_counts` is excluded from the hash — it has low entropy (values 0–2)
+/// and is still checked by `PartialEq` on collision. At the typical ~30% hash-table load factor
+/// the extra probes are negligible.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct VisitedKey {
     node: NodeIndex,
@@ -119,7 +186,6 @@ impl Hash for VisitedKey {
         hasher.write_u64(
             u64::from(self.matched_start) | (u64::from(self.matched_end) << 32),
         );
-        hasher.write_u32(self.packed_counts);
     }
 }
 
@@ -286,61 +352,51 @@ impl FuzzyAhoCorasick {
     ) -> FuzzyMatches<'a> {
         // Dispatch on whether any mappings exist so the multi-character-mapping branch is compiled
         // out entirely for the common (no-mapping) case, keeping the hot loop identical to before.
-        if self.mappings.is_empty() {
-            self.search_unsorted_impl::<false>(haystack, similarity_threshold)
+        if haystack.is_ascii() {
+            let g = AsciiGraphemes::new(haystack, self.case_insensitive);
+            if self.mappings.is_empty() {
+                self.search_unsorted_impl::<false, _>(haystack, similarity_threshold, &g)
+            } else {
+                self.search_unsorted_impl::<true, _>(haystack, similarity_threshold, &g)
+            }
         } else {
-            self.search_unsorted_impl::<true>(haystack, similarity_threshold)
+            let g = self.build_unicode_graphemes(haystack);
+            if self.mappings.is_empty() {
+                self.search_unsorted_impl::<false, _>(haystack, similarity_threshold, &g)
+            } else {
+                self.search_unsorted_impl::<true, _>(haystack, similarity_threshold, &g)
+            }
         }
     }
 
-    fn search_unsorted_impl<'a, const MAPPINGS: bool>(
+    /// Build the `Vec<(usize, Cow<str>)>` grapheme list for non-ASCII haystacks.
+    fn build_unicode_graphemes<'a>(&'a self, haystack: &'a str) -> Vec<(usize, Cow<'a, str>)> {
+        let mut vec = Vec::new();
+        vec.extend(haystack.grapheme_indices(true).map(|(byte, g)| {
+            // Only allocate a lowercased copy when the grapheme could actually change. For
+            // an all-ASCII grapheme with no uppercase byte (spaces, digits, punctuation, and
+            // already-lowercase letters — the bulk of typical text) `to_lowercase()` is a
+            // no-op, so borrow instead. Non-ASCII graphemes may still lowercase, so those
+            // go the owned path.
+            let needs_lowercasing = self.case_insensitive
+                && (!g.is_ascii() || g.bytes().any(|b| b.is_ascii_uppercase()));
+            let text = if needs_lowercasing {
+                Cow::Owned(g.to_lowercase())
+            } else {
+                Cow::Borrowed(g)
+            };
+            (byte, text)
+        }));
+        vec
+    }
+
+    fn search_unsorted_impl<'a, const MAPPINGS: bool, G: GraphemeStorage>(
         &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
+        graphemes: &G,
     ) -> FuzzyMatches<'a> {
-        // Collect grapheme byte offsets and their case-folded text in a single pass.
-        //
-        // ASCII fast path: when the haystack is all-ASCII (the common case), every byte is a
-        // separate grapheme and we can bypass the `unicode_segmentation` machinery entirely.
-        // The grapheme iterator's `Graphemes::next` — which walks Unicode grapheme boundary
-        // rules through `GraphemeCursor` — was ~7% of the search runtime on the profile.
-        // For non-ASCII text we fall back to full grapheme segmentation.
-        let graphemes: Vec<(usize, Cow<str>)> = if haystack.is_ascii() {
-            let bytes = haystack.as_bytes();
-            let mut vec = Vec::with_capacity(bytes.len());
-            for (i, &b) in bytes.iter().enumerate() {
-                let text = if self.case_insensitive && b.is_ascii_uppercase() {
-                    // Zero-allocation lowercased ASCII: look up a &'static str from a static
-                    // byte table instead of creating a heap-allocated String per character.
-                    Cow::Borrowed(ascii_byte_to_str(b.to_ascii_lowercase()))
-                } else {
-                    // SAFETY: `haystack.is_ascii()` guarantees every byte is a valid 1-byte
-                    // UTF-8 sequence, so `i..i+1` is always a valid char boundary.
-                    Cow::Borrowed(unsafe { haystack.get_unchecked(i..i + 1) })
-                };
-                vec.push((i, text));
-            }
-            vec
-        } else {
-            let mut vec = Vec::new();
-            vec.extend(haystack.grapheme_indices(true).map(|(byte, g)| {
-                // Only allocate a lowercased copy when the grapheme could actually change. For
-                // an all-ASCII grapheme with no uppercase byte (spaces, digits, punctuation, and
-                // already-lowercase letters — the bulk of typical text) `to_lowercase()` is a
-                // no-op, so borrow instead. Non-ASCII graphemes may still lowercase, so those
-                // go the owned path.
-                let needs_lowercasing = self.case_insensitive
-                    && (!g.is_ascii() || g.bytes().any(|b| b.is_ascii_uppercase()));
-                let text = if needs_lowercasing {
-                    Cow::Owned(g.to_lowercase())
-                } else {
-                    Cow::Borrowed(g)
-                };
-                (byte, text)
-            }));
-            vec
-        };
-        if graphemes.is_empty() {
+        if graphemes.gs_len() == 0 {
             return FuzzyMatches {
                 haystack,
                 inner: vec![],
@@ -348,7 +404,7 @@ impl FuzzyAhoCorasick {
         }
         // Grapheme count as `u32` for comparisons against the `u32` state positions (see the
         // crate-level note on the index/position width).
-        let text_len = graphemes.len() as u32;
+        let text_len = graphemes.gs_len() as u32;
 
         // Keyed by (start_byte, end_byte, pattern_index). Uses the fast FxHash hasher instead of
         // the default SipHash: keys are small integer tuples looked up on every accepted match.
@@ -385,9 +441,9 @@ impl FuzzyAhoCorasick {
         let max_penalties = root.prune_len - root.prune_len_over_weight * similarity_threshold;
         // Per-substitution similarity floor (0.0 = no floor); hoisted out of the hot loop.
         let min_symbol_similarity = self.min_symbol_similarity;
-        /// Fast-path edit ceiling (see `FuzzyAhoCorasick::max_edits_fast`). `255` disables the
-        /// fast path; otherwise the hot loop checks `edits <= max_edits_fast` (or `<` for
-        /// ahead-checks) instead of calling `within_limits_*`.
+        // Fast-path edit ceiling (see `FuzzyAhoCorasick::max_edits_fast`). `255` disables the
+        // fast path; otherwise the hot loop checks `edits <= max_edits_fast` (or `<` for
+        // ahead-checks) instead of calling `within_limits_*`.
         let max_edits_fast = self.max_edits_fast;
         let has_pattern_limits = self.has_pattern_limits;
 
@@ -401,10 +457,10 @@ impl FuzzyAhoCorasick {
         trace!(
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
         );
-        for start in 0..graphemes.len() {
+        for start in 0..graphemes.gs_len() {
             trace!(
                 "=== new window at grapheme #{start} ({:?}) ===",
-                graphemes[start].1
+                graphemes.gs_text(start)
             );
 
             queue.clear();
@@ -432,7 +488,7 @@ impl FuzzyAhoCorasick {
                     let remaining = queue.len() - q_idx;
                     if remaining > bw * 2 {
                         // Sort remaining items by penalties (lowest first = best candidates)
-                        queue[q_idx..].sort_by(|a, b| a.penalties.total_cmp(&b.penalties));
+                        queue[q_idx..].sort_unstable_by(|a, b| a.penalties.total_cmp(&b.penalties));
                         // Keep only beam_width items from q_idx onward
                         queue.truncate(q_idx + bw);
                     }
@@ -525,12 +581,16 @@ impl FuzzyAhoCorasick {
                         ) {
                             continue;
                         }
-                        let start_byte = graphemes
-                            .get(matched_start as usize)
-                            .map_or(0, |&(b, _)| b);
-                        let end_byte = graphemes
-                            .get(matched_end as usize)
-                            .map_or_else(|| haystack.len(), |&(b, _)| b);
+                        let start_byte = if (matched_start as usize) < graphemes.gs_len() {
+                            graphemes.gs_byte_offset(matched_start as usize)
+                        } else {
+                            0
+                        };
+                        let end_byte = if (matched_end as usize) < graphemes.gs_len() {
+                            graphemes.gs_byte_offset(matched_end as usize)
+                        } else {
+                            haystack.len()
+                        };
                         let key = (start_byte, end_byte, pattern_index);
 
                         let total = self.patterns[pattern_index].grapheme_len as f32;
@@ -584,7 +644,7 @@ impl FuzzyAhoCorasick {
                 // 1) Same or similar symbol — только внутри текста
                 //
                 if j < text_len {
-                    let current_grapheme = graphemes[j as usize].1.as_ref();
+                    let current_grapheme = graphemes.gs_text(j as usize);
                     let matched_start_next = if matched_end == matched_start {
                         j
                     } else {
@@ -692,7 +752,7 @@ impl FuzzyAhoCorasick {
                                     continue;
                                 }
                                 let hay_matches = mt.haystack.iter().enumerate().all(|(k, g)| {
-                                    graphemes[j as usize + k].1.as_ref() == g.as_ref()
+                                    graphemes.gs_text(j as usize + k) == g.as_ref()
                                 });
                                 if !hay_matches {
                                     continue;
@@ -733,13 +793,13 @@ impl FuzzyAhoCorasick {
                     // 2) Swap (transposition of two neighboring graphemes)
                     //
                     if j + 1 < text_len && penalties + self.penalties.swap <= max_penalties {
-                        let a = &graphemes[j as usize].1;
-                        let b = &graphemes[(j + 1) as usize].1;
+                        let a = graphemes.gs_text(j as usize);
+                        let b = graphemes.gs_text((j + 1) as usize);
                         // The two transition lookups below are gated behind the cheap penalty
                         // check above rather than the other way around.
                         if let Some(node2) = node_ref
-                            .find_transition(b.as_ref())
-                            .and_then(|x| self.nodes[x as usize].find_transition(a.as_ref()))
+                            .find_transition(b)
+                            .and_then(|x| self.nodes[x as usize].find_transition(a))
                             && (if max_edits_fast != 255 {
                                 edits < max_edits_fast
                             } else {
@@ -791,7 +851,7 @@ impl FuzzyAhoCorasick {
                         #[cfg(debug_assertions)]
                         notes.push(format!(
                             "ins {:?} (ins->{} , edits->{})",
-                            graphemes[j as usize].1,
+                            graphemes.gs_text(j as usize),
                             insertions + 1,
                             edits + 1
                         ));

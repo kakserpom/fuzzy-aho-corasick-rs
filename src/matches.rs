@@ -56,7 +56,7 @@ impl<'a> FuzzyMatches<'a> {
         // Track accepted intervals in a sorted Vec for better cache locality than BTreeMap.
         // Typical match counts are small (<100), so binary search + insert is faster than
         // the BTreeMap's per-node pointer chasing.
-        let mut occupied: Vec<(usize, usize)> = Vec::new();
+        let mut occupied: Vec<(usize, usize)> = Vec::with_capacity(self.inner.len());
         self.inner.retain(|m| {
             // Binary search for the insertion point (first interval with start > m.start).
             let pos = occupied
@@ -84,7 +84,7 @@ impl<'a> FuzzyMatches<'a> {
     /// `custom_unique_id` if present, otherwise by index) is used at most once.
     pub fn non_overlapping_unique(&mut self) {
         let mut used_patterns = BTreeSet::new();
-        let mut occupied: Vec<(usize, usize)> = Vec::new();
+        let mut occupied: Vec<(usize, usize)> = Vec::with_capacity(self.inner.len());
         self.inner.retain(|m| {
             let unique_id = if let Some(custom_unique_id) = m.pattern.custom_unique_id {
                 UniqueId::Custom(custom_unique_id)
