@@ -756,8 +756,15 @@ impl FuzzyAhoCorasick {
                 // 1) Same or similar symbol — только внутри текста
                 //
                 let is_last_edit = max_edits_fast != 255 && edits + 1 >= max_edits_fast;
+                // Compute current_ch once and reuse in both the exact-match section (inside
+                // `if j < text_len`) and the deletion section (outside it), avoiding a
+                // redundant `gs_first_char(j)` call per state.
+                let current_ch = if j < text_len {
+                    graphemes.gs_first_char(j as usize)
+                } else {
+                    '\0'
+                };
                 if j < text_len {
-                    let current_ch = graphemes.gs_first_char(j as usize);
                     // For dead-end filtering: if at the last edit level, check
                     // whether text[j+1] can match any child's outgoing edge.
                     let next_ch_opt = if is_last_edit && j + 1 < text_len {
@@ -1006,7 +1013,7 @@ impl FuzzyAhoCorasick {
                     // the current text char, it's a dead end — skip the push to avoid
                     // wasted pop+dedup+find_transition work.
                     let current_ch_opt = if is_last_edit && j < text_len {
-                        Some(graphemes.gs_first_char(j as usize))
+                        Some(current_ch)
                     } else {
                         None
                     };
