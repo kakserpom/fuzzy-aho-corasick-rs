@@ -446,7 +446,15 @@ impl FuzzyAhoCorasick {
         // For very short inputs (< 16 graphemes) the overhead of even a small allocation
         // outweighs the rehashing savings, so we skip those.
         if text_len > 16 {
-            visited.reserve((text_len as usize * 4).min(256));
+            // Smaller tables reduce `clear()` memset cost between windows. The dead-end
+            // filter (opt-17/18) reduces the number of states per window, so smaller
+            // reserves suffice. Scale with edit budget: more edits → more states.
+            let cap = match self.max_edits_fast {
+                1 => 64,
+                2 => 128,
+                _ => 256,
+            };
+            visited.reserve((text_len as usize * 4).min(cap));
         }
 
         // Global penalty ceiling, used for the cheap push-time guards below: a state carrying more
