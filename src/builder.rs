@@ -443,6 +443,29 @@ impl FuzzyAhoCorasickBuilder {
 
         let has_pattern_limits = patterns.iter().any(|p| p.limits.is_some());
 
+        // Fast-path edit ceiling: when the global limits only constrain total `edits` (all
+        // per-type fields `None`) and no pattern has its own limits, the hot loop can check
+        // `edits <= max_edits_fast` without loading `self.limits` or branching on five
+        // `Option<u8>` fields. `255` disables the fast path (complex limits or per-pattern
+        // limits); `0` means exact-only (no limits set at all).
+        let max_edits_fast = if !has_pattern_limits {
+            match &effective_limits {
+                None => 0, // exact match only
+                Some(lim) => match lim.edits {
+                    Some(e) if lim.insertions.is_none()
+                        && lim.deletions.is_none()
+                        && lim.substitutions.is_none()
+                        && lim.swaps.is_none() =>
+                    {
+                        e
+                    }
+                    _ => 255,
+                },
+            }
+        } else {
+            255
+        };
+
         FuzzyAhoCorasick {
             nodes,
             patterns,
@@ -451,6 +474,7 @@ impl FuzzyAhoCorasickBuilder {
             penalties: self.penalties,
             case_insensitive: self.case_insensitive,
             has_pattern_limits,
+            max_edits_fast,
             mappings,
             beam_width: self.beam_width,
             auto_beam: self.auto_beam,

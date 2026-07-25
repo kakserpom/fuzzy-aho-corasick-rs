@@ -356,6 +356,11 @@ impl FuzzyAhoCorasick {
         let max_penalties = root.prune_len - root.prune_len_over_weight * similarity_threshold;
         // Per-substitution similarity floor (0.0 = no floor); hoisted out of the hot loop.
         let min_symbol_similarity = self.min_symbol_similarity;
+        /// Fast-path edit ceiling (see `FuzzyAhoCorasick::max_edits_fast`). `255` disables the
+        /// fast path; otherwise the hot loop checks `edits <= max_edits_fast` (or `<` for
+        /// ahead-checks) instead of calling `within_limits_*`.
+        let max_edits_fast = self.max_edits_fast;
+        let has_pattern_limits = self.has_pattern_limits;
 
         // Effective beam width. Starts at the explicit `beam_width` (if any); otherwise it stays
         // `None` (exact) until the automatic-beam budget is exhausted, at which point it drops to the
@@ -468,7 +473,7 @@ impl FuzzyAhoCorasick {
                 // Per-node limits are the same for every edit-type check below; compute once instead
                 // of re-deriving them (a pattern lookup) up to four times per state. Skip the lookup
                 // entirely in the common case where no pattern has its own limits.
-                let node_limits = if self.has_pattern_limits {
+                let node_limits = if has_pattern_limits {
                     self.get_node_limits(node)
                 } else {
                     None
@@ -477,7 +482,11 @@ impl FuzzyAhoCorasick {
                 if !output.is_empty() {
                     for &pattern_index in output {
                         let pattern_index = pattern_index as usize;
-                        if !self.within_limits(
+                        if max_edits_fast != 255 {
+                            if edits > max_edits_fast {
+                                continue;
+                            }
+                        } else if !self.within_limits(
                             self.patterns[pattern_index].limits.as_ref(),
                             edits,
                             insertions,
@@ -580,7 +589,11 @@ impl FuzzyAhoCorasick {
                     // Substitutions require scanning every outgoing edge, so only do so when a
                     // substitution is still within limits. When it is not, the exact lookup above
                     // already covered the only reachable transition.
-                    let subst_ok = self.within_limits_subst(node_limits, edits, substitutions);
+                    let subst_ok = if max_edits_fast != 255 {
+                        edits <= max_edits_fast
+                    } else {
+                        self.within_limits_subst(node_limits, edits, substitutions)
+                    };
                     if subst_ok {
                         let current_ch = current_grapheme.chars().next().unwrap_or('\0');
                         for edge in edges {
@@ -698,11 +711,15 @@ impl FuzzyAhoCorasick {
                         if let Some(node2) = node_ref
                             .find_transition(b.as_ref())
                             .and_then(|x| self.nodes[x as usize].find_transition(a.as_ref()))
-                            && self.within_limits_swap_ahead(
-                                self.get_node_limits(node2),
-                                edits,
-                                swaps,
-                            )
+                            && (if max_edits_fast != 255 {
+                                edits < max_edits_fast
+                            } else {
+                                self.within_limits_swap_ahead(
+                                    self.get_node_limits(node2),
+                                    edits,
+                                    swaps,
+                                )
+                            })
                         {
                             #[cfg(debug_assertions)]
                             let mut notes = notes.clone();
@@ -734,7 +751,11 @@ impl FuzzyAhoCorasick {
                     //
                     if (matched_start != matched_end || matched_start != j)
                         && penalties + self.penalties.insertion <= max_penalties
-                        && self.within_limits_insertion_ahead(node_limits, edits, insertions)
+                        && (if max_edits_fast != 255 {
+                            edits < max_edits_fast
+                        } else {
+                            self.within_limits_insertion_ahead(node_limits, edits, insertions)
+                        })
                     {
                         #[cfg(debug_assertions)]
                         let mut notes = notes.clone();
@@ -766,7 +787,11 @@ impl FuzzyAhoCorasick {
                 // 3b) Deletion (skip a pattern character) — always, even if j == len
                 //
                 if penalties + self.penalties.deletion <= max_penalties
-                    && self.within_limits_deletion_ahead(node_limits, edits, deletions)
+                    && (if max_edits_fast != 255 {
+                        edits < max_edits_fast
+                    } else {
+                        self.within_limits_deletion_ahead(node_limits, edits, deletions)
+                    })
                 {
                     for edge in edges {
                         let next_node2 = edge.next;

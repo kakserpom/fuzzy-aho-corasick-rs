@@ -16,6 +16,7 @@ unicode-segmentation = "1.13"
 [dev-dependencies]
 criterion = "0.8"
 indicatif = "0.18"
+
 [[bench]]
 name = "benchmark"
 harness = false

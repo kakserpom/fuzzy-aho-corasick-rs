@@ -403,6 +403,13 @@ pub struct FuzzyAhoCorasick {
     /// Whether any pattern carries its own [`FuzzyLimits`]. When false, the per-node limit lookup on
     /// the search hot path is skipped entirely and the global `limits` are used directly.
     pub(crate) has_pattern_limits: bool,
+    /// Fast-path edit ceiling for the common case where the global limits only constrain total
+    /// `edits` (all per-type fields `None`). Set to that ceiling so the hot loop can check
+    /// `edits < max_edits_fast` / `edits <= max_edits_fast` without loading `self.limits` and
+    /// branching on five `Option<u8>` fields. `255` means "no fast path" — either the limits are
+    /// `None` (exact-only, handled as `0` below), have per-type constraints, or per-pattern limits
+    /// exist, so the full `within_limits_*` machinery is still required.
+    pub(crate) max_edits_fast: u8,
     /// Multi-character mapping transitions, keyed by the node they apply from. Stored out-of-line
     /// (rather than on every `Node`) so the common no-mapping path keeps `Node` compact and pays
     /// only a single `is_empty()` check. Empty unless mappings were configured.
