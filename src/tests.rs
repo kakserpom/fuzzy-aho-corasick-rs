@@ -1039,3 +1039,107 @@ fn test_min_symbol_similarity_floor() {
     assert_eq!(floored.search_non_overlapping("vestibulom", 0.8).len(), 1);
     assert_eq!(floored.search_non_overlapping("vestibulum", 0.8).len(), 1);
 }
+
+/// Verify that search results are deterministic (bit-for-bit identical) across repeated calls.
+///
+/// The algorithm uses `FxHashMap` (no random seed) and `sort_unstable_by` with total orderings,
+/// so the same input should always produce the same output. This test runs multiple searches
+/// on the same engine + haystack and asserts the match lists are identical.
+#[test]
+fn test_deterministic_search() {
+    // Build a larger engine with multiple patterns and edit budgets
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2))
+        .case_insensitive(true)
+        .build(["hello", "world", "help", "held", "shell", "yellow"]);
+
+    let haystacks = [
+        "hello world",
+        "helo world",       // substitution
+        "helllo world",     // insertion
+        "hlelo world",      // transposition
+        "hwllo world",      // deletion
+        "She sells sea shells by the sea shore",
+        "Why did the yellow bird help the shell?",
+        "A quick brown fox jumps over the lazy dog",  // no matches
+    ];
+
+    for &haystack in &haystacks {
+        // Run each search variant multiple times
+        for threshold in [0.5, 0.7, 0.9] {
+            // search_unsorted
+            let first = engine.search_unsorted(haystack, threshold);
+            for _ in 0..5 {
+                let next = engine.search_unsorted(haystack, threshold);
+                assert_eq!(
+                    first.inner, next.inner,
+                    "search_unsorted determinism failure on {haystack:?} @ threshold={threshold}"
+                );
+            }
+
+            // search (default_sort)
+            let first = engine.search(haystack, threshold);
+            for _ in 0..5 {
+                let next = engine.search(haystack, threshold);
+                assert_eq!(
+                    first.inner, next.inner,
+                    "search determinism failure on {haystack:?} @ threshold={threshold}"
+                );
+            }
+
+            // search_greedy
+            let first = engine.search_greedy(haystack, threshold);
+            for _ in 0..5 {
+                let next = engine.search_greedy(haystack, threshold);
+                assert_eq!(
+                    first.inner, next.inner,
+                    "search_greedy determinism failure on {haystack:?} @ threshold={threshold}"
+                );
+            }
+
+            // search_non_overlapping
+            let first = engine.search_non_overlapping(haystack, threshold);
+            for _ in 0..5 {
+                let next = engine.search_non_overlapping(haystack, threshold);
+                assert_eq!(
+                    first.inner, next.inner,
+                    "search_non_overlapping determinism failure on {haystack:?} @ threshold={threshold}"
+                );
+            }
+        }
+    }
+}
+
+/// Same as above but with auto-beam to exercise the beam-pruning sort path.
+#[test]
+fn test_deterministic_search_beam() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(4))
+        .auto_beam(100, 500)
+        .build([
+            "hello", "world", "help", "held", "shell", "yellow",
+            "algorithms", "automaton", "abbreviations",
+        ]);
+
+    let haystacks = [
+        "hello world",
+        "helo world",
+        "She sells sea shells by the sea shore",
+        "Why did the yellow bird help the shell?",
+        "The quick brown fox jumps over the lazy dog",
+        "algorithmic automata and abbreviated forms",
+    ];
+
+    for &haystack in &haystacks {
+        for threshold in [0.5, 0.7] {
+            let first = engine.search_unsorted(haystack, threshold);
+            for _ in 0..5 {
+                let next = engine.search_unsorted(haystack, threshold);
+                assert_eq!(
+                    first.inner, next.inner,
+                    "beam search determinism failure on {haystack:?} @ threshold={threshold}"
+                );
+            }
+        }
+    }
+}
