@@ -914,7 +914,7 @@ impl FuzzyAhoCorasick {
                 }
 
                 //
-                // 1) Same or similar symbol — только внутри текста
+                // 1) Same or similar symbol — only within the text
                 //
                 let is_last_edit = MAX_EDITS_FAST != 255 && edits + 1 >= MAX_EDITS_FAST;
                 // Compute current_ch once and reuse in both the exact-match section (inside
