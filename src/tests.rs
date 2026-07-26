@@ -1055,13 +1055,13 @@ fn test_deterministic_search() {
 
     let haystacks = [
         "hello world",
-        "helo world",       // substitution
-        "helllo world",     // insertion
-        "hlelo world",      // transposition
-        "hwllo world",      // deletion
+        "helo world",   // substitution
+        "helllo world", // insertion
+        "hlelo world",  // transposition
+        "hwllo world",  // deletion
         "She sells sea shells by the sea shore",
         "Why did the yellow bird help the shell?",
-        "A quick brown fox jumps over the lazy dog",  // no matches
+        "A quick brown fox jumps over the lazy dog", // no matches
     ];
 
     for &haystack in &haystacks {
@@ -1117,8 +1117,15 @@ fn test_deterministic_search_beam() {
         .fuzzy(FuzzyLimits::new().edits(4))
         .auto_beam(100, 500)
         .build([
-            "hello", "world", "help", "held", "shell", "yellow",
-            "algorithms", "automaton", "abbreviations",
+            "hello",
+            "world",
+            "help",
+            "held",
+            "shell",
+            "yellow",
+            "algorithms",
+            "automaton",
+            "abbreviations",
         ]);
 
     let haystacks = [
@@ -1160,11 +1167,11 @@ fn test_deterministic_search_unicode() {
         "Très naïve attitude",
         "La piñata est colorée",
         "Jalapeño poppers",
-        "Café au lait avec du sucre",       // case-insensitive match
-        "Un café noir et un résumé clair",  // mixed
-        "No matches here at all",           // no matches
-        "Cafe without accent",              // substitution
-        "resume without accent",            // multi-edit
+        "Café au lait avec du sucre",      // case-insensitive match
+        "Un café noir et un résumé clair", // mixed
+        "No matches here at all",          // no matches
+        "Cafe without accent",             // substitution
+        "resume without accent",           // multi-edit
     ];
 
     for &haystack in &haystacks {
@@ -1252,16 +1259,22 @@ fn test_deterministic_stream() {
     let haystack = "hello world hello world";
 
     // stream_search — callback-based, collects into Vec via a callback
-    let collect = |m: crate::StreamMatch| {
-        Some(format!("{}:{}", m.start, m.end))
-    };
+    let collect = |m: crate::StreamMatch| Some(format!("{}:{}", m.start, m.end));
     let mut first = Vec::new();
-    let mut cb = |m: crate::StreamMatch| { first.push(collect(m)); };
-    engine.search_stream(haystack.as_bytes(), 0.7, &mut cb).unwrap();
+    let mut cb = |m: crate::StreamMatch| {
+        first.push(collect(m));
+    };
+    engine
+        .search_stream(haystack.as_bytes(), 0.7, &mut cb)
+        .unwrap();
     for _ in 0..5 {
         let mut next = Vec::new();
-        let mut cb = |m: crate::StreamMatch| { next.push(collect(m)); };
-        engine.search_stream(haystack.as_bytes(), 0.7, &mut cb).unwrap();
+        let mut cb = |m: crate::StreamMatch| {
+            next.push(collect(m));
+        };
+        engine
+            .search_stream(haystack.as_bytes(), 0.7, &mut cb)
+            .unwrap();
         assert_eq!(first, next, "stream_search determinism failure");
     }
 
@@ -1280,19 +1293,25 @@ fn test_deterministic_stream() {
 
     // replace_stream
     let mut out = Vec::new();
-    let first = engine.replace_stream(
-        haystack.as_bytes(), &mut out,
-        |m| Some(m.text.to_uppercase()),
-        0.7,
-    ).unwrap();
+    let first = engine
+        .replace_stream(
+            haystack.as_bytes(),
+            &mut out,
+            |m| Some(m.text.to_uppercase()),
+            0.7,
+        )
+        .unwrap();
     let first_str = String::from_utf8(out).unwrap();
     for _ in 0..5 {
         let mut out = Vec::new();
-        let next = engine.replace_stream(
-            haystack.as_bytes(), &mut out,
-            |m| Some(m.text.to_uppercase()),
-            0.7,
-        ).unwrap();
+        let next = engine
+            .replace_stream(
+                haystack.as_bytes(),
+                &mut out,
+                |m| Some(m.text.to_uppercase()),
+                0.7,
+            )
+            .unwrap();
         let next_str = String::from_utf8(out).unwrap();
         assert_eq!(first_str, next_str, "replace_stream determinism failure");
         assert_eq!(first, next, "replace_stream byte count determinism failure");

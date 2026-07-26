@@ -91,7 +91,11 @@ impl<'a> FuzzyMatches<'a> {
             } else {
                 UniqueId::Automatic(m.pattern_index)
             };
-            if !used_patterns.contains(&unique_id) {
+            if used_patterns.contains(&unique_id) {
+                #[cfg(test)]
+                println!("DISCARDING OVERLAPPING: {m:?}");
+                false
+            } else {
                 let pos = occupied
                     .binary_search_by(|(s, _)| s.cmp(&m.start))
                     .unwrap_or_else(|p| p);
@@ -108,10 +112,6 @@ impl<'a> FuzzyMatches<'a> {
                     println!("DISCARDING OVERLAPPING: {m:?}");
                     false
                 }
-            } else {
-                #[cfg(test)]
-                println!("DISCARDING OVERLAPPING: {m:?}");
-                false
             }
         });
         self.inner.sort_unstable_by_key(|m| m.start);

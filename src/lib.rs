@@ -80,11 +80,11 @@ const fn make_ascii_bytes() -> [u8; 128] {
 static ASCII_BYTES: [u8; 128] = make_ascii_bytes();
 
 /// Return a `&'static str` for a single ASCII byte (0–127) without allocating.
-#[inline(always)]
+#[inline]
 fn ascii_byte_to_str(b: u8) -> &'static str {
     debug_assert!(b < 128);
     // SAFETY: all bytes 0–127 are valid one-byte UTF-8 sequences.
-    unsafe { std::str::from_utf8_unchecked(&ASCII_BYTES[b as usize..b as usize + 1]) }
+    unsafe { std::str::from_utf8_unchecked(&ASCII_BYTES[(b as usize)..=(b as usize)]) }
 }
 
 /// Abstraction over grapheme storage so the BFS hot loop can be monomorphised for both the
@@ -105,7 +105,7 @@ trait GraphemeStorage {
     /// `gs_first_char` call. For ASCII storage this skips the `&str` creation, `as_bytes()`,
     /// and byte-length check that `Node::find_transition` would do, by going straight to the
     /// char-based linear scan. For Unicode storage it delegates to `find_transition` since
-    /// multi-byte graphemes need the full `&str` HashMap lookup path.
+    /// multi-byte graphemes need the full `&str` `HashMap` lookup path.
     fn gs_find_transition(&self, node: &Node, idx: usize, ch: char) -> Option<u32>;
 }
 
@@ -148,7 +148,7 @@ impl<'a> AsciiGraphemes<'a> {
     }
 }
 
-impl<'a> GraphemeStorage for AsciiGraphemes<'a> {
+impl GraphemeStorage for AsciiGraphemes<'_> {
     #[inline]
     fn gs_len(&self) -> usize {
         self.bytes.len()
@@ -199,7 +199,7 @@ type MatchEnd = u32;
 /// identically going forward, so only the lowest-penalty one needs expanding. Packing the counts
 /// keeps the key at five fields, so the per-state hash mixes four words instead of eight.
 ///
-/// The custom `Hash` impl packs pairs of `u32`s into `u64`s, reducing FxHash rounds from 5 to 2
+/// The custom `Hash` impl packs pairs of `u32`s into `u64`s, reducing `FxHash` rounds from 5 to 2
 /// `(2 × write_u64 + write_u32)`. `packed_counts` is included via a third
 /// `write_u32` call — it reduces probe count significantly in multi-edit
 /// search (4-edit beam: ~10% faster) while costing ~1.5% on 1-edit search.
@@ -216,9 +216,7 @@ impl Hash for VisitedKey {
     #[inline]
     fn hash<H: Hasher>(&self, hasher: &mut H) {
         hasher.write_u64(u64::from(self.node) | (u64::from(self.j) << 32));
-        hasher.write_u64(
-            u64::from(self.matched_start) | (u64::from(self.matched_end) << 32),
-        );
+        hasher.write_u64(u64::from(self.matched_start) | (u64::from(self.matched_end) << 32));
         // Including `packed_counts` in the hash dramatically reduces probe count
         // for multi-edit search (4-edit beam: ~10% faster). For 1-edit search
         // the extra write_u32 adds ~2% overhead but the net win is large in
@@ -397,23 +395,93 @@ impl FuzzyAhoCorasick {
             let text_chars: Vec<char> = (0..g.gs_len()).map(|i| g.gs_first_char(i)).collect();
             if self.mappings.is_empty() {
                 match self.max_edits_fast {
-                    1 => self.search_unsorted_impl::<false, true, 1, _>(haystack, similarity_threshold, &g, &text_chars),
-                    2 => self.search_unsorted_impl::<false, false, 2, _>(haystack, similarity_threshold, &g, &text_chars),
-                    3 => self.search_unsorted_impl::<false, false, 3, _>(haystack, similarity_threshold, &g, &text_chars),
-                    4 => self.search_unsorted_impl::<false, false, 4, _>(haystack, similarity_threshold, &g, &text_chars),
-                    5 => self.search_unsorted_impl::<false, false, 5, _>(haystack, similarity_threshold, &g, &text_chars),
-                    6 => self.search_unsorted_impl::<false, false, 6, _>(haystack, similarity_threshold, &g, &text_chars),
-                    _ => self.search_unsorted_impl::<false, false, 255, _>(haystack, similarity_threshold, &g, &text_chars),
+                    1 => self.search_unsorted_impl::<false, true, 1, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    2 => self.search_unsorted_impl::<false, false, 2, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    3 => self.search_unsorted_impl::<false, false, 3, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    4 => self.search_unsorted_impl::<false, false, 4, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    5 => self.search_unsorted_impl::<false, false, 5, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    6 => self.search_unsorted_impl::<false, false, 6, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    _ => self.search_unsorted_impl::<false, false, 255, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
                 }
             } else {
                 match self.max_edits_fast {
-                    1 => self.search_unsorted_impl::<true, true, 1, _>(haystack, similarity_threshold, &g, &text_chars),
-                    2 => self.search_unsorted_impl::<true, false, 2, _>(haystack, similarity_threshold, &g, &text_chars),
-                    3 => self.search_unsorted_impl::<true, false, 3, _>(haystack, similarity_threshold, &g, &text_chars),
-                    4 => self.search_unsorted_impl::<true, false, 4, _>(haystack, similarity_threshold, &g, &text_chars),
-                    5 => self.search_unsorted_impl::<true, false, 5, _>(haystack, similarity_threshold, &g, &text_chars),
-                    6 => self.search_unsorted_impl::<true, false, 6, _>(haystack, similarity_threshold, &g, &text_chars),
-                    _ => self.search_unsorted_impl::<true, false, 255, _>(haystack, similarity_threshold, &g, &text_chars),
+                    1 => self.search_unsorted_impl::<true, true, 1, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    2 => self.search_unsorted_impl::<true, false, 2, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    3 => self.search_unsorted_impl::<true, false, 3, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    4 => self.search_unsorted_impl::<true, false, 4, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    5 => self.search_unsorted_impl::<true, false, 5, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    6 => self.search_unsorted_impl::<true, false, 6, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    _ => self.search_unsorted_impl::<true, false, 255, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
                 }
             }
         } else {
@@ -421,23 +489,93 @@ impl FuzzyAhoCorasick {
             let text_chars: Vec<char> = (0..g.gs_len()).map(|i| g.gs_first_char(i)).collect();
             if self.mappings.is_empty() {
                 match self.max_edits_fast {
-                    1 => self.search_unsorted_impl::<false, true, 1, _>(haystack, similarity_threshold, &g, &text_chars),
-                    2 => self.search_unsorted_impl::<false, false, 2, _>(haystack, similarity_threshold, &g, &text_chars),
-                    3 => self.search_unsorted_impl::<false, false, 3, _>(haystack, similarity_threshold, &g, &text_chars),
-                    4 => self.search_unsorted_impl::<false, false, 4, _>(haystack, similarity_threshold, &g, &text_chars),
-                    5 => self.search_unsorted_impl::<false, false, 5, _>(haystack, similarity_threshold, &g, &text_chars),
-                    6 => self.search_unsorted_impl::<false, false, 6, _>(haystack, similarity_threshold, &g, &text_chars),
-                    _ => self.search_unsorted_impl::<false, false, 255, _>(haystack, similarity_threshold, &g, &text_chars),
+                    1 => self.search_unsorted_impl::<false, true, 1, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    2 => self.search_unsorted_impl::<false, false, 2, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    3 => self.search_unsorted_impl::<false, false, 3, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    4 => self.search_unsorted_impl::<false, false, 4, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    5 => self.search_unsorted_impl::<false, false, 5, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    6 => self.search_unsorted_impl::<false, false, 6, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    _ => self.search_unsorted_impl::<false, false, 255, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
                 }
             } else {
                 match self.max_edits_fast {
-                    1 => self.search_unsorted_impl::<true, true, 1, _>(haystack, similarity_threshold, &g, &text_chars),
-                    2 => self.search_unsorted_impl::<true, false, 2, _>(haystack, similarity_threshold, &g, &text_chars),
-                    3 => self.search_unsorted_impl::<true, false, 3, _>(haystack, similarity_threshold, &g, &text_chars),
-                    4 => self.search_unsorted_impl::<true, false, 4, _>(haystack, similarity_threshold, &g, &text_chars),
-                    5 => self.search_unsorted_impl::<true, false, 5, _>(haystack, similarity_threshold, &g, &text_chars),
-                    6 => self.search_unsorted_impl::<true, false, 6, _>(haystack, similarity_threshold, &g, &text_chars),
-                    _ => self.search_unsorted_impl::<true, false, 255, _>(haystack, similarity_threshold, &g, &text_chars),
+                    1 => self.search_unsorted_impl::<true, true, 1, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    2 => self.search_unsorted_impl::<true, false, 2, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    3 => self.search_unsorted_impl::<true, false, 3, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    4 => self.search_unsorted_impl::<true, false, 4, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    5 => self.search_unsorted_impl::<true, false, 5, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    6 => self.search_unsorted_impl::<true, false, 6, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
+                    _ => self.search_unsorted_impl::<true, false, 255, _>(
+                        haystack,
+                        similarity_threshold,
+                        &g,
+                        &text_chars,
+                    ),
                 }
             }
         }
@@ -544,25 +682,23 @@ impl FuzzyAhoCorasick {
         // overhead for non-matching windows. Only applies when: exactly 1 edit, no
         // multi-char mappings, root has no output (no empty patterns), and no root child
         // has an output (no 1-char patterns).
-        let window_skip: Option<(u128, u128)> = if WINDOW_SKIP
-            && !MAPPINGS
-            && root.output.is_empty()
-        {
-            let mut first = root.single_char_edge_bits;
-            let mut second = 0u128;
-            let mut child_output = false;
-            for edge in &root.edges {
-                let child = &self.nodes[edge.next as usize];
-                second |= child.single_char_edge_bits;
-                first |= child.single_char_edge_bits;
-                if !child.output.is_empty() {
-                    child_output = true;
+        let window_skip: Option<(u128, u128)> =
+            if WINDOW_SKIP && !MAPPINGS && root.output.is_empty() {
+                let mut first = root.single_char_edge_bits;
+                let mut second = 0u128;
+                let mut child_output = false;
+                for edge in &root.edges {
+                    let child = &self.nodes[edge.next as usize];
+                    second |= child.single_char_edge_bits;
+                    first |= child.single_char_edge_bits;
+                    if !child.output.is_empty() {
+                        child_output = true;
+                    }
                 }
-            }
-            (!child_output).then_some((first, second))
-        } else {
-            None
-        };
+                (!child_output).then_some((first, second))
+            } else {
+                None
+            };
 
         // Effective beam width. Starts at the explicit `beam_width` (if any); otherwise it stays
         // `None` (exact) until the automatic-beam budget is exhausted, at which point it drops to the
@@ -822,7 +958,8 @@ impl FuzzyAhoCorasick {
                     if let Some(next_node) = exact_next {
                         trace!(
                             "  match   {:>8} ─ok→ node={}  sim=1.00",
-                            graphemes.gs_text(j as usize), next_node
+                            graphemes.gs_text(j as usize),
+                            next_node
                         );
                         queue.push(State {
                             node: next_node,
@@ -840,10 +977,14 @@ impl FuzzyAhoCorasick {
                     // Substitutions require scanning every outgoing edge, so only do so when a
                     // substitution is still within limits. When it is not, the exact lookup above
                     // already covered the only reachable transition.
-                    let subst_ok = if MAX_EDITS_FAST != 255 {
-                        edits < MAX_EDITS_FAST
+                    let subst_ok = if MAX_EDITS_FAST == 255 {
+                        self.within_limits_subst(
+                            node_limits,
+                            edits,
+                            (packed_counts >> 16) as NumEdits,
+                        )
                     } else {
-                        self.within_limits_subst(node_limits, edits, (packed_counts >> 16) as NumEdits)
+                        edits < MAX_EDITS_FAST
                     };
                     if subst_ok {
                         // `current_ch` was already computed above from `gs_first_char(j)`.
@@ -875,7 +1016,8 @@ impl FuzzyAhoCorasick {
                             if is_last_edit {
                                 let child = &self.nodes[next_node as usize];
                                 if child.output.is_empty()
-                                    && next_ch_opt.map_or(true, |ch| !child.has_matching_edge_char(ch))
+                                    && next_ch_opt
+                                        .is_none_or(|ch| !child.has_matching_edge_char(ch))
                                 {
                                     continue;
                                 }
@@ -922,9 +1064,10 @@ impl FuzzyAhoCorasick {
                                 if j + hlen > text_len {
                                     continue;
                                 }
-                                let hay_matches = mt.haystack.iter().enumerate().all(|(k, g)| {
-                                    graphemes.gs_text(j as usize + k) == g.as_ref()
-                                });
+                                let hay_matches =
+                                    mt.haystack.iter().enumerate().all(|(k, g)| {
+                                        graphemes.gs_text(j as usize + k) == g.as_ref()
+                                    });
                                 if !hay_matches {
                                     continue;
                                 }
@@ -979,12 +1122,22 @@ impl FuzzyAhoCorasick {
                         if let Some(node2) = if MAPPINGS {
                             graphemes
                                 .gs_find_transition(node_ref, (j + 1) as usize, next_ch)
-                                .and_then(|x| graphemes.gs_find_transition(&self.nodes[x as usize], j as usize, current_ch))
+                                .and_then(|x| {
+                                    graphemes.gs_find_transition(
+                                        &self.nodes[x as usize],
+                                        j as usize,
+                                        current_ch,
+                                    )
+                                })
                         } else {
-                            node_ref.find_transition_char_no_mappings(next_ch)
-                                .and_then(|x| self.nodes[x as usize].find_transition_char_no_mappings(current_ch))
-                        }
-                            && (MAX_EDITS_FAST != 255 || self.within_limits_swap_ahead(
+                            node_ref
+                                .find_transition_char_no_mappings(next_ch)
+                                .and_then(|x| {
+                                    self.nodes[x as usize]
+                                        .find_transition_char_no_mappings(current_ch)
+                                })
+                        } && (MAX_EDITS_FAST != 255
+                            || self.within_limits_swap_ahead(
                                 self.get_node_limits(node2),
                                 edits,
                                 (packed_counts >> 24) as NumEdits,
@@ -1017,14 +1170,18 @@ impl FuzzyAhoCorasick {
                     //
                     if (matched_start != matched_end || matched_start != j)
                         && self.penalties.insertion <= remaining
-                        && (if MAX_EDITS_FAST != 255 {
-                            edits < MAX_EDITS_FAST
+                        && if MAX_EDITS_FAST == 255 {
+                            self.within_limits_insertion_ahead(
+                                node_limits,
+                                edits,
+                                (packed_counts & 0xFF) as NumEdits,
+                            )
                         } else {
-                            self.within_limits_insertion_ahead(node_limits, edits, (packed_counts & 0xFF) as NumEdits)
-                        })
+                            edits < MAX_EDITS_FAST
+                        }
                         && !(is_last_edit
                             && output.is_empty()
-                            && next_ch_opt.map_or(true, |ch| !node_ref.has_matching_edge_char(ch)))
+                            && next_ch_opt.is_none_or(|ch| !node_ref.has_matching_edge_char(ch)))
                     {
                         #[cfg(debug_assertions)]
                         let mut notes = notes.clone();
@@ -1053,11 +1210,15 @@ impl FuzzyAhoCorasick {
                 // 3b) Deletion (skip a pattern character) — always, even if j == len
                 //
                 if self.penalties.deletion <= remaining
-                    && (if MAX_EDITS_FAST != 255 {
-                        edits < MAX_EDITS_FAST
+                    && if MAX_EDITS_FAST == 255 {
+                        self.within_limits_deletion_ahead(
+                            node_limits,
+                            edits,
+                            ((packed_counts >> 8) & 0xFF) as NumEdits,
+                        )
                     } else {
-                        self.within_limits_deletion_ahead(node_limits, edits, ((packed_counts >> 8) & 0xFF) as NumEdits)
-                    })
+                        edits < MAX_EDITS_FAST
+                    }
                 {
                     // At the last edit level the child state can only do exact match
                     // and output check. If the child has no output and no edge matching
@@ -1073,7 +1234,7 @@ impl FuzzyAhoCorasick {
                         if is_last_edit {
                             let child = &self.nodes[next_node2 as usize];
                             if child.output.is_empty()
-                                && current_ch_opt.map_or(true, |ch| !child.has_matching_edge_char(ch))
+                                && current_ch_opt.is_none_or(|ch| !child.has_matching_edge_char(ch))
                             {
                                 continue;
                             }

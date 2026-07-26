@@ -458,22 +458,23 @@ impl FuzzyAhoCorasickBuilder {
         // `edits <= max_edits_fast` without loading `self.limits` or branching on five
         // `Option<u8>` fields. `255` disables the fast path (complex limits or per-pattern
         // limits); `0` means exact-only (no limits set at all).
-        let max_edits_fast = if !has_pattern_limits {
+        let max_edits_fast = if has_pattern_limits {
+            255
+        } else {
             match &effective_limits {
                 None => 0, // exact match only
                 Some(lim) => match lim.edits {
-                    Some(e) if lim.insertions.is_none()
-                        && lim.deletions.is_none()
-                        && lim.substitutions.is_none()
-                        && lim.swaps.is_none() =>
+                    Some(e)
+                        if lim.insertions.is_none()
+                            && lim.deletions.is_none()
+                            && lim.substitutions.is_none()
+                            && lim.swaps.is_none() =>
                     {
                         e
                     }
                     _ => 255,
                 },
             }
-        } else {
-            255
         };
 
         FuzzyAhoCorasick {
