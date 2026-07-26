@@ -1153,7 +1153,7 @@ fn test_deterministic_search_beam() {
 
 /// Determinism with Unicode / multi-byte grapheme input (exercises the
 /// `Vec<(usize, Cow<'_, str>)>` grapheme storage path and the
-/// `gs_find_transition` HashMap fallback).
+/// `gs_find_transition` `HashMap` fallback).
 #[test]
 fn test_deterministic_search_unicode() {
     let engine = FuzzyAhoCorasickBuilder::new()
