@@ -388,52 +388,56 @@ impl FuzzyAhoCorasick {
         haystack: &'a str,
         similarity_threshold: f32,
     ) -> FuzzyMatches<'a> {
-        // Dispatch on whether any mappings exist so the multi-character-mapping branch is compiled
-        // out entirely for the common (no-mapping) case, keeping the hot loop identical to before.
+        // Precompute a Vec<char> for the text so search_unsorted_impl can use direct slice
+        // indexing instead of the GraphemeStorage::gs_first_char method (which has a match on
+        // the enum discriminant, albeit predictable). This eliminates the enum dispatch overhead
+        // in the hot loop (~2 calls per expanded state).
         if haystack.is_ascii() {
             let g = AsciiGraphemes::new(haystack, self.case_insensitive);
+            let text_chars: Vec<char> = (0..g.gs_len()).map(|i| g.gs_first_char(i)).collect();
             if self.mappings.is_empty() {
                 match self.max_edits_fast {
-                    1 => self.search_unsorted_impl::<false, true, 1, _>(haystack, similarity_threshold, &g),
-                    2 => self.search_unsorted_impl::<false, false, 2, _>(haystack, similarity_threshold, &g),
-                    3 => self.search_unsorted_impl::<false, false, 3, _>(haystack, similarity_threshold, &g),
-                    4 => self.search_unsorted_impl::<false, false, 4, _>(haystack, similarity_threshold, &g),
-                    5 => self.search_unsorted_impl::<false, false, 5, _>(haystack, similarity_threshold, &g),
-                    6 => self.search_unsorted_impl::<false, false, 6, _>(haystack, similarity_threshold, &g),
-                    _ => self.search_unsorted_impl::<false, false, 255, _>(haystack, similarity_threshold, &g),
+                    1 => self.search_unsorted_impl::<false, true, 1, _>(haystack, similarity_threshold, &g, &text_chars),
+                    2 => self.search_unsorted_impl::<false, false, 2, _>(haystack, similarity_threshold, &g, &text_chars),
+                    3 => self.search_unsorted_impl::<false, false, 3, _>(haystack, similarity_threshold, &g, &text_chars),
+                    4 => self.search_unsorted_impl::<false, false, 4, _>(haystack, similarity_threshold, &g, &text_chars),
+                    5 => self.search_unsorted_impl::<false, false, 5, _>(haystack, similarity_threshold, &g, &text_chars),
+                    6 => self.search_unsorted_impl::<false, false, 6, _>(haystack, similarity_threshold, &g, &text_chars),
+                    _ => self.search_unsorted_impl::<false, false, 255, _>(haystack, similarity_threshold, &g, &text_chars),
                 }
             } else {
                 match self.max_edits_fast {
-                    1 => self.search_unsorted_impl::<true, true, 1, _>(haystack, similarity_threshold, &g),
-                    2 => self.search_unsorted_impl::<true, false, 2, _>(haystack, similarity_threshold, &g),
-                    3 => self.search_unsorted_impl::<true, false, 3, _>(haystack, similarity_threshold, &g),
-                    4 => self.search_unsorted_impl::<true, false, 4, _>(haystack, similarity_threshold, &g),
-                    5 => self.search_unsorted_impl::<true, false, 5, _>(haystack, similarity_threshold, &g),
-                    6 => self.search_unsorted_impl::<true, false, 6, _>(haystack, similarity_threshold, &g),
-                    _ => self.search_unsorted_impl::<true, false, 255, _>(haystack, similarity_threshold, &g),
+                    1 => self.search_unsorted_impl::<true, true, 1, _>(haystack, similarity_threshold, &g, &text_chars),
+                    2 => self.search_unsorted_impl::<true, false, 2, _>(haystack, similarity_threshold, &g, &text_chars),
+                    3 => self.search_unsorted_impl::<true, false, 3, _>(haystack, similarity_threshold, &g, &text_chars),
+                    4 => self.search_unsorted_impl::<true, false, 4, _>(haystack, similarity_threshold, &g, &text_chars),
+                    5 => self.search_unsorted_impl::<true, false, 5, _>(haystack, similarity_threshold, &g, &text_chars),
+                    6 => self.search_unsorted_impl::<true, false, 6, _>(haystack, similarity_threshold, &g, &text_chars),
+                    _ => self.search_unsorted_impl::<true, false, 255, _>(haystack, similarity_threshold, &g, &text_chars),
                 }
             }
         } else {
             let g = self.build_unicode_graphemes(haystack);
+            let text_chars: Vec<char> = (0..g.gs_len()).map(|i| g.gs_first_char(i)).collect();
             if self.mappings.is_empty() {
                 match self.max_edits_fast {
-                    1 => self.search_unsorted_impl::<false, true, 1, _>(haystack, similarity_threshold, &g),
-                    2 => self.search_unsorted_impl::<false, false, 2, _>(haystack, similarity_threshold, &g),
-                    3 => self.search_unsorted_impl::<false, false, 3, _>(haystack, similarity_threshold, &g),
-                    4 => self.search_unsorted_impl::<false, false, 4, _>(haystack, similarity_threshold, &g),
-                    5 => self.search_unsorted_impl::<false, false, 5, _>(haystack, similarity_threshold, &g),
-                    6 => self.search_unsorted_impl::<false, false, 6, _>(haystack, similarity_threshold, &g),
-                    _ => self.search_unsorted_impl::<false, false, 255, _>(haystack, similarity_threshold, &g),
+                    1 => self.search_unsorted_impl::<false, true, 1, _>(haystack, similarity_threshold, &g, &text_chars),
+                    2 => self.search_unsorted_impl::<false, false, 2, _>(haystack, similarity_threshold, &g, &text_chars),
+                    3 => self.search_unsorted_impl::<false, false, 3, _>(haystack, similarity_threshold, &g, &text_chars),
+                    4 => self.search_unsorted_impl::<false, false, 4, _>(haystack, similarity_threshold, &g, &text_chars),
+                    5 => self.search_unsorted_impl::<false, false, 5, _>(haystack, similarity_threshold, &g, &text_chars),
+                    6 => self.search_unsorted_impl::<false, false, 6, _>(haystack, similarity_threshold, &g, &text_chars),
+                    _ => self.search_unsorted_impl::<false, false, 255, _>(haystack, similarity_threshold, &g, &text_chars),
                 }
             } else {
                 match self.max_edits_fast {
-                    1 => self.search_unsorted_impl::<true, true, 1, _>(haystack, similarity_threshold, &g),
-                    2 => self.search_unsorted_impl::<true, false, 2, _>(haystack, similarity_threshold, &g),
-                    3 => self.search_unsorted_impl::<true, false, 3, _>(haystack, similarity_threshold, &g),
-                    4 => self.search_unsorted_impl::<true, false, 4, _>(haystack, similarity_threshold, &g),
-                    5 => self.search_unsorted_impl::<true, false, 5, _>(haystack, similarity_threshold, &g),
-                    6 => self.search_unsorted_impl::<true, false, 6, _>(haystack, similarity_threshold, &g),
-                    _ => self.search_unsorted_impl::<true, false, 255, _>(haystack, similarity_threshold, &g),
+                    1 => self.search_unsorted_impl::<true, true, 1, _>(haystack, similarity_threshold, &g, &text_chars),
+                    2 => self.search_unsorted_impl::<true, false, 2, _>(haystack, similarity_threshold, &g, &text_chars),
+                    3 => self.search_unsorted_impl::<true, false, 3, _>(haystack, similarity_threshold, &g, &text_chars),
+                    4 => self.search_unsorted_impl::<true, false, 4, _>(haystack, similarity_threshold, &g, &text_chars),
+                    5 => self.search_unsorted_impl::<true, false, 5, _>(haystack, similarity_threshold, &g, &text_chars),
+                    6 => self.search_unsorted_impl::<true, false, 6, _>(haystack, similarity_threshold, &g, &text_chars),
+                    _ => self.search_unsorted_impl::<true, false, 255, _>(haystack, similarity_threshold, &g, &text_chars),
                 }
             }
         }
@@ -471,8 +475,9 @@ impl FuzzyAhoCorasick {
         haystack: &'a str,
         similarity_threshold: f32,
         graphemes: &G,
+        text_chars: &[char],
     ) -> FuzzyMatches<'a> {
-        if graphemes.gs_len() == 0 {
+        if text_chars.is_empty() {
             return FuzzyMatches {
                 haystack,
                 inner: vec![],
@@ -480,7 +485,7 @@ impl FuzzyAhoCorasick {
         }
         // Grapheme count as `u32` for comparisons against the `u32` state positions (see the
         // crate-level note on the index/position width).
-        let text_len = graphemes.gs_len() as u32;
+        let text_len = text_chars.len() as u32;
 
         // Keyed by (start_byte, end_byte, pattern_index). Uses the fast FxHash hasher instead of
         // the default SipHash: keys are small integer tuples looked up on every accepted match.
@@ -569,10 +574,10 @@ impl FuzzyAhoCorasick {
         trace!(
             "=== fuzzy_search on {haystack:?} (similarity_threshold {similarity_threshold:.2}) ===",
         );
-        for start in 0..graphemes.gs_len() {
+        for start in 0..text_chars.len() {
             // 2-gram window skip: cheaply reject windows that cannot produce a match.
             if let Some((first_bits, second_bits)) = window_skip {
-                let ch = graphemes.gs_first_char(start);
+                let ch = text_chars[start];
                 let ch_idx = ch as u32;
                 if ch_idx < 128 && (first_bits >> ch_idx) & 1 == 0 {
                     // text[start] is not a first or second char.
@@ -581,7 +586,7 @@ impl FuzzyAhoCorasick {
                     if next_idx >= text_len as usize {
                         continue; // no next char — no match possible
                     }
-                    let next_ch = graphemes.gs_first_char(next_idx);
+                    let next_ch = text_chars[next_idx];
                     let next_ch_idx = next_ch as u32;
                     if next_ch_idx < 128 && (second_bits >> next_ch_idx) & 1 == 0 {
                         continue; // text[start+1] not a second char — skip
@@ -713,12 +718,12 @@ impl FuzzyAhoCorasick {
                         ) {
                             continue;
                         }
-                        let start_byte = if (matched_start as usize) < graphemes.gs_len() {
+                        let start_byte = if (matched_start as usize) < text_chars.len() {
                             graphemes.gs_byte_offset(matched_start as usize)
                         } else {
                             0
                         };
-                        let end_byte = if (matched_end as usize) < graphemes.gs_len() {
+                        let end_byte = if (matched_end as usize) < text_chars.len() {
                             graphemes.gs_byte_offset(matched_end as usize)
                         } else {
                             haystack.len()
@@ -780,7 +785,7 @@ impl FuzzyAhoCorasick {
                 // `if j < text_len`) and the deletion section (outside it), avoiding a
                 // redundant `gs_first_char(j)` call per state.
                 let current_ch = if j < text_len {
-                    graphemes.gs_first_char(j as usize)
+                    text_chars[j as usize]
                 } else {
                     '\0'
                 };
@@ -795,7 +800,7 @@ impl FuzzyAhoCorasick {
                         && (MAX_EDITS_FAST == 255 || edits < MAX_EDITS_FAST)
                         && j + 1 < text_len
                     {
-                        Some(graphemes.gs_first_char((j + 1) as usize))
+                        Some(text_chars[(j + 1) as usize])
                     } else {
                         None
                     };
@@ -888,7 +893,7 @@ impl FuzzyAhoCorasick {
                             #[cfg(debug_assertions)]
                             let mut notes = notes.clone();
                             #[cfg(debug_assertions)]
-                            notes.push(format!("sub {:?} -> {current_grapheme:?} (sim={sim:.2}, pen={penalty:.2}) (subst->{}, edits->{})", edge.first_char, ((packed_counts >> 16) & 0xFF) + 1, edits + 1));
+                            notes.push(format!("sub {:?} -> {current_ch:?} (sim={sim:.2}, pen={penalty:.2}) (subst->{}, edits->{})", edge.first_char, ((packed_counts >> 16) & 0xFF) + 1, edits + 1));
 
                             queue.push(State {
                                 node: next_node,
@@ -969,7 +974,7 @@ impl FuzzyAhoCorasick {
                         // fall back to gs_first_char for multi-edit where is_last_edit is false.
                         let next_ch = match next_ch_opt {
                             Some(ch) => ch,
-                            None => graphemes.gs_first_char((j + 1) as usize),
+                            None => text_chars[(j + 1) as usize],
                         };
                         if let Some(node2) = if MAPPINGS {
                             graphemes
@@ -989,7 +994,7 @@ impl FuzzyAhoCorasick {
                             let mut notes = notes.clone();
                             #[cfg(debug_assertions)]
                             notes.push(format!(
-                                "swap a:{current_grapheme:?} b:{b:?} (swaps->{}, edits->{})",
+                                "swap a:{current_ch:?} b:{next_ch:?} (swaps->{}, edits->{})",
                                 ((packed_counts >> 24) & 0xFF) + 1,
                                 edits + 1
                             ));
