@@ -1143,3 +1143,158 @@ fn test_deterministic_search_beam() {
         }
     }
 }
+
+/// Determinism with Unicode / multi-byte grapheme input (exercises the
+/// `Vec<(usize, Cow<'_, str>)>` grapheme storage path and the
+/// `gs_find_transition` HashMap fallback).
+#[test]
+fn test_deterministic_search_unicode() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2))
+        .case_insensitive(true)
+        .build(["café", "résumé", "naïve", "piñata", "jalapeño"]);
+
+    let haystacks = [
+        "J'aime le café",
+        "Elle a un joli résumé",
+        "Très naïve attitude",
+        "La piñata est colorée",
+        "Jalapeño poppers",
+        "Café au lait avec du sucre",       // case-insensitive match
+        "Un café noir et un résumé clair",  // mixed
+        "No matches here at all",           // no matches
+        "Cafe without accent",              // substitution
+        "resume without accent",            // multi-edit
+    ];
+
+    for &haystack in &haystacks {
+        for threshold in [0.5, 0.7, 0.9] {
+            let first = engine.search_unsorted(haystack, threshold);
+            for _ in 0..5 {
+                let next = engine.search_unsorted(haystack, threshold);
+                assert_eq!(
+                    first.inner, next.inner,
+                    "unicode search_unsorted determinism failure on {haystack:?} @ threshold={threshold}"
+                );
+            }
+
+            let first = engine.search(haystack, threshold);
+            for _ in 0..5 {
+                let next = engine.search(haystack, threshold);
+                assert_eq!(
+                    first.inner, next.inner,
+                    "unicode search determinism failure on {haystack:?} @ threshold={threshold}"
+                );
+            }
+
+            let first = engine.search_non_overlapping(haystack, threshold);
+            for _ in 0..5 {
+                let next = engine.search_non_overlapping(haystack, threshold);
+                assert_eq!(
+                    first.inner, next.inner,
+                    "unicode search_non_overlapping determinism failure on {haystack:?} @ threshold={threshold}"
+                );
+            }
+        }
+    }
+}
+
+/// Determinism with the bit-parallel prefilter (exercises the prefilter code path).
+#[test]
+fn test_deterministic_search_prefilter() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["hello", "world", "help", "shell", "yellow"]);
+
+    let haystacks = [
+        "hello world",
+        "helo world",
+        "She sells sea shells by the sea shore",
+        "Why did the yellow bird help the shell?",
+        "A quick brown fox jumps over the lazy dog",
+    ];
+
+    let prefiltered = engine.with_prefilter();
+    for &haystack in &haystacks {
+        for threshold in [0.5, 0.7, 0.9] {
+            // Verify the prefilter is self-deterministic
+            let first = prefiltered.search_unsorted(haystack, threshold);
+            for _ in 0..5 {
+                let next = prefiltered.search_unsorted(haystack, threshold);
+                assert_eq!(
+                    first.inner, next.inner,
+                    "prefilter determinism failure on {haystack:?} @ threshold={threshold}"
+                );
+            }
+            let first = prefiltered.search(haystack, threshold);
+            for _ in 0..5 {
+                let next = prefiltered.search(haystack, threshold);
+                assert_eq!(
+                    first.inner, next.inner,
+                    "prefilter search determinism failure on {haystack:?} @ threshold={threshold}"
+                );
+            }
+        }
+    }
+}
+
+/// Determinism for stream search and replacement.
+#[test]
+fn test_deterministic_stream() {
+    use crate::FuzzyAhoCorasickBuilder;
+
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["hello", "world"]);
+
+    let haystack = "hello world hello world";
+
+    // stream_search — callback-based, collects into Vec via a callback
+    let collect = |m: crate::StreamMatch| {
+        Some(format!("{}:{}", m.start, m.end))
+    };
+    let mut first = Vec::new();
+    let mut cb = |m: crate::StreamMatch| { first.push(collect(m)); };
+    engine.search_stream(haystack.as_bytes(), 0.7, &mut cb).unwrap();
+    for _ in 0..5 {
+        let mut next = Vec::new();
+        let mut cb = |m: crate::StreamMatch| { next.push(collect(m)); };
+        engine.search_stream(haystack.as_bytes(), 0.7, &mut cb).unwrap();
+        assert_eq!(first, next, "stream_search determinism failure");
+    }
+
+    // stream_matches
+    let first: Vec<_> = engine
+        .stream_matches(haystack.as_bytes(), 0.7)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    for _ in 0..5 {
+        let next: Vec<_> = engine
+            .stream_matches(haystack.as_bytes(), 0.7)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(first, next, "stream_matches determinism failure");
+    }
+
+    // replace_stream
+    let mut out = Vec::new();
+    let first = engine.replace_stream(
+        haystack.as_bytes(), &mut out,
+        |m| Some(m.text.to_uppercase()),
+        0.7,
+    ).unwrap();
+    let first_str = String::from_utf8(out).unwrap();
+    for _ in 0..5 {
+        let mut out = Vec::new();
+        let next = engine.replace_stream(
+            haystack.as_bytes(), &mut out,
+            |m| Some(m.text.to_uppercase()),
+            0.7,
+        ).unwrap();
+        let next_str = String::from_utf8(out).unwrap();
+        assert_eq!(first_str, next_str, "replace_stream determinism failure");
+        assert_eq!(first, next, "replace_stream byte count determinism failure");
+    }
+}
