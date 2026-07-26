@@ -758,9 +758,12 @@ impl FuzzyAhoCorasick {
                 if let Some(bw) = effective_beam {
                     let remaining = queue.len() - q_idx;
                     if remaining > bw * 2 {
-                        // Sort remaining items by penalties (lowest first = best candidates)
-                        queue[q_idx..].sort_unstable_by(|a, b| a.penalties.total_cmp(&b.penalties));
-                        // Keep only beam_width items from q_idx onward
+                        // Keep only the `bw` lowest-penalty states. We don't need them sorted
+                        // (the dedup and best-map logic is order-independent for the final result),
+                        // so use a partial selection (O(n)) instead of a full sort (O(n log n)).
+                        queue[q_idx..].select_nth_unstable_by(bw - 1, |a, b| {
+                            a.penalties.total_cmp(&b.penalties)
+                        });
                         queue.truncate(q_idx + bw);
                     }
                 }
