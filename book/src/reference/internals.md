@@ -37,7 +37,16 @@ Several mechanisms keep the exponential-looking exploration in check:
 - **Pruning ceilings.** Each node stores coefficients for the best score still reachable through it,
   so a state whose penalty already exceeds what any reachable pattern could tolerate — at the current
   threshold — is dropped along with its entire subtree.
-- **Push-time guards.** Cheap penalty checks reject an edit before a state is even enqueued.
+- **Push-time guards.** Cheap penalty checks reject an edit before a state is even enqueued. At the
+  last edit level, a *dead-end filter* additionally skips pushes whose child node can neither emit a
+  match nor advance, using a precomputed per-node bitmap of outgoing characters for an O(1) check.
+- **Edit-limit specialization.** Common whole-edit budgets (1–6, and unlimited) are compiled to
+  specialized code paths at build time, so limit checks fold into comparisons the branch predictor
+  learns immediately. A 1-edit search further skips most start windows outright via a two-character
+  reachability test.
+- **Zero-allocation ASCII fast path.** All-ASCII haystacks and patterns are matched byte-by-byte
+  without grapheme segmentation or case-folded copies, and exact transitions resolve to a linear scan
+  of a compact per-node edge array rather than a hash lookup.
 - **Compact state.** Node indices and grapheme positions are `u32` and the four edit counts pack into
   a single word, keeping the per-state footprint small and cache-dense.
 - **[Beam / auto-beam](../performance/bounding.md).** Optional caps bound the frontier for
