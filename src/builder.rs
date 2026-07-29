@@ -333,22 +333,8 @@ impl FuzzyAhoCorasickBuilder {
             node.edges = node
                 .transitions
                 .iter()
-                .map(|(g, &next)| Edge {
-                    first_char: g.chars().next().unwrap_or('\0'),
-                    next,
-                    grapheme_len: g.len() as u8,
-                })
+                .map(|(g, &next)| Edge::new(g.chars().next().unwrap_or('\0'), next, g.len() == 1))
                 .collect();
-            // Pre-compute bitmap of single-char edges for O(1) dead-end filter lookups.
-            node.single_char_edge_bits = 0;
-            for edge in &node.edges {
-                if edge.grapheme_len == 1 {
-                    let idx = edge.first_char as u32;
-                    if idx < 128 {
-                        node.single_char_edge_bits |= 1u128 << idx;
-                    }
-                }
-            }
         }
 
         // Per-node reachable bounds (longest pattern / heaviest weight reachable from each node).

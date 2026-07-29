@@ -684,13 +684,14 @@ impl FuzzyAhoCorasick {
         // has an output (no 1-char patterns).
         let window_skip: Option<(u128, u128)> =
             if WINDOW_SKIP && !MAPPINGS && root.output.is_empty() {
-                let mut first = root.single_char_edge_bits;
+                let mut first = root.single_char_edge_bits();
                 let mut second = 0u128;
                 let mut child_output = false;
                 for edge in &root.edges {
-                    let child = &self.nodes[edge.next as usize];
-                    second |= child.single_char_edge_bits;
-                    first |= child.single_char_edge_bits;
+                    let child = &self.nodes[edge.next() as usize];
+                    let child_bits = child.single_char_edge_bits();
+                    second |= child_bits;
+                    first |= child_bits;
                     if !child.output.is_empty() {
                         child_output = true;
                     }
@@ -992,7 +993,7 @@ impl FuzzyAhoCorasick {
                     if subst_ok {
                         // `current_ch` was already computed above from `gs_first_char(j)`.
                         for edge in edges {
-                            let next_node = edge.next;
+                            let next_node = edge.next();
                             // Skip the exact transition (already enqueued above). Its target is
                             // reached with zero penalty and no extra edit, so any edge leading to
                             // the same node — possible after minimisation merges siblings — is
@@ -1233,7 +1234,7 @@ impl FuzzyAhoCorasick {
                         None
                     };
                     for edge in edges {
-                        let next_node2 = edge.next;
+                        let next_node2 = edge.next();
                         if is_last_edit {
                             let child = &self.nodes[next_node2 as usize];
                             if child.output.is_empty()

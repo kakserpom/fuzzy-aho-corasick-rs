@@ -182,12 +182,46 @@ pub(crate) struct State {
 pub(crate) struct Edge {
     /// First `char` of the edge's grapheme, precomputed for the similarity lookup.
     pub(crate) first_char: char,
+    /// Target node index in the low 31 bits, with bit 31 set iff the edge's grapheme is a single
+    /// ASCII byte (the former `grapheme_len == 1` fast-path marker: `first_char` then fully
+    /// identifies the edge, so the exact-transition scan can short-circuit instead of hashing the
+    /// `transitions` map). Packing the marker into the spare bit keeps `Edge` at 8 bytes — a `char`
+    /// forces 4-byte alignment, so a separate `u8` cost 4 bytes of padding. Node indices fit in 31
+    /// bits (2^31 nodes). Never read this directly; use [`Edge::next`] / [`Edge::is_single_byte`].
+    packed_next: u32,
+}
+
+impl Edge {
+    const SINGLE_BYTE: u32 = 1 << 31;
+    const NEXT_MASK: u32 = !Self::SINGLE_BYTE;
+
+    #[inline]
+    pub(crate) fn new(first_char: char, next: u32, single_byte: bool) -> Self {
+        debug_assert!(
+            next <= Self::NEXT_MASK,
+            "node index {next} exceeds the 31-bit edge target range"
+        );
+        Self {
+            first_char,
+            packed_next: if single_byte {
+                next | Self::SINGLE_BYTE
+            } else {
+                next
+            },
+        }
+    }
+
     /// Target node index.
-    pub(crate) next: u32,
-    /// Byte length of the edge's grapheme string. When `1`, the grapheme is a single ASCII char
-    /// and `first_char` fully identifies it, so the exact-transition lookup can short-circuit
-    /// on a linear scan of `edges` instead of hashing the `transitions` map.
-    pub(crate) grapheme_len: u8,
+    #[inline]
+    pub(crate) fn next(self) -> u32 {
+        self.packed_next & Self::NEXT_MASK
+    }
+
+    /// Whether the edge's grapheme is a single ASCII byte (the former `grapheme_len == 1`).
+    #[inline]
+    pub(crate) fn is_single_byte(self) -> bool {
+        self.packed_next & Self::SINGLE_BYTE != 0
+    }
 }
 
 /// A precomputed multi-character mapping transition available from a node. It consumes a fixed
@@ -227,10 +261,6 @@ pub(crate) struct Node {
     /// Failure link (classic AC fallback state).
     pub(crate) fail: u32,
     // ---- cold fields (second cache line) ----
-    /// Bitmap of single-char edges: bit `i` is set iff this node has an edge
-    /// with `first_char == i` and `grapheme_len == 1` (ASCII only, bits 0–127).
-    /// Used by the dead-end filter to avoid a linear scan of `edges`.
-    pub(crate) single_char_edge_bits: u128,
     pub(crate) pattern_index: Option<PatternIndex>,
     /// Outgoing edges keyed by the next character (used for O(1) exact/swap lookups).
     pub(crate) transitions: FxHashMap<String, u32>,
@@ -359,7 +389,6 @@ impl Node {
             pattern_index: None,
             transitions: FxHashMap::default(),
             edges: Vec::new(),
-            single_char_edge_bits: 0,
             fail: 0,
             output: Vec::new(),
             prune_len: 0.0,
@@ -385,8 +414,8 @@ impl Node {
         if bytes.len() == 1 {
             let ch = bytes[0] as char;
             for edge in &self.edges {
-                if edge.first_char == ch && edge.grapheme_len == 1 {
-                    return Some(edge.next);
+                if edge.first_char == ch && edge.is_single_byte() {
+                    return Some(edge.next());
                 }
             }
             return None;
@@ -394,23 +423,33 @@ impl Node {
         self.transitions.get(grapheme).copied()
     }
 
-    /// Quick check whether any outgoing single-char edge starts with `ch`.
-    /// Used by the push-time dead-end filter in the deletion scan.
+    /// Whether any outgoing single-ASCII-byte edge starts with `ch`. Used by the push-time dead-end
+    /// filter in the deletion/insertion scans. A linear scan of the node's (few) edges: nodes are
+    /// overwhelmingly low-degree, and a per-node cached bitmap costs 16 bytes/node while a side-map
+    /// lookup is slower than the scan on this hot path (both measured).
     #[inline]
     pub(crate) fn has_matching_edge_char(&self, ch: char) -> bool {
-        let idx = ch as u32;
-        if idx < 128 {
-            // ASCII fast path: O(1) bitmap lookup instead of linear scan.
-            (self.single_char_edge_bits >> idx) & 1 != 0
-        } else {
-            // Non-ASCII: fall back to linear scan.
-            for edge in &self.edges {
-                if edge.first_char == ch && edge.grapheme_len == 1 {
-                    return true;
+        self.edges
+            .iter()
+            .any(|edge| edge.first_char == ch && edge.is_single_byte())
+    }
+
+    /// Bitmap of this node's single-ASCII-byte edge chars: bit `i` set iff an edge has
+    /// `first_char == i` with `i < 128`. Recomputed on demand from `edges` — used only by the
+    /// once-per-search window-skip pre-scan over the root and its children, so it isn't worth
+    /// caching 16 bytes on every node.
+    #[inline]
+    pub(crate) fn single_char_edge_bits(&self) -> u128 {
+        let mut bits = 0u128;
+        for edge in &self.edges {
+            if edge.is_single_byte() {
+                let idx = edge.first_char as u32;
+                if idx < 128 {
+                    bits |= 1u128 << idx;
                 }
             }
-            false
         }
+        bits
     }
 
     /// Like `find_transition` but takes a `char` directly, skipping the `&str` creation,
@@ -419,21 +458,21 @@ impl Node {
     #[inline]
     pub(crate) fn find_transition_char(&self, ch: char) -> Option<u32> {
         for edge in &self.edges {
-            if edge.first_char == ch && edge.grapheme_len == 1 {
-                return Some(edge.next);
+            if edge.first_char == ch && edge.is_single_byte() {
+                return Some(edge.next());
             }
         }
         None
     }
 
-    /// Like `find_transition_char` but skips the `grapheme_len == 1` check.
-    /// Only correct when the caller guarantees no multi-char mapping edges exist
-    /// (i.e., `MAPPINGS == false`), in which case every edge has `grapheme_len == 1`.
+    /// Like `find_transition_char` but skips the single-byte check. Only correct when the caller
+    /// guarantees no multi-char mapping edges exist (i.e., `MAPPINGS == false`), in which case
+    /// every edge is a single ASCII byte.
     #[inline]
     pub(crate) fn find_transition_char_no_mappings(&self, ch: char) -> Option<u32> {
         for edge in &self.edges {
             if edge.first_char == ch {
-                return Some(edge.next);
+                return Some(edge.next());
             }
         }
         None
