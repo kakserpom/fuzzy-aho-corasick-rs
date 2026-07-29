@@ -13,6 +13,11 @@ impl<'a> FuzzyMatches<'a> {
                 .then_with(|| right.pattern.len().cmp(&left.pattern.len()))
                 .then_with(|| right.text.len().cmp(&left.text.len()))
                 .then_with(|| left.start.cmp(&right.start))
+                // Total-order tiebreakers: `(start, end, pattern_index)` uniquely identifies a
+                // match, so equal-rank matches sort deterministically instead of in the incoming
+                // (hash-iteration) order. Keeps ranking independent of internal table capacity.
+                .then_with(|| left.end.cmp(&right.end))
+                .then_with(|| left.pattern_index.cmp(&right.pattern_index))
         });
     }
 
@@ -28,6 +33,11 @@ impl<'a> FuzzyMatches<'a> {
                 .cmp(&left.pattern.len())
                 .then_with(|| right.similarity.total_cmp(&left.similarity))
                 .then_with(|| left.start.cmp(&right.start))
+                // Total-order tiebreakers: `(start, end, pattern_index)` uniquely identifies a
+                // match, so equal-rank matches sort deterministically instead of in the incoming
+                // (hash-iteration) order. Keeps ranking independent of internal table capacity.
+                .then_with(|| left.end.cmp(&right.end))
+                .then_with(|| left.pattern_index.cmp(&right.pattern_index))
         });
     }
 
@@ -46,6 +56,11 @@ impl<'a> FuzzyMatches<'a> {
                 .total_cmp(&left_score)
                 .then_with(|| right.similarity.total_cmp(&left.similarity))
                 .then_with(|| left.start.cmp(&right.start))
+                // Total-order tiebreakers: `(start, end, pattern_index)` uniquely identifies a
+                // match, so equal-rank matches sort deterministically instead of in the incoming
+                // (hash-iteration) order. Keeps ranking independent of internal table capacity.
+                .then_with(|| left.end.cmp(&right.end))
+                .then_with(|| left.pattern_index.cmp(&right.pattern_index))
         });
     }
 
