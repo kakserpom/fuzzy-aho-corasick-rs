@@ -87,7 +87,7 @@ fn ascii_byte_to_str(b: u8) -> &'static str {
     unsafe { std::str::from_utf8_unchecked(&ASCII_BYTES[(b as usize)..=(b as usize)]) }
 }
 
-/// Abstraction over grapheme storage so the BFS hot loop can be monomorphised for both the
+/// Abstraction over grapheme storage so the BFS hot loop can be monomorphized for both the
 /// ASCII fast path (zero-allocation `&[u8]`) and the full Unicode path (`Vec<(usize, Cow<str>)>`).
 /// The trait is sealed to the two internal implementors so the compiler can devirtualise every
 /// call.
@@ -628,7 +628,12 @@ impl FuzzyAhoCorasick {
         // Keyed by (start_byte, end_byte, pattern_index). Uses the fast FxHash hasher instead of
         // the default SipHash: keys are small integer tuples looked up on every accepted match.
         let mut best: FxHashMap<(usize, usize, usize), FuzzyMatch> = FxHashMap::default();
-        best.reserve(self.patterns.len() * 4);
+        // Cap the reservation: `best` only ever holds one entry per accepted match span (typically a
+        // handful), yet `patterns.len() * 4` pre-sizes it to ~4x the automaton's total pattern count.
+        // On a large automaton that is megabytes of untouched table per search; the cap keeps the
+        // rehash-avoidance for the common (small) case while bounding the pathological one. `reserve`
+        // is a capacity hint only — results are unaffected.
+        best.reserve((self.patterns.len() * 4).min(1024));
 
         // Pre-allocate queue - size based on beam width or a generous default. The default
         // of 128 avoids the first-window realloc (profiled at ~0.3% of search time with 64).
@@ -644,7 +649,7 @@ impl FuzzyAhoCorasick {
         // Pre-warm the visited map to avoid incremental rehashing (0→4→8→16…) during the
         // first few windows. Profiling showed `reserve_rehash` at ~3.5% of search time for
         // texts under 128 graphemes because the map started at capacity 0 and grew on every
-        // window until stabilising. A modest pre-allocation eliminates this: the capacity is
+        // window until stabilizing. A modest pre-allocation eliminates this: the capacity is
         // retained by `clear()` between windows, so it's a one-time cost per search call.
         // For very short inputs (< 16 graphemes) the overhead of even a small allocation
         // outweighs the rehashing savings, so we skip those.
