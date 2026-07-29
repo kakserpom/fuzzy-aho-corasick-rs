@@ -48,7 +48,6 @@ mod builder;
 mod grapheme;
 mod matches;
 mod prefilter;
-mod prelude;
 mod query;
 mod replacer;
 mod search;

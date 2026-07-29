@@ -1,5 +1,7 @@
 //! Core fuzzy search: the monomorphized BFS over grapheme storage and its helpers.
-use crate::prelude::*;
+use crate::grapheme::{AsciiGraphemes, GraphemeStorage};
+use crate::structs::{FxHashMap, Node, State};
+use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, FuzzyMatches, NumEdits, Pattern};
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::hash::{Hash, Hasher};

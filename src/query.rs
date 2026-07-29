@@ -1,5 +1,5 @@
 //! Public search / replace / segmentation convenience wrappers over the core engine.
-use crate::prelude::*;
+use crate::{FuzzyAhoCorasick, FuzzyMatch, FuzzyMatches, Segment};
 use std::borrow::Cow;
 
 impl FuzzyAhoCorasick {
