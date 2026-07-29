@@ -39,7 +39,8 @@ Several mechanisms keep the exponential-looking exploration in check:
   threshold — is dropped along with its entire subtree.
 - **Push-time guards.** Cheap penalty checks reject an edit before a state is even enqueued. At the
   last edit level, a *dead-end filter* additionally skips pushes whose child node can neither emit a
-  match nor advance, using a precomputed per-node bitmap of outgoing characters for an O(1) check.
+  match nor advance — a linear scan of that node's (few) edges, chosen over a stored bitmap to keep
+  each node small.
 - **Edit-limit specialization.** Common whole-edit budgets (1–6, and unlimited) are compiled to
   specialized code paths at build time, so limit checks fold into comparisons the branch predictor
   learns immediately. A 1-edit search further skips most start windows outright via a two-character
@@ -49,6 +50,10 @@ Several mechanisms keep the exponential-looking exploration in check:
   of a compact per-node edge array rather than a hash lookup.
 - **Compact state.** Node indices and grapheme positions are `u32` and the four edit counts pack into
   a single word, keeping the per-state footprint small and cache-dense.
+- **Compact automaton.** Each `Edge` is 8 bytes — `first_char` plus a target node index whose spare
+  high bit doubles as the single-ASCII-byte marker (a separate `u8` would cost 4 bytes of padding
+  under `char`'s alignment) — and each `Node` is 112 bytes, so large automata (tens of millions of
+  nodes) stay in the hundreds of MB rather than gigabytes.
 - **[Beam / auto-beam](../performance/bounding.md).** Optional caps bound the frontier for
   pathological inputs.
 
