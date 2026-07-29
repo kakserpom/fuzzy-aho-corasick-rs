@@ -10,7 +10,9 @@ indices of the patterns that end there. Failure links and per-node metadata are 
 search never needs to mutate the automaton.
 
 The engine is fully **immutable** after `build`, which is why it is cheap to share across threads
-(`&FuzzyAhoCorasick`) and why every search allocates only transient per-call state.
+(`&FuzzyAhoCorasick`) and why every search allocates only transient per-call state — and that state is
+bounded by the haystack and match density, not by the pattern count (the best-match-per-span map is
+reserved conservatively), so per-query memory stays flat on very large automata.
 
 ## The fuzzy search
 

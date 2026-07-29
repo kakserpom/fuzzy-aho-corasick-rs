@@ -37,6 +37,16 @@ and thresholds low, especially for untrusted input.
 - **[The pre-filter](prefilter.md)** for large, sparse inputs where most of the text can't match — a
   big speedup with identical results, and a safe fallback when it doesn't apply.
 
+## Memory footprint
+
+The compiled automaton is immutable and shared by reference (`&FuzzyAhoCorasick`) — build it once and
+query it from as many threads as you like without copying it. Each search allocates only bounded,
+transient per-call state (the BFS frontier, a visited-set for state dedup, and a best-match-per-span
+map). That state scales with the **haystack length and match density**, not with the automaton's
+pattern count, so per-query memory stays flat even for automata with millions of patterns. This makes
+the engine cheap to fan out across many concurrent queries: the resident footprint is the one shared
+automaton plus a small, bounded slice per in-flight search.
+
 ## Size expectations
 
 A single [`search`](../searching/search.md) call keeps grapheme positions as `u32`, so one haystack
