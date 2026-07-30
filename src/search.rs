@@ -189,6 +189,14 @@ impl FuzzyAhoCorasick {
     ///
     /// # Returns
     /// A `FuzzyMatches` containing the best per-span matches meeting the threshold.
+    ///
+    /// # Panics
+    /// Grapheme positions are stored as `u32`, so the haystack must contain at most `u32::MAX`
+    /// grapheme clusters (roughly a 4 GiB ASCII input). Larger inputs would silently truncate to
+    /// wrong offsets, so they panic instead — use the [streaming API](crate::StreamMatches)
+    /// ([`search_stream`](Self::search_stream) / [`stream_matches`](Self::stream_matches) /
+    /// [`replace_stream`](Self::replace_stream)), which windows the input and reports absolute
+    /// `u64` offsets.
     #[inline]
     #[must_use]
     pub fn search_unsorted<'a>(
@@ -431,8 +439,18 @@ impl FuzzyAhoCorasick {
                 inner: vec![],
             };
         }
-        // Grapheme count as `u32` for comparisons against the `u32` state positions (see the
-        // crate-level note on the index/position width).
+        // Grapheme positions are stored as `u32` (see the crate-level note). Reject any haystack
+        // whose grapheme count would not fit: otherwise the `as u32` casts here and in the window
+        // loop would silently truncate and produce wrong offsets. Inputs this large must use the
+        // streaming API (`search_stream` / `stream_matches` / `replace_stream`), which windows the
+        // input and reports absolute `u64` offsets. A single length check per search is negligible.
+        assert!(
+            u32::try_from(text_chars.len()).is_ok(),
+            "haystack has {} graphemes, exceeding the u32 position space this engine indexes with; \
+             use the streaming API for inputs larger than ~4 GiB",
+            text_chars.len(),
+        );
+        // Grapheme count as `u32` for comparisons against the `u32` state positions.
         let text_len = text_chars.len() as u32;
 
         // Keyed by (start_byte, end_byte, pattern_index). Uses the fast FxHash hasher instead of
