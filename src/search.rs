@@ -669,6 +669,20 @@ impl FuzzyAhoCorasick {
                     let deletions = ((packed_counts >> 8) & 0xFF) as NumEdits;
                     let substitutions = ((packed_counts >> 16) & 0xFF) as NumEdits;
                     let swaps = ((packed_counts >> 24) & 0xFF) as NumEdits;
+                    // The matched span (and hence its byte offsets and text slice) is a property of
+                    // the state, not of the individual pattern ending here, so compute it once for
+                    // the whole `output` list instead of per pattern.
+                    let start_byte = if (matched_start as usize) < text_chars.len() {
+                        graphemes.gs_byte_offset(matched_start as usize)
+                    } else {
+                        0
+                    };
+                    let end_byte = if (matched_end as usize) < text_chars.len() {
+                        graphemes.gs_byte_offset(matched_end as usize)
+                    } else {
+                        haystack.len()
+                    };
+                    let text = &haystack[start_byte..end_byte];
                     for &pattern_index in output {
                         let pattern_index = pattern_index as usize;
                         if MAX_EDITS_FAST != 255 {
@@ -685,16 +699,6 @@ impl FuzzyAhoCorasick {
                         ) {
                             continue;
                         }
-                        let start_byte = if (matched_start as usize) < text_chars.len() {
-                            graphemes.gs_byte_offset(matched_start as usize)
-                        } else {
-                            0
-                        };
-                        let end_byte = if (matched_end as usize) < text_chars.len() {
-                            graphemes.gs_byte_offset(matched_end as usize)
-                        } else {
-                            haystack.len()
-                        };
                         let key = (start_byte, end_byte, pattern_index);
 
                         let total = self.patterns[pattern_index].grapheme_len as f32;
@@ -720,7 +724,7 @@ impl FuzzyAhoCorasick {
                                         end: end_byte,
                                         pattern: &self.patterns[pattern_index],
                                         similarity,
-                                        text: &haystack[start_byte..end_byte],
+                                        text,
                                         #[cfg(debug_assertions)]
                                         notes: notes.clone(),
                                     };
@@ -737,7 +741,7 @@ impl FuzzyAhoCorasick {
                                 end: end_byte,
                                 pattern: &self.patterns[pattern_index],
                                 similarity,
-                                text: &haystack[start_byte..end_byte],
+                                text,
                                 #[cfg(debug_assertions)]
                                 notes: notes.clone(),
                             });
