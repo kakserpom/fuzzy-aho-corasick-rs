@@ -51,7 +51,10 @@ Several mechanisms keep the exponential-looking exploration in check:
   without grapheme segmentation or case-folded copies, and exact transitions resolve to a linear scan
   of a compact per-node edge array rather than a hash lookup.
 - **Compact state.** Node indices and grapheme positions are `u32` and the four edit counts pack into
-  a single word, keeping the per-state footprint small and cache-dense.
+  a single word, keeping the per-state footprint small and cache-dense. A haystack with more than
+  `u32::MAX` graphemes can't be indexed this way, so [`search`](../searching/search.md) rejects it
+  with a panic (rather than truncating to wrong offsets); such inputs belong on the
+  [streaming path](../streaming/search.md).
 - **Compact automaton.** Each `Edge` is 8 bytes — `first_char` plus a target node index whose spare
   high bit doubles as the single-ASCII-byte marker (a separate `u8` would cost 4 bytes of padding
   under `char`'s alignment) — and each `Node` is 112 bytes, so large automata (tens of millions of

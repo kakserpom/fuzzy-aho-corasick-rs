@@ -50,8 +50,10 @@ automaton plus a small, bounded slice per in-flight search.
 ## Size expectations
 
 A single [`search`](../searching/search.md) call keeps grapheme positions as `u32`, so one haystack
-should be well under ~4 GiB; beyond that (or for unbounded streams), use the
-[streaming API](../streaming/search.md).
+must contain at most `u32::MAX` grapheme clusters (roughly a 4 GiB ASCII input). A larger haystack
+**panics** rather than silently truncating positions to wrong offsets — for inputs that big (or
+unbounded streams), use the [streaming API](../streaming/search.md), which windows the input and
+reports absolute `u64` offsets.
 
 ## Measuring
 
