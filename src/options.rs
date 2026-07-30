@@ -64,59 +64,69 @@ impl Default for SearchOptions {
 
 impl SearchOptions {
     /// All defaults: [`DEFAULT_THRESHOLD`], [`Order::Unsorted`], [`Overlap::Keep`].
+    ///
+    /// `const`, so options can be built once as a `const`/`static`:
+    /// ```
+    /// use fuzzy_aho_corasick::SearchOptions;
+    /// const OPTS: SearchOptions = SearchOptions::new().threshold(0.8).non_overlapping();
+    /// ```
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self {
+            threshold: DEFAULT_THRESHOLD,
+            order: Order::Unsorted,
+            overlap: Overlap::Keep,
+        }
     }
 
     /// Set the similarity threshold (`0.0..=1.0`).
     #[must_use]
-    pub fn threshold(mut self, threshold: f32) -> Self {
+    pub const fn threshold(mut self, threshold: f32) -> Self {
         self.threshold = threshold;
         self
     }
 
     /// Set the ranking order explicitly.
     #[must_use]
-    pub fn order(mut self, order: Order) -> Self {
+    pub const fn order(mut self, order: Order) -> Self {
         self.order = order;
         self
     }
 
     /// Set the overlap-resolution mode explicitly.
     #[must_use]
-    pub fn overlap(mut self, overlap: Overlap) -> Self {
+    pub const fn overlap(mut self, overlap: Overlap) -> Self {
         self.overlap = overlap;
         self
     }
 
     /// Shortcut for [`Order::Default`].
     #[must_use]
-    pub fn sorted(self) -> Self {
+    pub const fn sorted(self) -> Self {
         self.order(Order::Default)
     }
 
     /// Shortcut for [`Order::Greedy`].
     #[must_use]
-    pub fn greedy(self) -> Self {
+    pub const fn greedy(self) -> Self {
         self.order(Order::Greedy)
     }
 
     /// Shortcut for [`Order::CoverageWeighted`].
     #[must_use]
-    pub fn coverage_weighted(self) -> Self {
+    pub const fn coverage_weighted(self) -> Self {
         self.order(Order::CoverageWeighted)
     }
 
     /// Shortcut for [`Overlap::NonOverlapping`].
     #[must_use]
-    pub fn non_overlapping(self) -> Self {
+    pub const fn non_overlapping(self) -> Self {
         self.overlap(Overlap::NonOverlapping)
     }
 
     /// Shortcut for [`Overlap::NonOverlappingUnique`].
     #[must_use]
-    pub fn non_overlapping_unique(self) -> Self {
+    pub const fn non_overlapping_unique(self) -> Self {
         self.overlap(Overlap::NonOverlappingUnique)
     }
 }
