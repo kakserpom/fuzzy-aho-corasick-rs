@@ -56,7 +56,7 @@ let engine = FuzzyAhoCorasickBuilder::new()
 
 ## Unique ids
 
-`custom_unique_id` matters for [`search_non_overlapping_unique`](../searching/search.md): patterns
+`custom_unique_id` matters for the `.non_overlapping_unique()` [`SearchOptions`](../searching/search.md): patterns
 sharing an id (or, absent an id, the same pattern index) count as "the same thing", so only one match
 per id is kept. This is useful when you register several spellings/aliases of one entity and want at
 most one hit for it.

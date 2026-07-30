@@ -4,7 +4,7 @@ Build an engine once, then query it as many times as you like. The engine is imm
 share (`&FuzzyAhoCorasick`) across threads.
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 fn main() {
     // Allow up to 1 edit per match, case-insensitive.
@@ -14,7 +14,8 @@ fn main() {
         .build(["hello", "world"]);
 
     // "helllo wolrd" has two typos: an extra 'l' (insertion) and swapped 'lr' (transposition).
-    for m in engine.search_non_overlapping("helllo wolrd", 0.8).unwrap().iter() {
+    let opts = SearchOptions::new().threshold(0.8).sorted().non_overlapping();
+    for m in engine.search("helllo wolrd", &opts).unwrap().iter() {
         println!("matched '{}' as '{}' (score {:.2})", m.pattern, m.text, m.similarity);
     }
     // matched 'hello' as 'helllo' (score 0.90)
@@ -26,19 +27,20 @@ Three things are happening here:
 
 1. **`fuzzy(FuzzyLimits::new().edits(1))`** — without this the engine only matches exactly. `edits(1)`
    lets each match differ from its pattern by at most one edit operation.
-2. **`0.8`** — the *similarity threshold*. A candidate is only returned if its score is at least this
-   high. See [Scoring & Thresholds](../concepts/scoring.md).
-3. **`search_non_overlapping`** — returns a ranked set of matches whose spans don't overlap. There
-   are several [search entry points](../searching/search.md) for different needs.
+2. **`.threshold(0.8)`** — the *similarity threshold*. A candidate is only returned if its score is
+   at least this high. See [Scoring & Thresholds](../concepts/scoring.md).
+3. **`.sorted().non_overlapping()`** — asks for a ranked set of matches whose spans don't overlap.
+   [`SearchOptions`](../searching/search.md) bundles the order and overlap strategy for the single
+   `search` entry point.
 
 ## Inspecting a match
 
 Each [`FuzzyMatch`] tells you what was found and how:
 
 ```rust
-# use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+# use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 # let engine = FuzzyAhoCorasickBuilder::new().fuzzy(FuzzyLimits::new().edits(1)).build(["needle"]);
-for m in engine.search("find the neeedle", 0.8).unwrap().iter() {
+for m in engine.search("find the neeedle", &SearchOptions::new().threshold(0.8)).unwrap().iter() {
     println!(
         "pattern #{} ({}) matched bytes {}..{} = {:?}",
         m.pattern_index, m.pattern, m.start, m.end, m.text,

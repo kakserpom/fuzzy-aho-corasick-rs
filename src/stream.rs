@@ -23,7 +23,7 @@
 //! * [`replace_stream_parallel`](crate::FuzzyAhoCorasick::replace_stream_parallel) — parallel search,
 //!   output reassembled in stream order on the calling thread.
 
-use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, NumEdits};
+use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, NumEdits, SearchOptions};
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -270,7 +270,13 @@ impl FuzzyAhoCorasick {
         // Windows are bounded by the configured window size (far below `u32::MAX` graphemes), so the
         // size guard in `search_non_overlapping` can never trip here.
         let matches = self
-            .search_non_overlapping(text, threshold)
+            .search(
+                text,
+                &SearchOptions::new()
+                    .threshold(threshold)
+                    .sorted()
+                    .non_overlapping(),
+            )
             .expect("streaming window fits the u32 position space");
         for m in matches.iter() {
             if m.start < commit {
@@ -449,7 +455,7 @@ impl FuzzyAhoCorasick {
     /// let mut out = Vec::new();
     /// // "neeedle" has one extra 'e' (an insertion); it is replaced, the rest copied through.
     /// engine
-    ///     .replace_stream("a neeedle b".as_bytes(), &mut out, |_m| Some("X"), 0.8)
+    ///     .replace_stream("a neeedle b".as_bytes(), &mut out, 0.8, |_m| Some("X"))
     ///     .unwrap();
     /// assert_eq!(String::from_utf8(out).unwrap(), "a X b");
     /// ```
@@ -460,8 +466,8 @@ impl FuzzyAhoCorasick {
         &self,
         reader: R,
         mut writer: W,
-        mut callback: F,
         threshold: f32,
+        mut callback: F,
     ) -> io::Result<u64>
     where
         R: Read,
@@ -495,7 +501,13 @@ impl FuzzyAhoCorasick {
     ) -> Vec<FuzzyMatch<'a>> {
         // Windows are bounded well below `u32::MAX` graphemes, so the size guard can't trip here.
         let mut matches: Vec<FuzzyMatch> = self
-            .search_non_overlapping(text, threshold)
+            .search(
+                text,
+                &SearchOptions::new()
+                    .threshold(threshold)
+                    .sorted()
+                    .non_overlapping(),
+            )
             .expect("streaming window fits the u32 position space")
             .into_iter()
             .filter(|m| m.start < commit)
@@ -523,8 +535,8 @@ impl FuzzyAhoCorasick {
         reader: R,
         mut writer: W,
         threads: usize,
-        mut callback: F,
         threshold: f32,
+        mut callback: F,
     ) -> io::Result<u64>
     where
         R: Read + Send,
@@ -714,8 +726,6 @@ struct OwnedMatch {
     substitutions: NumEdits,
     swaps: NumEdits,
     edits: NumEdits,
-    #[cfg(debug_assertions)]
-    notes: Vec<String>,
 }
 
 impl From<&FuzzyMatch<'_>> for OwnedMatch {
@@ -730,8 +740,6 @@ impl From<&FuzzyMatch<'_>> for OwnedMatch {
             substitutions: m.substitutions,
             swaps: m.swaps,
             edits: m.edits,
-            #[cfg(debug_assertions)]
-            notes: m.notes.clone(),
         }
     }
 }
@@ -751,8 +759,6 @@ impl OwnedMatch {
             end: self.end,
             similarity: self.similarity,
             text: &text[self.start..self.end],
-            #[cfg(debug_assertions)]
-            notes: self.notes.clone(),
         }
     }
 }

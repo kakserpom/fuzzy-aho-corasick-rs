@@ -6,7 +6,7 @@
 //!
 //! Run: `cargo run --release --example replace_bench [input_MiB]`  (default 32)
 
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 use std::hint::black_box;
 use std::io;
 use std::time::Instant;
@@ -40,15 +40,19 @@ fn main() {
     // reassembly, not formatting.
 
     // Correctness: every path must produce identical bytes.
-    let whole = engine.replace(&input, |_m| Some("N"), 0.85).unwrap();
+    let whole = engine
+        .replace(&input, &SearchOptions::new().threshold(0.85), |_m| {
+            Some("N")
+        })
+        .unwrap();
     let mut st_out = Vec::with_capacity(whole.len());
     engine
-        .replace_stream(input.as_bytes(), &mut st_out, |_m| Some("N"), 0.85)
+        .replace_stream(input.as_bytes(), &mut st_out, 0.85, |_m| Some("N"))
         .unwrap();
     assert_eq!(st_out, whole.as_bytes(), "replace_stream != replace");
     let mut par_out = Vec::with_capacity(whole.len());
     engine
-        .replace_stream_parallel(input.as_bytes(), &mut par_out, 8, |_m| Some("N"), 0.85)
+        .replace_stream_parallel(input.as_bytes(), &mut par_out, 8, 0.85, |_m| Some("N"))
         .unwrap();
     assert_eq!(
         par_out,
@@ -68,7 +72,11 @@ fn main() {
     let t = Instant::now();
     black_box(
         engine
-            .replace(black_box(&input), |_m| Some("N"), 0.85)
+            .replace(
+                black_box(&input),
+                &SearchOptions::new().threshold(0.85),
+                |_m| Some("N"),
+            )
             .unwrap(),
     );
     let whole_secs = t.elapsed().as_secs_f64();
@@ -80,12 +88,9 @@ fn main() {
     // Single-threaded streaming.
     let t = Instant::now();
     engine
-        .replace_stream(
-            black_box(input.as_bytes()),
-            io::sink(),
-            |_m| Some("N"),
-            0.85,
-        )
+        .replace_stream(black_box(input.as_bytes()), io::sink(), 0.85, |_m| {
+            Some("N")
+        })
         .unwrap();
     let st_secs = t.elapsed().as_secs_f64();
     println!(
@@ -109,8 +114,8 @@ fn main() {
                 black_box(input.as_bytes()),
                 io::sink(),
                 threads,
-                |_m| Some("N"),
                 0.85,
+                |_m| Some("N"),
             )
             .unwrap();
         let secs = t.elapsed().as_secs_f64();

@@ -1,7 +1,9 @@
 /* -------------------------------------------------------------------------
  *  Tests
  * ---------------------------------------------------------------------- */
-use crate::{FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, Pattern};
+use crate::{
+    FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, Pattern, SearchOptions,
+};
 
 fn make_engine() -> FuzzyAhoCorasick {
     FuzzyAhoCorasickBuilder::new()
@@ -15,7 +17,15 @@ fn test_non_overlapping_regression_0() {
         .fuzzy(FuzzyLimits::new().edits(2))
         .case_insensitive(true)
         .build(["NA", "MENA"]);
-    let result = fac.search_non_overlapping("NA MENA", 0.6).unwrap();
+    let result = fac
+        .search(
+            "NA MENA",
+            &SearchOptions::new()
+                .threshold(0.6)
+                .sorted()
+                .non_overlapping(),
+        )
+        .unwrap();
     println!("Result: {result:?}");
     assert!(
         result
@@ -30,7 +40,15 @@ fn test_non_overlapping_regression_2() {
         .fuzzy(FuzzyLimits::new().edits(1))
         .case_insensitive(true)
         .build(["KO", "KO", "LWIN"]);
-    let result = fac.search_non_overlapping("KWO KO LWIN", 0.6).unwrap();
+    let result = fac
+        .search(
+            "KWO KO LWIN",
+            &SearchOptions::new()
+                .threshold(0.6)
+                .sorted()
+                .non_overlapping(),
+        )
+        .unwrap();
     println!("Result: {result:#?}");
     assert!(
         result
@@ -45,7 +63,13 @@ fn test_non_overlapping_regression_3() {
         .case_insensitive(true)
         .build(["AL", "WASEL", "AND", "BABEL", "GENERAL", "TRADING", "LLC"]);
     let result = fac
-        .search_non_overlapping_unique("AL WASL ANT BBEL GNERAL TRATING LC", 0.6)
+        .search(
+            "AL WASL ANT BBEL GNERAL TRATING LC",
+            &SearchOptions::new()
+                .threshold(0.6)
+                .sorted()
+                .non_overlapping_unique(),
+        )
         .unwrap();
     println!("Result: {result:#?}");
     assert!(
@@ -65,7 +89,9 @@ fn test_case_insensitive_ascii() {
     let engine = FuzzyAhoCorasickBuilder::new()
         .case_insensitive(true)
         .build(["world"]);
-    let res = engine.search("HeLlO WoRlD", 0.9).unwrap();
+    let res = engine
+        .search("HeLlO WoRlD", &SearchOptions::new().threshold(0.9).sorted())
+        .unwrap();
     assert!(res.iter().any(|m| m.text.eq_ignore_ascii_case("world")));
 }
 
@@ -74,11 +100,18 @@ fn test_unicode_cyrillic() {
     let engine = FuzzyAhoCorasickBuilder::new()
         .case_insensitive(true)
         .build(["юрий"]);
-    let res = engine.search("ЮРИЙ ГАГАРИН", 0.9).unwrap();
+    let res = engine
+        .search(
+            "ЮРИЙ ГАГАРИН",
+            &SearchOptions::new().threshold(0.9).sorted(),
+        )
+        .unwrap();
     println!("{res:?}");
     assert!(res.iter().any(|m| m.text.to_lowercase() == "юрий"));
 
-    let res = engine.segment_text("ЮРИЙГАГАРИН", 0.9).unwrap();
+    let res = engine
+        .segment_text("ЮРИЙГАГАРИН", &SearchOptions::new().threshold(0.9))
+        .unwrap();
     println!("{res:?}");
 
     assert_eq!(res, "ЮРИЙ ГАГАРИН");
@@ -87,7 +120,12 @@ fn test_unicode_cyrillic() {
 #[test]
 fn test_exact_match() {
     let fac = make_engine();
-    let result = fac.search("saddamhussein", 0.5).unwrap();
+    let result = fac
+        .search(
+            "saddamhussein",
+            &SearchOptions::new().threshold(0.5).sorted(),
+        )
+        .unwrap();
     assert!(
         result
             .iter()
@@ -103,7 +141,12 @@ fn test_exact_match() {
 #[test]
 fn test_extra_letter() {
     let fac = make_engine();
-    let result = fac.search("saddammhussein", 0.3).unwrap();
+    let result = fac
+        .search(
+            "saddammhussein",
+            &SearchOptions::new().threshold(0.3).sorted(),
+        )
+        .unwrap();
     assert!(
         result
             .iter()
@@ -114,7 +157,9 @@ fn test_extra_letter() {
 #[test]
 fn test_missing_letter() {
     let fac = make_engine();
-    let result = fac.search("saddmhussin", 0.3).unwrap();
+    let result = fac
+        .search("saddmhussin", &SearchOptions::new().threshold(0.3).sorted())
+        .unwrap();
     println!("{result:?}");
     assert!(
         result
@@ -126,7 +171,12 @@ fn test_missing_letter() {
 #[test]
 fn test_substitution() {
     let fac = make_engine();
-    let result = fac.search("saddamhuzein", 0.2).unwrap();
+    let result = fac
+        .search(
+            "saddamhuzein",
+            &SearchOptions::new().threshold(0.2).sorted(),
+        )
+        .unwrap();
     assert!(
         result
             .iter()
@@ -140,7 +190,15 @@ fn test_swap() {
         .fuzzy(FuzzyLimits::new().edits(2))
         .case_insensitive(true)
         .build(["ALI", "KONY"]);
-    let result = fac.search_non_overlapping("ALIKOYN", 0.6).unwrap();
+    let result = fac
+        .search(
+            "ALIKOYN",
+            &SearchOptions::new()
+                .threshold(0.6)
+                .sorted()
+                .non_overlapping(),
+        )
+        .unwrap();
     assert!(
         result
             .iter()
@@ -155,7 +213,15 @@ fn test_big() {
         .case_insensitive(true)
         .build(["tincidunt", "porta"]);
     let text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vestibulum eros ipsum, tincidutn eu metus ut, commodo accumsan mi. Vestibulum porta, orci nec ullamcorper posuere, eros tortor pharetra est, at porttitor mi leo a velit. Aenean sollicitudin mauris elit, ultricies congue dui vulputate in. In hac habitasse platea dictumst. Nam iaculis sagittis justo a condimentum. Curabitur sed rhoncus dolor. Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus egestas congue lorem, in convallis magna viverra quis. Maecenas fringilla mollis arcu quis maximus. Maecenas tincidunt semper vestibulum. Donec aliquet leo at molestie elementum. Nulla venenatis iaculis gravida. Phasellus at pulvinar odio. Etiam bibendum tempor purus at dignissim. Nam a turpis ante. Etiam imperdiet justo sit amet quam tristique porttitor. Cras ultrices tellus et dolor lobortis tempor. Suspendisse eu mi nec nisi sollicitudin pharetra. Proin imperdiet elementum ullamcorper. Nam imperdiet quis mi at vulputate. Vivamus pulvinar, quam et tempus sollicitudin, justo dolor venenatis lacus, sit amet dignissim ex quam ut est. Suspendisse feugiat libero a augue malesuada sagittis. Curabitur vel magna neque. Praesent eu nulla faucibus, egestas eros sit amet, elementum quam. Fusce porttitor et lacus vitae maximus. Ut viverra eu sem sed lobortis. Fusce feugiat vestibulum posuere. Integer erat mauris, tempor eu magna vitae, varius rutrum elit. Proin mattis, nunc at porta commodo, erat urna viverra ante, vitae feugiat velit dolor ac quam. Nulla semper elit in neque mollis molestie. Aenean a augue scelerisque, tincidunt odio ut, finibus erat. Integer feugiat eros ac dolor tempus, sed varius lectus ullamcorper. Orci varius natoque penatibus et magnis dis parturient montes, nascetur ridiculus mus.";
-    let result = fac.search_non_overlapping(text, 0.8).unwrap();
+    let result = fac
+        .search(
+            text,
+            &SearchOptions::new()
+                .threshold(0.8)
+                .sorted()
+                .non_overlapping(),
+        )
+        .unwrap();
     assert!(result.iter().any(|x| x.text == "tincidutn"), "{result:?}");
     assert!(result.iter().any(|x| x.text == "tincidunt"), "{result:?}");
     assert!(result.iter().any(|x| x.text == "porta"), "{result:?}");
@@ -165,7 +231,12 @@ fn test_big() {
 fn test_overlap_vs_nonoverlap() {
     let engine = FuzzyAhoCorasickBuilder::new().build([("saddam", 1.0, 2), ("ddamhu", 1.0, 2)]);
 
-    let matches = engine.search("saddamddamhu", 0.5).unwrap();
+    let matches = engine
+        .search(
+            "saddamddamhu",
+            &SearchOptions::new().threshold(0.5).sorted(),
+        )
+        .unwrap();
     println!();
     println!("{:?}", matches[0]);
     println!();
@@ -182,10 +253,26 @@ fn test_overlap_vs_nonoverlap() {
         "{matches:?}"
     );
 
-    let matches_nonoverlap = engine.search_non_overlapping("saddamhussein", 0.7).unwrap();
+    let matches_nonoverlap = engine
+        .search(
+            "saddamhussein",
+            &SearchOptions::new()
+                .threshold(0.7)
+                .sorted()
+                .non_overlapping(),
+        )
+        .unwrap();
     assert_eq!(matches_nonoverlap.len(), 1, "{matches_nonoverlap:?}");
 
-    let matches_nonoverlap_two = engine.search_non_overlapping("sadam ddamhu", 0.4).unwrap();
+    let matches_nonoverlap_two = engine
+        .search(
+            "sadam ddamhu",
+            &SearchOptions::new()
+                .threshold(0.4)
+                .sorted()
+                .non_overlapping(),
+        )
+        .unwrap();
     assert_eq!(
         matches_nonoverlap_two.len(),
         2,
@@ -208,7 +295,9 @@ fn test_overlap_vs_nonoverlap() {
 #[test]
 fn test_adjustable_penalties() {
     let engine_strict = FuzzyAhoCorasickBuilder::new().build([("hussein", 1.0, 2)]);
-    let strict = engine_strict.search("huzein", 0.3).unwrap();
+    let strict = engine_strict
+        .search("huzein", &SearchOptions::new().threshold(0.3).sorted())
+        .unwrap();
     assert!(
         strict
             .iter()
@@ -223,7 +312,9 @@ fn test_adjustable_penalties() {
                 .deletion(0.95),
         )
         .build([("hussein", 1.0, 3)]);
-    let loose = engine.search("huzein", 0.2).unwrap();
+    let loose = engine
+        .search("huzein", &SearchOptions::new().threshold(0.2).sorted())
+        .unwrap();
     assert!(
         loose
             .iter()
@@ -237,7 +328,9 @@ fn test_regression_1() {
         .case_insensitive(true)
         .build(["CO"]);
 
-    let result = engine.search("CA", 0.8).unwrap();
+    let result = engine
+        .search("CA", &SearchOptions::new().threshold(0.8).sorted())
+        .unwrap();
     println!("{result:?}");
     assert_eq!(result.iter().count(), 0);
 }
@@ -247,7 +340,15 @@ fn test_regression_2() {
     let engine = FuzzyAhoCorasickBuilder::new()
         .build([Pattern::from("TOLA").fuzzy(FuzzyLimits::new().edits(2))]);
 
-    let result = engine.search_non_overlapping("TOL", 0.5).unwrap();
+    let result = engine
+        .search(
+            "TOL",
+            &SearchOptions::new()
+                .threshold(0.5)
+                .sorted()
+                .non_overlapping(),
+        )
+        .unwrap();
     println!("\nResult: {result:?}");
     assert!(result.iter().any(|x| x.text == "TOL"));
 }
@@ -258,11 +359,15 @@ fn test_segment_text() {
         .fuzzy(FuzzyLimits::new().edits(3))
         .build(["saddam", "hussein"]);
     assert_eq!(
-        engine.segment_text("sadamhusein", 0.8).unwrap(),
+        engine
+            .segment_text("sadamhusein", &SearchOptions::new().threshold(0.8))
+            .unwrap(),
         "sadam husein"
     );
     assert_eq!(
-        engine.segment_text("sadamhuseinaltikriti", 0.8).unwrap(),
+        engine
+            .segment_text("sadamhuseinaltikriti", &SearchOptions::new().threshold(0.8))
+            .unwrap(),
         "sadam husein altikriti"
     );
 }
@@ -273,7 +378,13 @@ fn test_segment_readme() {
         .fuzzy(FuzzyLimits::new().edits(1))
         .build(["input", "more"]);
     let matches = engine
-        .search_non_overlapping("someinptandm0re", 0.75)
+        .search(
+            "someinptandm0re",
+            &SearchOptions::new()
+                .threshold(0.75)
+                .sorted()
+                .non_overlapping(),
+        )
         .unwrap();
     let segmented_text = matches.segment_text();
     assert_eq!(segmented_text, "some inpt and m0re");
@@ -285,7 +396,12 @@ fn test_segment_name() {
         .fuzzy(FuzzyLimits::new().edits(3))
         .build(["SHANE", "DOMINIC", "CRAWFORD"]);
     assert_eq!(
-        engine.segment_text("SHANEDOM INICCRAWFORD", 0.8).unwrap(),
+        engine
+            .segment_text(
+                "SHANEDOM INICCRAWFORD",
+                &SearchOptions::new().threshold(0.8)
+            )
+            .unwrap(),
         "SHANE DOM INIC CRAWFORD"
     );
 }
@@ -297,7 +413,10 @@ fn test_segment_text2() {
         .build(["HASAN", "JAMAL", "HUSSEIN", "ZEINIYE"]);
     assert_eq!(
         engine
-            .segment_text("ZEINIYEHussEINHASaNJAMAL", 0.8)
+            .segment_text(
+                "ZEINIYEHussEINHASaNJAMAL",
+                &SearchOptions::new().threshold(0.8)
+            )
             .unwrap(),
         "ZEINIYE HussEIN HASaN JAMAL"
     );
@@ -307,7 +426,9 @@ fn test_segment_text2() {
 fn test_fail() {
     let engine = FuzzyAhoCorasickBuilder::new().build(["saddam", "hussein"]);
     assert_eq!(
-        engine.segment_text("sadam husein", 0.8).unwrap(),
+        engine
+            .segment_text("sadam husein", &SearchOptions::new().threshold(0.8))
+            .unwrap(),
         "sadam husein"
     );
 }
@@ -323,7 +444,7 @@ fn test_fuzzy_replace() {
             ("LIMITED LIABILITY COMPANY", "LLC"),
             ("LIMITED LIABILITY", "LLC"),
         ])
-        .replace(source, 0.8)
+        .replace(source, &SearchOptions::new().threshold(0.8))
         .unwrap();
     assert_eq!(result, "PJSC GAZPROM");
 }
@@ -336,6 +457,7 @@ fn test_fuzzy_replace_fn() {
             .build(["hair", "bear", "wuzzy"])
             .replace(
                 "Fuzzy Wuzzy was a hair. Fuzzy Wuzzy had no bear.",
+                &SearchOptions::new().threshold(0.8),
                 |m| {
                     match m.text {
                         "bear" => Some("hair"),
@@ -343,7 +465,6 @@ fn test_fuzzy_replace_fn() {
                         _ => None,
                     }
                 },
-                0.8,
             )
             .unwrap(),
         "Fuzzy Wuzzy was a bear. Fuzzy Wuzzy had no hair."
@@ -354,7 +475,13 @@ fn test_fuzzy_replace_fn() {
 fn test_longer_match_preference() {
     let engine = FuzzyAhoCorasickBuilder::new().build(["JOINT STOCK COMPANY", "STOCK"]);
     let result = engine
-        .search_non_overlapping("JOINT STOCK COMPANY GAZPROM", 0.8)
+        .search(
+            "JOINT STOCK COMPANY GAZPROM",
+            &SearchOptions::new()
+                .threshold(0.8)
+                .sorted()
+                .non_overlapping(),
+        )
         .unwrap();
     assert!(
         result
@@ -371,7 +498,15 @@ fn test_regression_0() {
         .case_insensitive(true)
         .build(["zavod"]);
 
-    let result = engine.search_non_overlapping("NARODNY", 0.8).unwrap();
+    let result = engine
+        .search(
+            "NARODNY",
+            &SearchOptions::new()
+                .threshold(0.8)
+                .sorted()
+                .non_overlapping(),
+        )
+        .unwrap();
     assert!(result.is_empty());
 }
 
@@ -382,7 +517,9 @@ fn test_readme() {
         .case_insensitive(true)
         .build_replacer([("foo", "bar"), ("baz", "qux")]);
 
-    let out = replacer.replace("fo0 and BAZ!", 0.7).unwrap();
+    let out = replacer
+        .replace("fo0 and BAZ!", &SearchOptions::new().threshold(0.7))
+        .unwrap();
     assert_eq!(out, "bar and qux!");
 }
 
@@ -393,7 +530,9 @@ fn test_country() {
         .case_insensitive(true)
         .build_replacer([("CZECHOSLOVAKIA", "SERBIA")]);
 
-    let out = replacer.replace("CHEKHOSLOVAKIA", 0.7).unwrap();
+    let out = replacer
+        .replace("CHEKHOSLOVAKIA", &SearchOptions::new().threshold(0.7))
+        .unwrap();
     assert_eq!(out, "SERBIA");
 }
 
@@ -404,7 +543,7 @@ fn test_strip_prefix() {
             .fuzzy(FuzzyLimits::new().edits(1))
             .case_insensitive(true)
             .build(["LOREM", "IPSUM"])
-            .strip_prefix("LrEM ISuM Lorm ZZZ", 0.8)
+            .strip_prefix("LrEM ISuM Lorm ZZZ", &SearchOptions::new().threshold(0.8))
             .unwrap(),
         "ZZZ"
     );
@@ -417,7 +556,7 @@ fn test_strip_postfix() {
             .fuzzy(FuzzyLimits::new().edits(1))
             .case_insensitive(true)
             .build(["LOREM", "IPSUM"])
-            .strip_postfix("ZZZ LrEM ISuM Lorm", 0.8)
+            .strip_suffix("ZZZ LrEM ISuM Lorm", &SearchOptions::new().threshold(0.8))
             .unwrap(),
         "ZZZ"
     );
@@ -429,7 +568,7 @@ fn test_split() {
             .fuzzy(FuzzyLimits::new().edits(1))
             .case_insensitive(true)
             .build(["LOREM", "IPSUM"])
-            .split("ZZZLrEMISuMAAA", 0.8)
+            .split("ZZZLrEMISuMAAA", &SearchOptions::new().threshold(0.8))
             .unwrap()
             .collect::<Vec<_>>(),
         ["ZZZ", "AAA"]
@@ -452,8 +591,24 @@ fn test_beam_search() {
 
     let text = "saddamhusein";
 
-    let results_no_beam = engine_no_beam.search_non_overlapping(text, 0.7).unwrap();
-    let results_with_beam = engine_with_beam.search_non_overlapping(text, 0.7).unwrap();
+    let results_no_beam = engine_no_beam
+        .search(
+            text,
+            &SearchOptions::new()
+                .threshold(0.7)
+                .sorted()
+                .non_overlapping(),
+        )
+        .unwrap();
+    let results_with_beam = engine_with_beam
+        .search(
+            text,
+            &SearchOptions::new()
+                .threshold(0.7)
+                .sorted()
+                .non_overlapping(),
+        )
+        .unwrap();
 
     // Both should find matches
     assert!(!results_no_beam.is_empty(), "No beam should find matches");
@@ -478,7 +633,9 @@ fn test_truncated_walijan() {
         .case_insensitive(true)
         .build([Pattern::from("WALIJAN").fuzzy(FuzzyLimits::new().edits(3))]);
 
-    let result = engine.search("alijan", 0.7).unwrap();
+    let result = engine
+        .search("alijan", &SearchOptions::new().threshold(0.7).sorted())
+        .unwrap();
     println!("\nResult for alijan: {result:?}");
 
     // This should find WALIJAN with text="alijan"
@@ -496,7 +653,9 @@ fn test_truncated_short() {
         .case_insensitive(true)
         .build([Pattern::from("TOLA").fuzzy(FuzzyLimits::new().edits(2))]);
 
-    let result = engine.search("OLA", 0.5).unwrap();
+    let result = engine
+        .search("OLA", &SearchOptions::new().threshold(0.5).sorted())
+        .unwrap();
     println!("\nResult for OLA: {result:?}");
 
     assert!(
@@ -513,7 +672,9 @@ fn test_truncated_with_global_limits() {
         .fuzzy(FuzzyLimits::new().edits(2)) // Global limits
         .build(["TOLA"]);
 
-    let result = engine.search("OLA", 0.5).unwrap();
+    let result = engine
+        .search("OLA", &SearchOptions::new().threshold(0.5).sorted())
+        .unwrap();
     println!("\nResult for OLA with global limits: {result:?}");
 
     assert!(
@@ -530,7 +691,9 @@ fn test_truncated_walijan_with_global_limits() {
         .fuzzy(FuzzyLimits::new().edits(3)) // Global limits
         .build(["WALIJAN"]);
 
-    let result = engine.search("alijan", 0.7).unwrap();
+    let result = engine
+        .search("alijan", &SearchOptions::new().threshold(0.7).sorted())
+        .unwrap();
     println!("\nResult for alijan with global limits: {result:?}");
 
     assert!(
@@ -546,10 +709,14 @@ fn test_phonetic_td_substitution() {
         .case_insensitive(true)
         .build([Pattern::from("DJAMEL").fuzzy(FuzzyLimits::new().edits(3))]);
 
-    let result = engine.search("Tjamel", 0.5).unwrap();
+    let result = engine
+        .search("Tjamel", &SearchOptions::new().threshold(0.5).sorted())
+        .unwrap();
     println!("\nResult for 'Tjamel' vs 'DJAMEL' (0.5): {result:?}");
 
-    let result2 = engine.search("Tjamel", 0.7).unwrap();
+    let result2 = engine
+        .search("Tjamel", &SearchOptions::new().threshold(0.7).sorted())
+        .unwrap();
     println!("Result for 'Tjamel' vs 'DJAMEL' (0.7): {result2:?}");
 
     // Calculate expected similarity:
@@ -571,10 +738,14 @@ fn test_missing_middle_char() {
         .case_insensitive(true)
         .build([Pattern::from("MOMIR").fuzzy(FuzzyLimits::new().edits(3))]);
 
-    let result = engine.search("Mmir", 0.5).unwrap();
+    let result = engine
+        .search("Mmir", &SearchOptions::new().threshold(0.5).sorted())
+        .unwrap();
     println!("\nResult for 'Mmir' vs 'MOMIR' (0.5): {result:?}");
 
-    let result2 = engine.search("Mmir", 0.7).unwrap();
+    let result2 = engine
+        .search("Mmir", &SearchOptions::new().threshold(0.7).sorted())
+        .unwrap();
     println!("Result for 'Mmir' vs 'MOMIR' (0.7): {result2:?}");
 
     // For 5-char pattern with 1 deletion at position 2:
@@ -592,7 +763,9 @@ fn test_siic_simic() {
         .case_insensitive(true)
         .build([Pattern::from("SIMIC").fuzzy(FuzzyLimits::new().edits(3))]);
 
-    let result = engine.search("SIIC", 0.7).unwrap();
+    let result = engine
+        .search("SIIC", &SearchOptions::new().threshold(0.7).sorted())
+        .unwrap();
     println!("\nResult for 'SIIC' vs 'SIMIC': {result:?}");
 }
 
@@ -603,7 +776,9 @@ fn test_aminulah_aminullah() {
         .case_insensitive(true)
         .build([Pattern::from("AMINULLAH").fuzzy(FuzzyLimits::new().edits(3))]);
 
-    let result = engine.search("Aminulah", 0.7).unwrap();
+    let result = engine
+        .search("Aminulah", &SearchOptions::new().threshold(0.7).sorted())
+        .unwrap();
     println!("\nResult for 'Aminulah' vs 'AMINULLAH': {result:?}");
 }
 
@@ -614,7 +789,9 @@ fn test_jaar_jafar() {
         .case_insensitive(true)
         .build([Pattern::from("JAFAR").fuzzy(FuzzyLimits::new().edits(3))]);
 
-    let result = engine.search("Jaar", 0.7).unwrap();
+    let result = engine
+        .search("Jaar", &SearchOptions::new().threshold(0.7).sorted())
+        .unwrap();
     println!("\nResult for 'Jaar' vs 'JAFAR': {result:?}");
 }
 
@@ -624,7 +801,9 @@ fn test_aminullah_aminulah() {
         .case_insensitive(true)
         .build([Pattern::from("AMINULLAH").fuzzy(FuzzyLimits::new().edits(3))]);
 
-    let result = engine.search("Aminulah", 0.7).unwrap();
+    let result = engine
+        .search("Aminulah", &SearchOptions::new().threshold(0.7).sorted())
+        .unwrap();
     println!("Result for 'Aminulah' vs 'AMINULLAH': {result:?}");
     assert!(!result.inner.is_empty(), "AMINULLAH should match Aminulah");
 }
@@ -665,7 +844,9 @@ fn test_long_token_no_blowup_regression() {
 
     let haystack = "RUSSISCHE NATIONALE RUCKVERSICHERUNGSGESELLSCHAFT JSC";
     let start = std::time::Instant::now();
-    let result = engine.search_greedy(haystack, 0.8).unwrap();
+    let result = engine
+        .search(haystack, &SearchOptions::new().threshold(0.8).greedy())
+        .unwrap();
     let elapsed = start.elapsed();
 
     println!("elapsed={elapsed:?} matches={}", result.inner.len());
@@ -705,8 +886,14 @@ fn test_auto_beam_exact_below_budget_and_bounded_above() {
         .auto_beam(usize::MAX, 8)
         .build(patterns);
     assert_eq!(
-        exact.search(text, 0.6).unwrap().inner,
-        huge_budget.search(text, 0.6).unwrap().inner,
+        exact
+            .search(text, &SearchOptions::new().threshold(0.6).sorted())
+            .unwrap()
+            .inner,
+        huge_budget
+            .search(text, &SearchOptions::new().threshold(0.6).sorted())
+            .unwrap()
+            .inner,
         "auto_beam must be exact when the budget is never reached"
     );
 
@@ -718,7 +905,7 @@ fn test_auto_beam_exact_below_budget_and_bounded_above() {
         .auto_beam(1, 16)
         .build(patterns);
     let matched: Vec<&str> = beamed
-        .search(text, 0.6)
+        .search(text, &SearchOptions::new().threshold(0.6).sorted())
         .unwrap()
         .iter()
         .map(|m| m.pattern.as_str())
@@ -738,7 +925,12 @@ fn test_multi_char_mapping_bidirectional() {
         .fuzzy(FuzzyLimits::new().edits(1))
         .mapping("æ", "ae")
         .build(["encyclopaedia"]);
-    let m = ae.search("encyclopædia", 0.95).unwrap();
+    let m = ae
+        .search(
+            "encyclopædia",
+            &SearchOptions::new().threshold(0.95).sorted(),
+        )
+        .unwrap();
     assert_eq!(
         m.len(),
         1,
@@ -756,7 +948,12 @@ fn test_multi_char_mapping_bidirectional() {
         .mapping("æ", "ae")
         .build(["encyclopædia"]);
     assert_eq!(
-        ea.search("encyclopaedia", 0.95).unwrap().len(),
+        ea.search(
+            "encyclopaedia",
+            &SearchOptions::new().threshold(0.95).sorted()
+        )
+        .unwrap()
+        .len(),
         1,
         "'ae' in the haystack should match the 'æ' pattern"
     );
@@ -772,8 +969,20 @@ fn test_multi_char_mapping_many_to_one() {
             .mapping("ks", "x")
             .build(patterns)
     };
-    assert_eq!(mk(["alexandr"]).search("aleksandr", 0.95).unwrap().len(), 1);
-    assert_eq!(mk(["aleksandr"]).search("alexandr", 0.95).unwrap().len(), 1);
+    assert_eq!(
+        mk(["alexandr"])
+            .search("aleksandr", &SearchOptions::new().threshold(0.95).sorted())
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        mk(["aleksandr"])
+            .search("alexandr", &SearchOptions::new().threshold(0.95).sorted())
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -787,10 +996,19 @@ fn test_multi_char_mapping_counts_as_edit() {
             .build(["strasse"])
     };
     assert!(
-        build(0u8).search("straße", 0.9).unwrap().is_empty(),
+        build(0u8)
+            .search("straße", &SearchOptions::new().threshold(0.9).sorted())
+            .unwrap()
+            .is_empty(),
         "with edits(0) the mapping must be rejected, like any substitution"
     );
-    assert_eq!(build(1u8).search("straße", 0.9).unwrap().len(), 1);
+    assert_eq!(
+        build(1u8)
+            .search("straße", &SearchOptions::new().threshold(0.9).sorted())
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -805,8 +1023,14 @@ fn test_multi_char_mapping_scored_penalty() {
         .fuzzy(FuzzyLimits::new().edits(1))
         .mapping_scored("ks", "x", 0.8)
         .build(["alexandr"]);
-    let se = exact.search("aleksandr", 0.5).unwrap()[0].similarity;
-    let ss = scored.search("aleksandr", 0.5).unwrap()[0].similarity;
+    let se = exact
+        .search("aleksandr", &SearchOptions::new().threshold(0.5).sorted())
+        .unwrap()[0]
+        .similarity;
+    let ss = scored
+        .search("aleksandr", &SearchOptions::new().threshold(0.5).sorted())
+        .unwrap()[0]
+        .similarity;
     assert!(se > 0.999, "score 1.0 is penalty-free (got {se})");
     assert!(
         ss < se,
@@ -821,7 +1045,14 @@ fn test_no_mapping_is_unaffected() {
         .case_insensitive(true)
         .fuzzy(FuzzyLimits::new().edits(1))
         .build(["encyclopaedia"]);
-    assert!(e.search("encyclopædia", 0.9).unwrap().is_empty());
+    assert!(
+        e.search(
+            "encyclopædia",
+            &SearchOptions::new().threshold(0.9).sorted()
+        )
+        .unwrap()
+        .is_empty()
+    );
 }
 
 #[test]
@@ -842,7 +1073,13 @@ fn test_streaming_apis_match_whole_input() {
 
     // Ground truth: search the whole thing in one shot (input is < 4 GiB).
     let mut truth: Vec<(u64, u64, usize)> = engine
-        .search_non_overlapping(&input, 0.8)
+        .search(
+            &input,
+            &SearchOptions::new()
+                .threshold(0.8)
+                .sorted()
+                .non_overlapping(),
+        )
         .unwrap()
         .iter()
         .map(|m| (m.start as u64, m.end as u64, m.pattern_index))
@@ -922,7 +1159,7 @@ fn test_replace_stream_small_cases() {
     let run = |input: &str| {
         let mut out = Vec::new();
         let n = engine
-            .replace_stream(input.as_bytes(), &mut out, |_m| Some("X"), 0.8)
+            .replace_stream(input.as_bytes(), &mut out, 0.8, |_m| Some("X"))
             .unwrap();
         let s = String::from_utf8(out).unwrap();
         assert_eq!(n as usize, s.len(), "returned byte count must match output");
@@ -940,7 +1177,7 @@ fn test_replace_stream_small_cases() {
     // `None` keeps the original span.
     let mut out = Vec::new();
     engine
-        .replace_stream("a needle b".as_bytes(), &mut out, |_m| None::<&str>, 0.8)
+        .replace_stream("a needle b".as_bytes(), &mut out, 0.8, |_m| None::<&str>)
         .unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), "a needle b");
 }
@@ -962,17 +1199,16 @@ fn test_replace_stream_matches_whole_input() {
     }
 
     let truth = engine
-        .replace(&input, |m| Some(format!("<{}>", m.pattern_index)), 0.8)
+        .replace(&input, &SearchOptions::new().threshold(0.8), |m| {
+            Some(format!("<{}>", m.pattern_index))
+        })
         .unwrap();
 
     let mut out = Vec::new();
     let n = engine
-        .replace_stream(
-            input.as_bytes(),
-            &mut out,
-            |m| Some(format!("<{}>", m.pattern_index)),
-            0.8,
-        )
+        .replace_stream(input.as_bytes(), &mut out, 0.8, |m| {
+            Some(format!("<{}>", m.pattern_index))
+        })
         .unwrap();
     let streamed = String::from_utf8(out).unwrap();
     assert_eq!(n as usize, streamed.len());
@@ -988,13 +1224,9 @@ fn test_replace_stream_matches_whole_input() {
     // Parallel replace must produce byte-identical output (assembled in stream order).
     let mut par_out = Vec::new();
     let np = engine
-        .replace_stream_parallel(
-            input.as_bytes(),
-            &mut par_out,
-            4,
-            |m| Some(format!("<{}>", m.pattern_index)),
-            0.8,
-        )
+        .replace_stream_parallel(input.as_bytes(), &mut par_out, 4, 0.8, |m| {
+            Some(format!("<{}>", m.pattern_index))
+        })
         .unwrap();
     let par = String::from_utf8(par_out).unwrap();
     assert_eq!(np as usize, par.len());
@@ -1015,7 +1247,7 @@ fn test_replace_stream_parallel_small_cases() {
     let run = |input: &str, threads: usize| {
         let mut out = Vec::new();
         engine
-            .replace_stream_parallel(input.as_bytes(), &mut out, threads, |_m| Some("X"), 0.8)
+            .replace_stream_parallel(input.as_bytes(), &mut out, threads, 0.8, |_m| Some("X"))
             .unwrap();
         String::from_utf8(out).unwrap()
     };
@@ -1050,7 +1282,13 @@ fn test_min_symbol_similarity_floor() {
         .build(["vestibulum"]);
     assert_eq!(
         no_floor
-            .search_non_overlapping("vxstibulum", 0.8)
+            .search(
+                "vxstibulum",
+                &SearchOptions::new()
+                    .threshold(0.8)
+                    .sorted()
+                    .non_overlapping()
+            )
             .unwrap()
             .len(),
         1
@@ -1064,7 +1302,13 @@ fn test_min_symbol_similarity_floor() {
         .build(["vestibulum"]);
     assert!(
         floored
-            .search_non_overlapping("vxstibulum", 0.8)
+            .search(
+                "vxstibulum",
+                &SearchOptions::new()
+                    .threshold(0.8)
+                    .sorted()
+                    .non_overlapping()
+            )
             .unwrap()
             .is_empty()
     );
@@ -1072,14 +1316,26 @@ fn test_min_symbol_similarity_floor() {
     // A substitution above the floor (u<->o, similarity 0.6) is still accepted; exact still matches.
     assert_eq!(
         floored
-            .search_non_overlapping("vestibulom", 0.8)
+            .search(
+                "vestibulom",
+                &SearchOptions::new()
+                    .threshold(0.8)
+                    .sorted()
+                    .non_overlapping()
+            )
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
         floored
-            .search_non_overlapping("vestibulum", 0.8)
+            .search(
+                "vestibulum",
+                &SearchOptions::new()
+                    .threshold(0.8)
+                    .sorted()
+                    .non_overlapping()
+            )
             .unwrap()
             .len(),
         1
@@ -1114,9 +1370,13 @@ fn test_deterministic_search() {
         // Run each search variant multiple times
         for threshold in [0.5, 0.7, 0.9] {
             // search_unsorted
-            let first = engine.search_unsorted(haystack, threshold).unwrap();
+            let first = engine
+                .search(haystack, &SearchOptions::new().threshold(threshold))
+                .unwrap();
             for _ in 0..5 {
-                let next = engine.search_unsorted(haystack, threshold).unwrap();
+                let next = engine
+                    .search(haystack, &SearchOptions::new().threshold(threshold))
+                    .unwrap();
                 assert_eq!(
                     first.inner, next.inner,
                     "search_unsorted determinism failure on {haystack:?} @ threshold={threshold}"
@@ -1124,9 +1384,19 @@ fn test_deterministic_search() {
             }
 
             // search (default_sort)
-            let first = engine.search(haystack, threshold).unwrap();
+            let first = engine
+                .search(
+                    haystack,
+                    &SearchOptions::new().threshold(threshold).sorted(),
+                )
+                .unwrap();
             for _ in 0..5 {
-                let next = engine.search(haystack, threshold).unwrap();
+                let next = engine
+                    .search(
+                        haystack,
+                        &SearchOptions::new().threshold(threshold).sorted(),
+                    )
+                    .unwrap();
                 assert_eq!(
                     first.inner, next.inner,
                     "search determinism failure on {haystack:?} @ threshold={threshold}"
@@ -1134,9 +1404,19 @@ fn test_deterministic_search() {
             }
 
             // search_greedy
-            let first = engine.search_greedy(haystack, threshold).unwrap();
+            let first = engine
+                .search(
+                    haystack,
+                    &SearchOptions::new().threshold(threshold).greedy(),
+                )
+                .unwrap();
             for _ in 0..5 {
-                let next = engine.search_greedy(haystack, threshold).unwrap();
+                let next = engine
+                    .search(
+                        haystack,
+                        &SearchOptions::new().threshold(threshold).greedy(),
+                    )
+                    .unwrap();
                 assert_eq!(
                     first.inner, next.inner,
                     "search_greedy determinism failure on {haystack:?} @ threshold={threshold}"
@@ -1144,9 +1424,25 @@ fn test_deterministic_search() {
             }
 
             // search_non_overlapping
-            let first = engine.search_non_overlapping(haystack, threshold).unwrap();
+            let first = engine
+                .search(
+                    haystack,
+                    &SearchOptions::new()
+                        .threshold(threshold)
+                        .sorted()
+                        .non_overlapping(),
+                )
+                .unwrap();
             for _ in 0..5 {
-                let next = engine.search_non_overlapping(haystack, threshold).unwrap();
+                let next = engine
+                    .search(
+                        haystack,
+                        &SearchOptions::new()
+                            .threshold(threshold)
+                            .sorted()
+                            .non_overlapping(),
+                    )
+                    .unwrap();
                 assert_eq!(
                     first.inner, next.inner,
                     "search_non_overlapping determinism failure on {haystack:?} @ threshold={threshold}"
@@ -1185,9 +1481,13 @@ fn test_deterministic_search_beam() {
 
     for &haystack in &haystacks {
         for threshold in [0.5, 0.7] {
-            let first = engine.search_unsorted(haystack, threshold).unwrap();
+            let first = engine
+                .search(haystack, &SearchOptions::new().threshold(threshold))
+                .unwrap();
             for _ in 0..5 {
-                let next = engine.search_unsorted(haystack, threshold).unwrap();
+                let next = engine
+                    .search(haystack, &SearchOptions::new().threshold(threshold))
+                    .unwrap();
                 assert_eq!(
                     first.inner, next.inner,
                     "beam search determinism failure on {haystack:?} @ threshold={threshold}"
@@ -1222,27 +1522,57 @@ fn test_deterministic_search_unicode() {
 
     for &haystack in &haystacks {
         for threshold in [0.5, 0.7, 0.9] {
-            let first = engine.search_unsorted(haystack, threshold).unwrap();
+            let first = engine
+                .search(haystack, &SearchOptions::new().threshold(threshold))
+                .unwrap();
             for _ in 0..5 {
-                let next = engine.search_unsorted(haystack, threshold).unwrap();
+                let next = engine
+                    .search(haystack, &SearchOptions::new().threshold(threshold))
+                    .unwrap();
                 assert_eq!(
                     first.inner, next.inner,
                     "unicode search_unsorted determinism failure on {haystack:?} @ threshold={threshold}"
                 );
             }
 
-            let first = engine.search(haystack, threshold).unwrap();
+            let first = engine
+                .search(
+                    haystack,
+                    &SearchOptions::new().threshold(threshold).sorted(),
+                )
+                .unwrap();
             for _ in 0..5 {
-                let next = engine.search(haystack, threshold).unwrap();
+                let next = engine
+                    .search(
+                        haystack,
+                        &SearchOptions::new().threshold(threshold).sorted(),
+                    )
+                    .unwrap();
                 assert_eq!(
                     first.inner, next.inner,
                     "unicode search determinism failure on {haystack:?} @ threshold={threshold}"
                 );
             }
 
-            let first = engine.search_non_overlapping(haystack, threshold).unwrap();
+            let first = engine
+                .search(
+                    haystack,
+                    &SearchOptions::new()
+                        .threshold(threshold)
+                        .sorted()
+                        .non_overlapping(),
+                )
+                .unwrap();
             for _ in 0..5 {
-                let next = engine.search_non_overlapping(haystack, threshold).unwrap();
+                let next = engine
+                    .search(
+                        haystack,
+                        &SearchOptions::new()
+                            .threshold(threshold)
+                            .sorted()
+                            .non_overlapping(),
+                    )
+                    .unwrap();
                 assert_eq!(
                     first.inner, next.inner,
                     "unicode search_non_overlapping determinism failure on {haystack:?} @ threshold={threshold}"
@@ -1272,17 +1602,31 @@ fn test_deterministic_search_prefilter() {
     for &haystack in &haystacks {
         for threshold in [0.5, 0.7, 0.9] {
             // Verify the prefilter is self-deterministic
-            let first = prefiltered.search_unsorted(haystack, threshold).unwrap();
+            let first = prefiltered
+                .search(haystack, &SearchOptions::new().threshold(threshold))
+                .unwrap();
             for _ in 0..5 {
-                let next = prefiltered.search_unsorted(haystack, threshold).unwrap();
+                let next = prefiltered
+                    .search(haystack, &SearchOptions::new().threshold(threshold))
+                    .unwrap();
                 assert_eq!(
                     first.inner, next.inner,
                     "prefilter determinism failure on {haystack:?} @ threshold={threshold}"
                 );
             }
-            let first = prefiltered.search(haystack, threshold).unwrap();
+            let first = prefiltered
+                .search(
+                    haystack,
+                    &SearchOptions::new().threshold(threshold).sorted(),
+                )
+                .unwrap();
             for _ in 0..5 {
-                let next = prefiltered.search(haystack, threshold).unwrap();
+                let next = prefiltered
+                    .search(
+                        haystack,
+                        &SearchOptions::new().threshold(threshold).sorted(),
+                    )
+                    .unwrap();
                 assert_eq!(
                     first.inner, next.inner,
                     "prefilter search determinism failure on {haystack:?} @ threshold={threshold}"
@@ -1340,23 +1684,17 @@ fn test_deterministic_stream() {
     // replace_stream
     let mut out = Vec::new();
     let first = engine
-        .replace_stream(
-            haystack.as_bytes(),
-            &mut out,
-            |m| Some(m.text.to_uppercase()),
-            0.7,
-        )
+        .replace_stream(haystack.as_bytes(), &mut out, 0.7, |m| {
+            Some(m.text.to_uppercase())
+        })
         .unwrap();
     let first_str = String::from_utf8(out).unwrap();
     for _ in 0..5 {
         let mut out = Vec::new();
         let next = engine
-            .replace_stream(
-                haystack.as_bytes(),
-                &mut out,
-                |m| Some(m.text.to_uppercase()),
-                0.7,
-            )
+            .replace_stream(haystack.as_bytes(), &mut out, 0.7, |m| {
+                Some(m.text.to_uppercase())
+            })
             .unwrap();
         let next_str = String::from_utf8(out).unwrap();
         assert_eq!(first_str, next_str, "replace_stream determinism failure");

@@ -16,7 +16,7 @@ deduplication on your side.
 All yield [`StreamMatch`], which *owns* its matched `text` (so it is `Send` and outlives the transient
 window):
 
-```rust
+```rust,no_run
 use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
 use std::fs::File;
 

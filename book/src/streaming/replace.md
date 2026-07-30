@@ -15,7 +15,7 @@ let engine = FuzzyAhoCorasickBuilder::new()
 
 let mut out = Vec::new();
 // "neeedle" has one extra 'e' (an insertion); it is replaced, the rest copied through.
-engine.replace_stream("a neeedle b".as_bytes(), &mut out, |_m| Some("X"), 0.8).unwrap();
+engine.replace_stream("a neeedle b".as_bytes(), &mut out, 0.8, |_m| Some("X")).unwrap();
 assert_eq!(String::from_utf8(out).unwrap(), "a X b");
 ```
 
@@ -46,7 +46,7 @@ assert_eq!(String::from_utf8(out).unwrap(), "hi earth!");
 
 ## Parallel replace
 
-`replace_stream_parallel(reader, writer, threads, callback, threshold)` fans the CPU-bound search
+`replace_stream_parallel(reader, writer, threads, threshold, callback)` fans the CPU-bound search
 across a thread pool while reassembling the output **in stream order** on the calling thread. Because
 output is inherently ordered, only the search is parallelized — the callback and writer stay on the
 calling thread (no `Send`/`Sync` bounds), and the result is **byte-identical** to `replace_stream`.
@@ -56,7 +56,7 @@ calling thread (no `Send`/`Sync` bounds), and the result is **byte-identical** t
 # let engine = FuzzyAhoCorasickBuilder::new().fuzzy(FuzzyLimits::new().edits(1)).build(["needle"]);
 let mut out = Vec::new();
 let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
-engine.replace_stream_parallel("a needle b".as_bytes(), &mut out, threads, |_m| Some("X"), 0.8).unwrap();
+engine.replace_stream_parallel("a needle b".as_bytes(), &mut out, threads, 0.8, |_m| Some("X")).unwrap();
 assert_eq!(String::from_utf8(out).unwrap(), "a X b");
 ```
 

@@ -20,12 +20,16 @@ impl fmt::Debug for Similarity {
 }
 
 impl Similarity {
-    /// Build similarity data from a hashmap.
+    /// Build similarity data from `(char, char) -> score` pairs (e.g. a `HashMap` or an array of
+    /// tuples). Each pair maps an ordered character substitution to its similarity in `0.0..=1.0`;
+    /// unlisted substitutions score `0.0`, and exact matches always score `1.0`.
     // The `try_into` below is infallible — the vec is built with exactly 128 rows — so the `expect`
     // can never fire; hence no `# Panics` section is warranted.
     #[allow(clippy::missing_panics_doc)]
     #[must_use]
-    pub fn from_map(map: FxHashMap<(char, char), f32>) -> Self {
+    pub fn from_map(pairs: impl IntoIterator<Item = ((char, char), f32)>) -> Self {
+        let map: FxHashMap<(char, char), f32> = pairs.into_iter().collect();
+
         // Build directly on the heap as a boxed slice (avoids a 64 KiB stack temporary), then narrow
         // to a fixed-size `[[f32; 128]; 128]` so the row count lives in the type and `get` can index
         // safely without bounds checks.
@@ -90,7 +94,7 @@ impl Similarity {
 
 /// A fast hasher for string keys - uses `FxHash` algorithm
 #[derive(Default)]
-pub struct FxHasher {
+pub(crate) struct FxHasher {
     hash: u64,
 }
 
@@ -151,7 +155,7 @@ impl Hasher for FxHasher {
     }
 }
 
-pub type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
+pub(crate) type FxHashMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 
 /// Edit count type - u8 is sufficient for practical edit distances (max 255)
 pub type NumEdits = u8;
@@ -714,8 +718,6 @@ pub struct FuzzyMatch<'a> {
     pub similarity: f32,
     /// Slice of the original text that produced the match.
     pub text: &'a str,
-    #[cfg(debug_assertions)]
-    pub notes: Vec<String>,
 }
 
 /// Result of [`FuzzyAhoCorasick::segment_iter`]: either a successful match or

@@ -1,4 +1,4 @@
-use crate::{FuzzyAhoCorasick, SearchError};
+use crate::{FuzzyAhoCorasick, SearchError, SearchOptions};
 use std::io::{self, Read, Write};
 
 pub struct FuzzyReplacer {
@@ -14,9 +14,9 @@ impl FuzzyReplacer {
     /// # Errors
     /// Propagates [`SearchError`] when the haystack is too large to index — see
     /// [`FuzzyAhoCorasick::search_unsorted`].
-    pub fn replace(&self, text: &str, threshold: f32) -> Result<String, SearchError> {
+    pub fn replace(&self, text: &str, opts: &SearchOptions) -> Result<String, SearchError> {
         self.engine
-            .replace(text, |m| self.replacements.get(m.pattern_index), threshold)
+            .replace(text, opts, |m| self.replacements.get(m.pattern_index))
     }
 
     /// Streaming counterpart of [`replace`](Self::replace): read from `reader`, write the
@@ -33,12 +33,9 @@ impl FuzzyReplacer {
         writer: W,
         threshold: f32,
     ) -> io::Result<u64> {
-        self.engine.replace_stream(
-            reader,
-            writer,
-            |m| self.replacements.get(m.pattern_index),
-            threshold,
-        )
+        self.engine.replace_stream(reader, writer, threshold, |m| {
+            self.replacements.get(m.pattern_index)
+        })
     }
 
     #[must_use]

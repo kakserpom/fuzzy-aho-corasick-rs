@@ -174,33 +174,17 @@ impl FuzzyAhoCorasick {
         &self.patterns
     }
 
-    /// Core fuzzy search over the haystack producing raw matches without any
-    /// global ordering applied. This explores all possible state transitions
-    /// (substitutions, swaps, insertions, deletions) starting at each grapheme
-    /// position, accumulating penalties and enforcing per-pattern limits. Keeps the
-    /// best match for each unique (`start_byte`, `end_byte`, `pattern_index`) key by
-    /// highest similarity, but does **not** sort the results; the returned
-    /// `FuzzyMatches.inner` is effectively unsorted.
-    ///
-    /// Similarity is computed as `(total_graphemes - penalties) / total_graphemes * weight`.
-    /// Matches below `similarity_threshold` are discarded early.
-    ///
-    /// # Parameters
-    /// - `haystack`: the input text to search in.
-    /// - `similarity_threshold`: minimum similarity a candidate must have to be kept.
-    ///
-    /// # Returns
-    /// A `FuzzyMatches` containing the best per-span matches meeting the threshold.
+    /// Core fuzzy search over the haystack producing raw matches without any global ordering or
+    /// overlap resolution. Explores all state transitions (substitutions, swaps, insertions,
+    /// deletions) from each grapheme position, keeping the best match per unique
+    /// (`start_byte`, `end_byte`, `pattern_index`) span above `similarity_threshold`. The public
+    /// [`search`](Self::search) applies ranking/overlap on top of this.
     ///
     /// # Errors
     /// Returns [`SearchError::HaystackTooLarge`] if `haystack` has more than `u32::MAX` grapheme
-    /// clusters (roughly a 4 GiB ASCII input): positions are indexed with `u32`, so larger inputs
-    /// must use the [streaming API](crate::StreamMatches)
-    /// ([`search_stream`](Self::search_stream) / [`stream_matches`](Self::stream_matches) /
-    /// [`replace_stream`](Self::replace_stream)), which windows the input and reports absolute
-    /// `u64` offsets.
+    /// clusters — see [`search`](Self::search).
     #[inline]
-    pub fn search_unsorted<'a>(
+    pub(crate) fn search_raw<'a>(
         &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
@@ -733,8 +717,6 @@ impl FuzzyAhoCorasick {
                                         pattern: &self.patterns[pattern_index],
                                         similarity,
                                         text,
-                                        #[cfg(debug_assertions)]
-                                        notes: notes.clone(),
                                     };
                                 }
                             })
@@ -750,8 +732,6 @@ impl FuzzyAhoCorasick {
                                 pattern: &self.patterns[pattern_index],
                                 similarity,
                                 text,
-                                #[cfg(debug_assertions)]
-                                notes: notes.clone(),
                             });
                     }
                 }

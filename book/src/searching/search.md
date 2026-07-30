@@ -1,27 +1,56 @@
 # Search & Selection
 
 A search returns `Result<`[`FuzzyMatches`]`, `[`SearchError`]`>` — the matches found at or above the
-threshold, or an error if the haystack is too large to index (see [Fallibility](#fallibility)). The
-different entry points differ only in how the results are **ordered** and whether **overlaps** are
-resolved.
+threshold, or an error if the haystack is too large to index (see [Fallibility](#fallibility)). A
+single entry point, `search`, covers every case; how the results are **ordered** and whether
+**overlaps** are resolved is chosen through [`SearchOptions`].
 
-## Entry points
+## `search(haystack, &SearchOptions)`
 
-Each takes `(haystack, threshold)`:
+There is one search method. [`SearchOptions`] bundles the similarity threshold with an **order** and
+an **overlap resolver**, built with chainable setters:
 
-| Method | Ordering | Overlaps |
+```rust
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
+
+let engine = FuzzyAhoCorasickBuilder::new()
+    .fuzzy(FuzzyLimits::new().edits(1))
+    .case_insensitive(true)
+    .build(["hello", "world"]);
+
+let opts = SearchOptions::new()
+    .threshold(0.8)      // minimum similarity (default 0.0 — keep everything)
+    .sorted()            // Order::Default: similarity, then longer patterns, then position
+    .non_overlapping();  // Overlap::NonOverlapping: greedily drop overlaps in the chosen order
+let matches = engine.search("helllo wolrd", &opts).unwrap();
+```
+
+`SearchOptions::default()` (or `SearchOptions::new()`) is the primitive: it returns the single
+best-scoring match for each distinct `(start, end, pattern)` span, unordered and with overlaps kept —
+the fastest result to build. Everything else is that primitive plus an order and/or an overlap
+resolver, which **compose** independently.
+
+### Order (`SearchOptions::order`, an [`Order`])
+
+| Setter | `Order` | Ranking |
 | --- | --- | --- |
-| `search_unsorted` | none (raw best-per-span) | kept |
-| `search` | default sort | kept |
-| `search_greedy` | greedy (longer patterns first) | kept |
-| `search_coverage_weighted` | by `similarity × covered length` | kept |
-| `search_non_overlapping` | default sort | resolved |
-| `search_non_overlapping_unique` | default sort | resolved + one match per pattern id |
-| `search_non_overlapping_unique_coverage_weighted` | coverage-weighted | resolved + unique |
+| *(none)* | `Unsorted` (default) | raw best-per-span, no ordering (fastest) |
+| `.sorted()` | `Default` | higher similarity, then longer patterns, then earlier position |
+| `.greedy()` | `Greedy` | longer patterns first, then similarity |
+| `.coverage_weighted()` | `CoverageWeighted` | by `similarity × covered length` |
 
-`search_unsorted` is the primitive: it returns the single best-scoring match for each distinct
-`(start, end, pattern)` span, in no particular order. Everything else is `search_unsorted` plus a
-sort and/or an overlap resolver, so you can also build your own pipeline.
+### Overlap (`SearchOptions::overlap`, an [`Overlap`])
+
+| Setter | `Overlap` | Effect |
+| --- | --- | --- |
+| *(none)* | `Keep` (default) | keep every match, including overlapping spans |
+| `.non_overlapping()` | `NonOverlapping` | greedily drop overlapping matches in the current order |
+| `.non_overlapping_unique()` | `NonOverlappingUnique` | as above, and use each pattern id at most once |
+
+Overlap resolution is greedy in the current order, so **choose an order whenever you resolve
+overlaps** — e.g. `.sorted().non_overlapping()` yields a default-ranked non-overlapping set, and
+`.coverage_weighted().non_overlapping_unique()` yields a coverage-ranked set with at most one match
+per pattern id.
 
 ## Fallibility
 
@@ -53,14 +82,16 @@ already kept — so **sort first, then resolve**. `non_overlapping_unique()` add
 match per pattern identity (see [unique ids](../building/patterns.md)).
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
     .case_insensitive(true)
     .build(["hello", "world"]);
 
-let matches = engine.search_non_overlapping("helllo wolrd", 0.8).unwrap();
+let matches = engine
+    .search("helllo wolrd", &SearchOptions::new().threshold(0.8).sorted().non_overlapping())
+    .unwrap();
 let found: Vec<&str> = matches.iter().map(|m| m.pattern.as_str()).collect();
 assert!(found.contains(&"hello") && found.contains(&"world"));
 ```
@@ -73,7 +104,7 @@ assert!(found.contains(&"hello") && found.contains(&"world"));
 - `filter(pred)` / `retain(pred)` — keep matches satisfying a predicate.
 - `matched_spans()` / `matched_strings()` — the `(start, end)` byte ranges / matched substrings.
 - `replace(callback)` — see [Replacement](replacement.md).
-- `segment_iter()`, `split()`, `strip_prefix()`, `strip_postfix()` — see
+- `segment_iter()`, `split()`, `strip_prefix()`, `strip_suffix()` — see
   [Segmentation & Splitting](segmentation.md).
 
 Each [`FuzzyMatch`] carries `pattern_index`, `pattern`, `start`/`end` (byte offsets), `text`,
@@ -83,3 +114,6 @@ Each [`FuzzyMatch`] carries `pattern_index`, `pattern`, `start`/`end` (byte offs
 [`FuzzyMatches`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/structs/struct.FuzzyMatches.html
 [`FuzzyMatch`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/structs/struct.FuzzyMatch.html
 [`SearchError`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/enum.SearchError.html
+[`SearchOptions`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/structs/struct.SearchOptions.html
+[`Order`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/structs/enum.Order.html
+[`Overlap`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/structs/enum.Overlap.html

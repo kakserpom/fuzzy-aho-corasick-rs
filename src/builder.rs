@@ -10,13 +10,13 @@ use unicode_segmentation::UnicodeSegmentation;
 /// Builder for [`FuzzyAhoCorasick`].
 ///
 /// ```rust
-/// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder};
+/// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, SearchOptions};
 ///
 /// let engine = FuzzyAhoCorasickBuilder::new()
 ///     .case_insensitive(true)
 ///     .build(["hello", "world"]);
 ///
-/// let result = engine.segment_text("justheLLowOrLd!", 1.).unwrap();
+/// let result = engine.segment_text("justheLLowOrLd!", &SearchOptions::new().threshold(1.)).unwrap();
 /// assert_eq!(result, "just heLLo wOrLd!");
 /// ```
 #[derive(Debug, Default)]
@@ -166,13 +166,13 @@ impl FuzzyAhoCorasickBuilder {
     /// Builds an immutable [`FuzzyAhoCorasick`] engine from pattern list.
     ///
     /// ```rust
-    /// use fuzzy_aho_corasick::FuzzyAhoCorasickBuilder;
+    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, SearchOptions};
     ///
     /// let engine = FuzzyAhoCorasickBuilder::new()
     ///     .case_insensitive(true)
     ///     .build([("Γειά", 1.0), ("σου", 1.0)]);
     ///
-    /// assert!(!engine.search("γειά ΣΟΥ!", 0.8).unwrap().is_empty());
+    /// assert!(!engine.search("γειά ΣΟΥ!", &SearchOptions::new().threshold(0.8).sorted()).unwrap().is_empty());
     /// ```
     pub fn build<T>(self, inputs: impl IntoIterator<Item = T>) -> FuzzyAhoCorasick
     where

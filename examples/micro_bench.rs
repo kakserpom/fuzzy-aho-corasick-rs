@@ -1,4 +1,4 @@
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -12,7 +12,13 @@ fn main() {
     let text = "hell world rst safety helo wold savefty hell rust";
     // Warmup
     for _ in 0..1000 {
-        let _ = fac.search_non_overlapping(black_box(text), 0.8);
+        let _ = fac.search(
+            black_box(text),
+            &SearchOptions::new()
+                .threshold(0.8)
+                .sorted()
+                .non_overlapping(),
+        );
     }
 
     let rounds = 20;
@@ -21,7 +27,13 @@ fn main() {
     for _ in 0..rounds {
         let start = Instant::now();
         for _ in 0..iters {
-            let _ = fac.search_non_overlapping(black_box(text), 0.8);
+            let _ = fac.search(
+                black_box(text),
+                &SearchOptions::new()
+                    .threshold(0.8)
+                    .sorted()
+                    .non_overlapping(),
+            );
         }
         let elapsed = start.elapsed().as_nanos();
         if elapsed < best {

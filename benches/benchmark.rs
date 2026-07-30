@@ -1,5 +1,5 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 use std::hint::black_box;
 
 fn benchmark_search(c: &mut Criterion) {
@@ -10,7 +10,13 @@ fn benchmark_search(c: &mut Criterion) {
 
     c.bench_function("search_basic", |b| {
         b.iter(|| {
-            let _ = automaton.search_non_overlapping(black_box(input), 0.8);
+            let _ = automaton.search(
+                black_box(input),
+                &SearchOptions::new()
+                    .threshold(0.8)
+                    .sorted()
+                    .non_overlapping(),
+            );
         });
     });
 }
@@ -25,7 +31,13 @@ fn benchmark_long_text(c: &mut Criterion) {
 
     c.bench_function("search_long_text", |b| {
         b.iter(|| {
-            let _ = automaton.search_non_overlapping(black_box(text), 0.8);
+            let _ = automaton.search(
+                black_box(text),
+                &SearchOptions::new()
+                    .threshold(0.8)
+                    .sorted()
+                    .non_overlapping(),
+            );
         });
     });
 }
@@ -63,7 +75,13 @@ fn benchmark_many_patterns(c: &mut Criterion) {
 
     c.bench_function("search_many_patterns", |b| {
         b.iter(|| {
-            let _ = automaton.search_non_overlapping(black_box(text), 0.7);
+            let _ = automaton.search(
+                black_box(text),
+                &SearchOptions::new()
+                    .threshold(0.7)
+                    .sorted()
+                    .non_overlapping(),
+            );
         });
     });
 }
@@ -80,7 +98,13 @@ fn benchmark_fuzzy_levels(c: &mut Criterion) {
 
         group.bench_with_input(BenchmarkId::new("edits", edits), &edits, |b, _| {
             b.iter(|| {
-                let _ = automaton.search_non_overlapping(black_box(text), 0.6);
+                let _ = automaton.search(
+                    black_box(text),
+                    &SearchOptions::new()
+                        .threshold(0.6)
+                        .sorted()
+                        .non_overlapping(),
+                );
             });
         });
     }
@@ -131,7 +155,7 @@ fn benchmark_replace(c: &mut Criterion) {
 
     c.bench_function("replace", |b| {
         b.iter(|| {
-            let _ = replacer.replace(black_box(text), 0.8);
+            let _ = replacer.replace(black_box(text), &SearchOptions::new().threshold(0.8));
         });
     });
 }
@@ -183,19 +207,37 @@ fn benchmark_beam_search(c: &mut Criterion) {
 
     group.bench_function("no_beam_edits4", |b| {
         b.iter(|| {
-            let _ = automaton_no_beam.search_non_overlapping(black_box(text), 0.5);
+            let _ = automaton_no_beam.search(
+                black_box(text),
+                &SearchOptions::new()
+                    .threshold(0.5)
+                    .sorted()
+                    .non_overlapping(),
+            );
         });
     });
 
     group.bench_function("beam_500_edits4", |b| {
         b.iter(|| {
-            let _ = automaton_beam_500.search_non_overlapping(black_box(text), 0.5);
+            let _ = automaton_beam_500.search(
+                black_box(text),
+                &SearchOptions::new()
+                    .threshold(0.5)
+                    .sorted()
+                    .non_overlapping(),
+            );
         });
     });
 
     group.bench_function("beam_100_edits4", |b| {
         b.iter(|| {
-            let _ = automaton_beam_100.search_non_overlapping(black_box(text), 0.5);
+            let _ = automaton_beam_100.search(
+                black_box(text),
+                &SearchOptions::new()
+                    .threshold(0.5)
+                    .sorted()
+                    .non_overlapping(),
+            );
         });
     });
 

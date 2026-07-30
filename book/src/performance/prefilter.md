@@ -6,19 +6,19 @@ non-matching text, `with_prefilter()` adds an opt-in fast lane: a bit-parallel
 hundreds of MB/s, to locate *candidate regions*, and the full weighted engine then re-searches only
 those regions.
 
-Results are **identical** to [`search`](../searching/search.md) / `search_unsorted` — the filter is a
+Results are **identical** to a plain [`search`](../searching/search.md) with the same `SearchOptions` — the filter is a
 conservative over-approximation (a necessary condition), so it never drops a real match; it only
 spares the engine from scanning text that cannot contain one.
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
     .build(["vestibulum", "consectetur"]);
 
 let pf = engine.with_prefilter(); // build once, reuse across searches
-let hits = pf.search("… lorem vestibulm ipsum …", 0.85).unwrap();
+let hits = pf.search("… lorem vestibulm ipsum …", &SearchOptions::new().threshold(0.85)).unwrap();
 // Same matches as engine.search(…).unwrap(), just faster on large, sparse inputs.
 ```
 

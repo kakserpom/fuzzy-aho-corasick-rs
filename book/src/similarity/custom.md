@@ -22,14 +22,14 @@ Supply a `&'static Similarity` built from a map of `(char, char) → similarity`
 usual way to get a `'static`:
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, structs::{Similarity, FxHashMap}};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, structs::Similarity};
 use std::sync::LazyLock;
 
 static SIMILARITY: LazyLock<Similarity> = LazyLock::new(|| {
-    let mut map = FxHashMap::default();
-    map.insert(('@', 'a'), 0.9);
-    map.insert(('a', '@'), 0.9);
-    Similarity::from_map(map)
+    Similarity::from_map([
+        (('@', 'a'), 0.9),
+        (('a', '@'), 0.9),
+    ])
 });
 
 let engine = FuzzyAhoCorasickBuilder::new()

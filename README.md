@@ -28,7 +28,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fuzzy-aho-corasick = "0.4"
+fuzzy-aho-corasick = "0.5"
 ```
 
 Then in code:
@@ -40,7 +40,7 @@ use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
 ## Quick Start
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 fn main() {
     // Build an engine allowing up to 1 edit per match, case-insensitive.
@@ -50,7 +50,8 @@ fn main() {
         .build(["hello", "world"]);
 
     // "helllo wolrd" has two typos: an extra 'l' (insertion) and swapped 'lr' (transposition).
-    for m in engine.search_non_overlapping("helllo wolrd", 0.8).unwrap().iter() {
+    let opts = SearchOptions::new().threshold(0.8).sorted().non_overlapping();
+    for m in engine.search("helllo wolrd", &opts).unwrap().iter() {
         println!("matched '{}' as '{}' (score {:.2})", m.pattern, m.text, m.similarity);
     }
     // Output:
@@ -128,13 +129,13 @@ By default, all patterns have weight `1.0`, but you can adjust per-pattern scori
 Weighting via tuples, and case-insensitive Greek:
 
 ```rust
-use fuzzy_aho_corasick::FuzzyAhoCorasickBuilder;
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, SearchOptions};
 
 // Each tuple is (pattern, weight).
 let engine = FuzzyAhoCorasickBuilder::new()
     .case_insensitive(true)
     .build([("Γειά", 1.0), ("σου", 1.0)]);
-assert!(!engine.search("γειά ΣΟΥ!", 0.8).unwrap().is_empty());
+assert!(!engine.search("γειά ΣΟΥ!", &SearchOptions::new().threshold(0.8)).unwrap().is_empty());
 ```
 
 Customizing patterns with per-pattern fuzzy limits, weights, and unique IDs:
@@ -158,24 +159,35 @@ These allow fine-grained control over ranking, deduplication, and fuzzy toleranc
 
 ## Match Selection Strategies
 
-`search_unsorted` returns the raw best match per span; the following orderings and overlap resolvers refine it. They
-are methods on the returned [`FuzzyMatches`]:
+`search(haystack, &SearchOptions)` is the single entry point. `SearchOptions` bundles the similarity
+threshold with an ordering and an overlap resolver; with `SearchOptions::default()` it returns the raw
+best match per span, unordered (fastest). Build one with chainable setters:
 
-* `default_sort()`: Prioritizes higher similarity, then longer patterns, then earlier position.
-* `greedy_sort()`: Prefers longer patterns first, then similarity.
-* `coverage_weighted_sort()`: Ranks by `similarity * covered_length`, favoring matches that cover more text.
-* `non_overlapping()`: Greedily drops overlapping matches in the current order.
-* `non_overlapping_unique()`: Same, but ensures each pattern (respecting `custom_unique_id`) is used at most once.
+```rust
+use fuzzy_aho_corasick::{SearchOptions, Order, Overlap};
 
-Convenience entrypoints on the engine (each takes `(haystack, threshold)`):
+let opts = SearchOptions::new()
+    .threshold(0.8)      // minimum similarity (default 0.0 — keep everything)
+    .sorted()            // Order::Default: similarity, then longer patterns, then position
+    .non_overlapping();  // Overlap::NonOverlapping: greedily drop overlaps in the chosen order
+```
 
-* `search(...)`: default sort.
-* `search_greedy(...)`: greedy sort.
-* `search_coverage_weighted(...)`: coverage-weighted sort.
-* `search_non_overlapping(...)`: default sort + non-overlapping selection.
-* `search_non_overlapping_unique(...)`: default sort + non-overlapping + pattern-unique.
-* `search_non_overlapping_unique_coverage_weighted(...)`: coverage-weighted variant of the above.
-* `search_unsorted(...)`: raw, unsorted best-per-span matches (build your own pipeline).
+**Ordering** (`SearchOptions::order`, an [`Order`]):
+
+* `.sorted()` / `Order::Default`: higher similarity, then longer patterns, then earlier position.
+* `.greedy()` / `Order::Greedy`: longer patterns first, then similarity.
+* `.coverage_weighted()` / `Order::CoverageWeighted`: by `similarity * covered_length`, favoring matches that cover more text.
+* `Order::Unsorted` (the default): raw best-per-span order (fastest; build your own pipeline).
+
+**Overlap resolution** (`SearchOptions::overlap`, an [`Overlap`]):
+
+* `Overlap::Keep` (the default): keep every match, including overlapping spans.
+* `.non_overlapping()` / `Overlap::NonOverlapping`: greedily drop overlapping matches in the current order.
+* `.non_overlapping_unique()` / `Overlap::NonOverlappingUnique`: same, and use each pattern (respecting `custom_unique_id`) at most once.
+
+The same orderings and resolvers are also exposed as in-place methods on the returned [`FuzzyMatches`]
+(`default_sort()`, `greedy_sort()`, `coverage_weighted_sort()`, `non_overlapping()`,
+`non_overlapping_unique()`) if you want to refine a raw result set by hand.
 
 ## Bounding Worst-Case Work
 
@@ -276,7 +288,7 @@ let engine = FuzzyAhoCorasickBuilder::new()
 
 let mut out = Vec::new();
 // "neeedle" has one extra 'e' (an insertion); it is replaced, the rest copied through.
-engine.replace_stream("a neeedle b".as_bytes(), &mut out, |_m| Some("X"), 0.8).unwrap();
+engine.replace_stream("a neeedle b".as_bytes(), &mut out, 0.8, |_m| Some("X")).unwrap();
 assert_eq!(String::from_utf8(out).unwrap(), "a X b");
 ```
 
@@ -287,7 +299,7 @@ borrow external data but not the transient matched text — return an owned `Str
 derive it from `m.text`. `FuzzyReplacer` exposes the turnkey `replace_stream(reader, writer, threshold)`
 using its configured `(pattern → replacement)` table. Wrap the writer in a `BufWriter` for throughput.
 
-`replace_stream_parallel(reader, writer, threads, callback, threshold)` fans the (CPU-bound) search
+`replace_stream_parallel(reader, writer, threads, threshold, callback)` fans the (CPU-bound) search
 across a thread pool while reassembling the output **in stream order** on the calling thread — so it
 produces byte-identical output to `replace_stream`, and the callback and writer stay single-threaded
 (no `Send`/`Sync` bounds). Because output is inherently ordered, only the search is parallelised.
@@ -298,19 +310,19 @@ The core search is thorough but pays a per-position cost. When you search large 
 non-matching text, `with_prefilter()` adds an opt-in fast lane: a bit-parallel
 ([Bitap](https://en.wikipedia.org/wiki/Bitap_algorithm) / Wu–Manber) approximate scan runs first at
 hundreds of MB/s to locate *candidate regions*, and the full weighted engine then re-searches only
-those. Results are **identical** to `search` / `search_unsorted` — the filter is a conservative
+those. Results are **identical** to a plain `search` — the filter is a conservative
 over-approximation, so it never drops a real match; it only spares the engine from scanning text that
 cannot contain one.
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
     .build(["vestibulum", "consectetur"]);
 
 let pf = engine.with_prefilter(); // build once, reuse across searches
-let hits = pf.search("… lorem vestibulm ipsum …", 0.85).unwrap();
+let hits = pf.search("… lorem vestibulm ipsum …", &SearchOptions::new().threshold(0.85)).unwrap();
 // Same matches as engine.search(…).unwrap(), just faster on large, sparse inputs.
 ```
 
@@ -336,12 +348,13 @@ brute-force correctness verifier, and a throughput comparison.
 Break text into matched/unmatched pieces and reassemble with intelligent spacing:
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
     .build(["input", "more"]);
-let matches = engine.search_non_overlapping("someinptandm0re", 0.75).unwrap();
+let opts = SearchOptions::new().threshold(0.75).sorted().non_overlapping();
+let matches = engine.search("someinptandm0re", &opts).unwrap();
 assert_eq!(matches.segment_text(), "some inpt and m0re");
 ```
 
@@ -351,10 +364,10 @@ Treat each fuzzy match as a delimiter and collect the unmatched pieces:
 
 - **`FuzzyMatches::split()`** — splits the already-segmented stream, yielding the `Unmatched` parts (including empty
   ones if matches touch the ends).
-- **`FuzzyAhoCorasick::split(haystack, threshold)`** — convenience: runs `search_non_overlapping` and calls `split()`.
+- **`FuzzyAhoCorasick::split(haystack, &SearchOptions)`** — convenience: resolves a non-overlapping match set and calls `split()`.
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
@@ -362,13 +375,13 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .build(["FOO", "BAR"]);
 
 // Treat each fuzzy match (>= 0.8) as a separator:
-let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", 0.8).unwrap().collect();
+let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", &SearchOptions::new().threshold(0.8)).unwrap().collect();
 assert_eq!(parts, vec!["xx", "yy", "zz"]);
 ```
 
 ## Post-Processing Utilities
 
-Once you have a [`FuzzyMatches`] (for example, from `search_non_overlapping`), these methods trim, transform, or extract
+Once you have a [`FuzzyMatches`] (for example, from `search` with `.non_overlapping()`), these methods trim, transform, or extract
 from the matched set:
 
 * **`replace(callback)`** — walks matches left-to-right (skipping overlaps) and calls
@@ -376,7 +389,7 @@ from the matched set:
   `None` keeps the original text. See [Fuzzy Replacer](#fuzzy-replacer) for the turnkey version.
 * **`strip_prefix()`** — drops leading fuzzy-matched (and whitespace-only) segments, trims the first kept segment, and
   returns the rest.
-* **`strip_postfix()`** — the mirror image: removes trailing matched/whitespace segments and returns the leading text.
+* **`strip_suffix()`** — the mirror image: removes trailing matched/whitespace segments and returns the leading text.
 * **`matched_spans()` / `matched_strings()`** — the `(start, end)` byte ranges / the matched substrings.
 * **`filter(pred)` / `retain(pred)`** — keep only matches satisfying a predicate (borrowing / in place).
 * **`iter()` / `iter_mut()` / `len()` / `is_empty()`** — inspect the match set (also available via `Deref<[FuzzyMatch]>`).
@@ -387,7 +400,7 @@ Perform fuzzy find-and-replace with a mapping. Non-overlapping matches are chose
 heuristics.
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let replacer = FuzzyAhoCorasickBuilder::new()
     .case_insensitive(true)
@@ -395,7 +408,7 @@ let replacer = FuzzyAhoCorasickBuilder::new()
     .build_replacer([("hello", "hi"), ("world", "earth")]);
 
 // '0'↔'o' is a near-match in the default table, so both fuzzy tokens are replaced:
-assert_eq!(replacer.replace("hell0 w0rld!", 0.8).unwrap(), "hi earth!");
+assert_eq!(replacer.replace("hell0 w0rld!", &SearchOptions::new().threshold(0.8)).unwrap(), "hi earth!");
 ```
 
 ## Custom Similarity
@@ -404,14 +417,15 @@ By default, substitutions between related graphemes (vowels, consonants, common 
 carry a reduced penalty. Provide your own table for domain-specific confusions:
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, structs::{Similarity, FxHashMap}};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, structs::Similarity};
 use std::sync::LazyLock;
 
 static SIMILARITY: LazyLock<Similarity> = LazyLock::new(|| {
-    let mut map = FxHashMap::default();
-    map.insert(('@', 'a'), 0.9);
-    map.insert(('a', '@'), 0.9);
-    Similarity::from_map(map)
+    // `from_map` takes any `IntoIterator<Item = ((char, char), f32)>`.
+    Similarity::from_map([
+        (('@', 'a'), 0.9),
+        (('a', '@'), 0.9),
+    ])
 });
 
 let engine = FuzzyAhoCorasickBuilder::new()
@@ -427,7 +441,7 @@ instead want *no* substitution to be too weak — the "weakest link" bound from 
 [paper](DOCS/ias10_horak.pdf) — set a per-character floor:
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
@@ -435,8 +449,10 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .min_symbol_similarity(0.3) // reject any substitution below 0.3 similarity
     .build(["vestibulum"]);
 
-assert!(engine.search("vxstibulum", 0.8).unwrap().is_empty()); // e↔x has similarity 0 -> rejected
-assert_eq!(engine.search("vestibulom", 0.8).unwrap().len(), 1); // u↔o (0.6) is fine
+// e↔x has similarity 0 -> rejected
+assert!(engine.search("vxstibulum", &SearchOptions::new().threshold(0.8)).unwrap().is_empty());
+// u↔o (0.6) is fine
+assert_eq!(engine.search("vestibulom", &SearchOptions::new().threshold(0.8)).unwrap().len(), 1);
 ```
 
 The floor applies only to character-level substitutions; exact matches and explicit mappings (which
@@ -450,7 +466,7 @@ Either side may stand in for the other (mappings are **bidirectional**), and a m
 substitution against the edit limits, exactly like a single-character similarity substitution.
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new()
     .case_insensitive(true)
@@ -461,9 +477,9 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .build(["encyclopaedia", "alexander"]);
 
 // 'æ' in the haystack matches the "ae" in the pattern (and vice versa):
-assert_eq!(engine.search("encyclopædia", 0.95).unwrap().len(), 1);
+assert_eq!(engine.search("encyclopædia", &SearchOptions::new().threshold(0.95)).unwrap().len(), 1);
 // 'x' in the pattern matches "ks" in the haystack:
-assert_eq!(engine.search("aleksander", 0.95).unwrap().len(), 1);
+assert_eq!(engine.search("aleksander", &SearchOptions::new().threshold(0.95)).unwrap().len(), 1);
 ```
 
 - **[`mapping(a, b)`](https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/struct.FuzzyAhoCorasickBuilder.html#method.mapping)** — exact equivalence (score `1.0`, no penalty).
@@ -481,7 +497,7 @@ The engine is built once and is cheap to query repeatedly. Some tips:
 * **Tune `FuzzyLimits` per pattern** when you know the expected error characteristics; tighter limits explore fewer
   states.
 * **Shape ambiguity with `FuzzyPenalties`** — make substitutions or insertions cheaper/pricier to fit your domain.
-* **Prefer `search_non_overlapping_*`** to avoid resolving overlaps yourself.
+* **Set `.non_overlapping()` / `.non_overlapping_unique()` on `SearchOptions`** to let the engine resolve overlaps for you.
 * **Guard against pathological inputs** with `beam_width` or `auto_beam` when edit limits are high and thresholds low.
 
 Grapheme positions are represented as `u32` internally, so a single haystack is expected to be well under 4 GiB.
@@ -491,8 +507,8 @@ Grapheme positions are represented as `u32` internally, so a single haystack is 
 * **Too many false positives** — raise the similarity threshold or tighten per-pattern limits.
 * **Missing fuzzy matches** — lower the threshold, increase allowed edits, or make substitutions less punitive via
   penalties. If you enabled a beam, increase its width.
-* **Overlapping matches unwanted** — use `search_non_overlapping` / `search_non_overlapping_unique` rather than raw
-  `search_unsorted`.
+* **Overlapping matches unwanted** — set `.non_overlapping()` / `.non_overlapping_unique()` on `SearchOptions` rather than
+  leaving the default `Overlap::Keep`.
 * **A search is unexpectedly slow** — you are likely combining a high edit budget with a low threshold; add
   `auto_beam` (keeps common cases exact) or an explicit `beam_width`.
 
@@ -520,5 +536,7 @@ Based on a research paper — [**Fuzzified Aho–Corasick Search Automata**](DOC
 A. Abraham, and A. E. Hassanien.
 
 [`FuzzyMatches`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/struct.FuzzyMatches.html
+[`Order`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/enum.Order.html
+[`Overlap`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/enum.Overlap.html
 [`FuzzyReplacer`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/struct.FuzzyReplacer.html
 [`FuzzyPenalties`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/struct.FuzzyPenalties.html

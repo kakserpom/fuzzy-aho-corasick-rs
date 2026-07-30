@@ -23,7 +23,7 @@
 //! See `examples/bitap_prototype.rs` for the standalone algorithm + a fuzzed correctness check.
 
 use crate::structs::FxHashMap;
-use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, FuzzyMatches, SearchError};
+use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, FuzzyMatches, SearchError, SearchOptions};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Longest pattern (in graphemes) the `u64` bit-vectors can hold.
@@ -100,14 +100,14 @@ impl FuzzyAhoCorasick {
     /// plain full search every time.
     ///
     /// ```
-    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+    /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
     /// let engine = FuzzyAhoCorasickBuilder::new()
     ///     .fuzzy(FuzzyLimits::new().edits(1))
     ///     .build(["vestibulum", "consectetur"]);
     /// let pf = engine.with_prefilter();
     /// // Identical results to engine.search(..), just faster on large sparse inputs.
-    /// let hits = pf.search("lorem vestibulm ipsum", 0.85).unwrap();
-    /// assert_eq!(hits.len(), engine.search("lorem vestibulm ipsum", 0.85).unwrap().len());
+    /// let hits = pf.search("lorem vestibulm ipsum", &SearchOptions::new().threshold(0.85).sorted()).unwrap();
+    /// assert_eq!(hits.len(), engine.search("lorem vestibulm ipsum", &SearchOptions::new().threshold(0.85).sorted()).unwrap().len());
     /// ```
     #[must_use]
     pub fn with_prefilter(&self) -> Prefiltered<'_> {
@@ -127,34 +127,30 @@ impl Prefiltered<'_> {
     }
 
     /// Fuzzy search with the pre-filter applied. Returns exactly what
-    /// [`FuzzyAhoCorasick::search`] would for the same arguments.
+    /// [`FuzzyAhoCorasick::search`] would for the same `opts`.
     ///
     /// # Errors
     /// Propagates [`SearchError`] when the haystack is too large to index — see
-    /// [`FuzzyAhoCorasick::search_unsorted`].
+    /// [`FuzzyAhoCorasick::search`].
     pub fn search<'a>(
         &'a self,
         haystack: &'a str,
-        threshold: f32,
+        opts: &SearchOptions,
     ) -> Result<FuzzyMatches<'a>, SearchError> {
-        let mut matches = self.search_unsorted(haystack, threshold)?;
-        matches.default_sort();
+        let mut matches = self.raw(haystack, opts.threshold)?;
+        matches.apply(opts.order, opts.overlap);
         Ok(matches)
     }
 
-    /// Unsorted variant, mirroring [`FuzzyAhoCorasick::search_unsorted`].
-    ///
-    /// # Errors
-    /// Propagates [`SearchError`] when the haystack is too large to index — see
-    /// [`FuzzyAhoCorasick::search_unsorted`].
-    pub fn search_unsorted<'a>(
+    /// Raw best-per-span matches (pre-filtered when a bit model was built), before ranking/overlap.
+    fn raw<'a>(
         &'a self,
         haystack: &'a str,
         threshold: f32,
     ) -> Result<FuzzyMatches<'a>, SearchError> {
         match &self.filter {
             Some(filter) => filter.search_unsorted(self.engine, haystack, threshold),
-            None => self.engine.search_unsorted(haystack, threshold),
+            None => self.engine.search_raw(haystack, threshold),
         }
     }
 }
@@ -316,7 +312,7 @@ impl BitapFilter {
         for pat in &self.patterns {
             match self.k_for(pat, threshold) {
                 Some(k) => ks.push(k),
-                None => return engine.search_unsorted(haystack, threshold),
+                None => return engine.search_raw(haystack, threshold),
             }
         }
 
@@ -351,7 +347,7 @@ impl BitapFilter {
             let bstart = offsets.byte(gs);
             let bend = offsets.byte(ge.min(n));
             let sub = &haystack[bstart..bend];
-            for m in engine.search_unsorted(sub, threshold)? {
+            for m in engine.search_raw(sub, threshold)? {
                 let start = bstart + m.start;
                 let end = bstart + m.end;
                 let key = (start, end, m.pattern_index);
@@ -440,7 +436,7 @@ fn bitap_windows(mask: &[u64], m: usize, k: usize, ids: &[u8], out: &mut Vec<(us
 
 #[cfg(test)]
 mod tests {
-    use crate::{FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties};
+    use crate::{FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, SearchOptions};
 
     /// Deterministic xorshift so the fuzz is reproducible.
     struct Rng(u64);
@@ -511,13 +507,13 @@ mod tests {
             let threshold = 0.6 + (rng.next() % 4) as f32 * 0.1; // 0.6..=0.9
 
             let mut expected: Vec<_> = engine
-                .search_unsorted(&hay, threshold)
+                .search(&hay, &SearchOptions::new().threshold(threshold))
                 .unwrap()
                 .iter()
                 .map(key)
                 .collect();
             let mut got: Vec<_> = pf
-                .search_unsorted(&hay, threshold)
+                .search(&hay, &SearchOptions::new().threshold(threshold))
                 .unwrap()
                 .iter()
                 .map(key)

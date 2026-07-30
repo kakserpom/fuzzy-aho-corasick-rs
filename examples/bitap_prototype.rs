@@ -12,7 +12,7 @@
 //!
 //! Run: `cargo run --release --example bitap_prototype`
 
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -150,10 +150,19 @@ fn main() {
     let engine = FuzzyAhoCorasickBuilder::new()
         .fuzzy(FuzzyLimits::new().edits(k as u8))
         .build(["vestibulum"]);
-    let _ = engine.search(&text, 0.85).unwrap(); // warm
+    let _ = engine
+        .search(&text, &SearchOptions::new().threshold(0.85).sorted())
+        .unwrap(); // warm
     let t = Instant::now();
     for _ in 0..iters {
-        black_box(engine.search(black_box(&text), 0.85).unwrap());
+        black_box(
+            engine
+                .search(
+                    black_box(&text),
+                    &SearchOptions::new().threshold(0.85).sorted(),
+                )
+                .unwrap(),
+        );
     }
     let engine_secs = t.elapsed().as_secs_f64() / f64::from(iters);
     let engine_mbps = bytes.len() as f64 / 1e6 / engine_secs;
@@ -194,25 +203,46 @@ fn main() {
     );
 
     // Correctness: the pre-filtered results must equal the full search exactly.
-    let full = engine.search(&sparse, threshold).unwrap();
-    let filtered = pf.search(&sparse, threshold).unwrap();
+    let full = engine
+        .search(&sparse, &SearchOptions::new().threshold(threshold).sorted())
+        .unwrap();
+    let filtered = pf
+        .search(&sparse, &SearchOptions::new().threshold(threshold).sorted())
+        .unwrap();
     assert_eq!(
         full.len(),
         filtered.len(),
         "pre-filter changed the match set!"
     );
 
-    let _ = pf.search(&sparse, threshold).unwrap(); // warm
+    let _ = pf
+        .search(&sparse, &SearchOptions::new().threshold(threshold).sorted())
+        .unwrap(); // warm
     let t = Instant::now();
     for _ in 0..iters {
-        black_box(pf.search(black_box(&sparse), threshold).unwrap());
+        black_box(
+            pf.search(
+                black_box(&sparse),
+                &SearchOptions::new().threshold(threshold).sorted(),
+            )
+            .unwrap(),
+        );
     }
     let pf_secs = t.elapsed().as_secs_f64() / f64::from(iters);
 
-    let _ = engine.search(&sparse, threshold).unwrap(); // warm
+    let _ = engine
+        .search(&sparse, &SearchOptions::new().threshold(threshold).sorted())
+        .unwrap(); // warm
     let t = Instant::now();
     for _ in 0..iters {
-        black_box(engine.search(black_box(&sparse), threshold).unwrap());
+        black_box(
+            engine
+                .search(
+                    black_box(&sparse),
+                    &SearchOptions::new().threshold(threshold).sorted(),
+                )
+                .unwrap(),
+        );
     }
     let full_secs = t.elapsed().as_secs_f64() / f64::from(iters);
 

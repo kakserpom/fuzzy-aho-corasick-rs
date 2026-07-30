@@ -21,8 +21,10 @@ clean.
 
 ## Pick the right entry point
 
-- Prefer `search_non_overlapping*` over resolving overlaps yourself.
-- Use `search_unsorted` as the primitive when you want to build a custom ranking/selection pipeline.
+- Prefer a `.non_overlapping()` / `.non_overlapping_unique()` [`SearchOptions`](../searching/search.md)
+  over resolving overlaps yourself.
+- Use `SearchOptions::default()` (unordered, overlaps kept) as the fastest primitive when you want to
+  build a custom ranking/selection pipeline.
 
 ## Guard against pathological input
 

@@ -11,7 +11,7 @@ good the rest of the match is. That is the "weakest link" bound from the underly
 ## Setting a floor
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
@@ -20,10 +20,10 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .build(["vestibulum"]);
 
 // e↔x has similarity 0 -> the substitution is rejected outright.
-assert!(engine.search("vxstibulum", 0.8).unwrap().is_empty());
+assert!(engine.search("vxstibulum", &SearchOptions::new().threshold(0.8)).unwrap().is_empty());
 
 // u↔o has similarity 0.6 -> allowed.
-assert_eq!(engine.search("vestibulom", 0.8).unwrap().len(), 1);
+assert_eq!(engine.search("vestibulom", &SearchOptions::new().threshold(0.8)).unwrap().len(), 1);
 ```
 
 Any character-level substitution whose [similarity](custom.md) is below the floor is discarded

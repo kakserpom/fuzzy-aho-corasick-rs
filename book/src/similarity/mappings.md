@@ -5,7 +5,7 @@ span **several graphemes** — ligatures and transliterations like `æ`↔`ae`, 
 register a **mapping**.
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new()
     .case_insensitive(true)
@@ -16,9 +16,9 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .build(["encyclopaedia", "alexander"]);
 
 // 'æ' in the haystack matches "ae" in the pattern (and vice versa):
-assert_eq!(engine.search("encyclopædia", 0.95).unwrap().len(), 1);
+assert_eq!(engine.search("encyclopædia", &SearchOptions::new().threshold(0.95)).unwrap().len(), 1);
 // 'x' in the pattern matches "ks" in the haystack:
-assert_eq!(engine.search("aleksander", 0.95).unwrap().len(), 1);
+assert_eq!(engine.search("aleksander", &SearchOptions::new().threshold(0.95)).unwrap().len(), 1);
 ```
 
 ## Semantics

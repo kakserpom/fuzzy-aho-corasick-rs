@@ -1,4 +1,4 @@
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 fn main() {
     // Long text scenario (the most representative of real usage)
@@ -13,7 +13,15 @@ fn main() {
     let n = 100_000;
     let mut total = 0usize;
     for _ in 0..n {
-        let m = automaton.search_non_overlapping(text, 0.8).unwrap();
+        let m = automaton
+            .search(
+                text,
+                &SearchOptions::new()
+                    .threshold(0.8)
+                    .sorted()
+                    .non_overlapping(),
+            )
+            .unwrap();
         total += m.len();
     }
     println!("total matches: {total}");

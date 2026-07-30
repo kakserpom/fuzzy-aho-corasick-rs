@@ -1,8 +1,8 @@
 # Segmentation & Splitting
 
 Beyond "where are the matches", the engine can slice a string into matched and unmatched pieces and
-reassemble it — useful for tokenization, cleanup, and redaction-style tasks. These build on
-[`search_non_overlapping`](search.md).
+reassemble it — useful for tokenization, cleanup, and redaction-style tasks. These build on a sorted,
+non-overlapping [`search`](search.md).
 
 ## Segments
 
@@ -10,13 +10,13 @@ A `Segment` is either a `Matched` span or the `Unmatched` gap between matches. `
 them in order:
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, Segment};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, Segment, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
     .build(["input", "more"]);
 
-for seg in engine.segment_iter("someinptandm0re", 0.75) {
+for seg in engine.segment_iter("someinptandm0re", &SearchOptions::new().threshold(0.75)).unwrap() {
     match seg {
         Segment::Matched(m)   => println!("match: {:?} (as {})", m.text, m.pattern),
         Segment::Unmatched(u) => println!("gap:   {:?}", u.text),
@@ -30,11 +30,11 @@ for seg in engine.segment_iter("someinptandm0re", 0.75) {
 surrounding text — a quick way to "tokenize" run-together text:
 
 ```rust
-# use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+# use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
     .build(["input", "more"]);
-let matches = engine.search_non_overlapping("someinptandm0re", 0.75).unwrap();
+let matches = engine.search("someinptandm0re", &SearchOptions::new().threshold(0.75).sorted().non_overlapping()).unwrap();
 assert_eq!(matches.segment_text(), "some inpt and m0re");
 ```
 
@@ -43,14 +43,14 @@ assert_eq!(matches.segment_text(), "some inpt and m0re");
 Treat each fuzzy match as a delimiter and collect the pieces in between:
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
     .case_insensitive(true)
     .build(["FOO", "BAR"]);
 
-let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", 0.8).unwrap().collect();
+let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", &SearchOptions::new().threshold(0.8)).unwrap().collect();
 assert_eq!(parts, vec!["xx", "yy", "zz"]);
 ```
 
@@ -59,11 +59,11 @@ matches touch the ends).
 
 ## Stripping affixes
 
-`strip_prefix` and `strip_postfix` remove leading/trailing fuzzy-matched (and whitespace-only)
+`strip_prefix` and `strip_suffix` remove leading/trailing fuzzy-matched (and whitespace-only)
 segments and return the remainder — handy for peeling boilerplate off a field:
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let f = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
@@ -71,9 +71,9 @@ let f = FuzzyAhoCorasickBuilder::new()
     .build(["LOREM", "IPSUM"]);
 
 // "LrEM ISuM" fuzzily matches "LOREM IPSUM"; it and the leading space are stripped.
-assert_eq!(f.strip_prefix("LrEM ISuM Lorm ZZZ", 0.8).unwrap(), "ZZZ");
-assert_eq!(f.strip_postfix("ZZZ LrEM ISuM", 0.8).unwrap(), "ZZZ");
+assert_eq!(f.strip_prefix("LrEM ISuM Lorm ZZZ", &SearchOptions::new().threshold(0.8)).unwrap(), "ZZZ");
+assert_eq!(f.strip_suffix("ZZZ LrEM ISuM", &SearchOptions::new().threshold(0.8)).unwrap(), "ZZZ");
 ```
 
-All of these are convenience wrappers over `search_non_overlapping` followed by a method on the
+All of these are convenience wrappers over a sorted, non-overlapping `search` followed by a method on the
 [`FuzzyMatches`](search.md) result, so you can mix and match with your own filtering.

@@ -1,8 +1,8 @@
 # Replacement
 
 Fuzzy find-and-replace substitutes matched spans with text you choose, copying everything else
-through unchanged. Non-overlapping matches are selected automatically (via
-[`search_non_overlapping`](search.md)) and applied left-to-right.
+through unchanged. A non-overlapping match set is selected automatically (a sorted
+[`search`](search.md) with overlaps resolved) and applied left-to-right.
 
 ## `replace` with a callback
 
@@ -10,12 +10,12 @@ The most flexible form is [`FuzzyAhoCorasick::replace`], which calls your closur
 `Some(replacement)` to substitute, or `None` to keep the original text:
 
 ```rust
-use fuzzy_aho_corasick::FuzzyAhoCorasickBuilder;
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, SearchOptions};
 
 let engine = FuzzyAhoCorasickBuilder::new().build(["FOO", "BAR", "BAZ"]);
-let result = engine.replace("FOO BAR BAZ", |m| {
+let result = engine.replace("FOO BAR BAZ", &SearchOptions::new().threshold(0.8), |m| {
     (m.pattern.pattern == "BAR").then_some("###")
-}, 0.8).unwrap();
+}).unwrap();
 assert_eq!(result, "FOO ### BAZ");
 ```
 
@@ -28,7 +28,7 @@ pattern matched, the matched text, the score, or the edit counts. The return typ
 When you just have a `(pattern → replacement)` table, build a [`FuzzyReplacer`]:
 
 ```rust
-use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits, SearchOptions};
 
 let replacer = FuzzyAhoCorasickBuilder::new()
     .case_insensitive(true)
@@ -36,7 +36,7 @@ let replacer = FuzzyAhoCorasickBuilder::new()
     .build_replacer([("hello", "hi"), ("world", "earth")]);
 
 // '0'↔'o' is a near-match in the default table, so both fuzzy tokens are replaced.
-assert_eq!(replacer.replace("hell0 w0rld!", 0.8).unwrap(), "hi earth!");
+assert_eq!(replacer.replace("hell0 w0rld!", &SearchOptions::new().threshold(0.8)).unwrap(), "hi earth!");
 ```
 
 `build_replacer` takes `(pattern, replacement)` pairs; the pattern side accepts the same conversions
