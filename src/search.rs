@@ -121,10 +121,6 @@ impl FuzzyAhoCorasick {
         swaps: NumEdits,
     ) -> bool {
         if let Some(max) = limits.or(self.limits.as_ref()) {
-            /*println!(
-                "within_limits_swap_ahead() -- max: {max:?} edits: {edits:?} swaps: {swaps:?}\
-                \nresult = {:?}\n"
-            , max.edits.is_none_or(|max| edits < max) && max.swaps.is_none_or(|max| swaps < max))*/
             max.edits.is_none_or(|max| edits < max) && max.swaps.is_none_or(|max| swaps < max)
         } else {
             false
@@ -140,10 +136,6 @@ impl FuzzyAhoCorasick {
         substitutions: NumEdits,
     ) -> bool {
         if let Some(max) = limits.or(self.limits.as_ref()) {
-            /*println!(
-                "within_limits_subst_ahead() -- max: {max:?} edits: {edits:?} substitutions: {substitutions:?}\
-                \nresult = {result:?}\n"
-            );*/
             max.edits.is_none_or(|max| edits < max)
                 && max.substitutions.is_none_or(|max| substitutions < max)
         } else {
@@ -164,10 +156,6 @@ impl FuzzyAhoCorasick {
         swaps: NumEdits,
     ) -> bool {
         if let Some(max) = limits.or(self.limits.as_ref()) {
-            /*println!(
-                "within_limits() -- max: {max:?} edits: {edits:?} insertions: {insertions:?} deletions: {deletions:?} substitutions: {substitutions:?} swaps: {swaps:?}\
-                \nresult = {result:?}\n"
-            );*/
             max.edits.is_none_or(|max| edits <= max)
                 && max.insertions.is_none_or(|max| insertions <= max)
                 && max.deletions.is_none_or(|max| deletions <= max)
