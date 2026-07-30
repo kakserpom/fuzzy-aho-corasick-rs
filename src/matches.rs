@@ -195,7 +195,7 @@ impl<'a> FuzzyMatches<'a> {
     ///     .case_insensitive(true)
     ///     .build(["LOREM", "IPSUM"]);
     ///
-    /// let matches = f.search_non_overlapping("LrEM ISuM Lorm ZZZ", 0.8);
+    /// let matches = f.search_non_overlapping("LrEM ISuM Lorm ZZZ", 0.8).unwrap();
     /// assert_eq!(matches.strip_prefix(), "ZZZ");
     /// ```
     #[must_use]
@@ -253,7 +253,7 @@ impl<'a> FuzzyMatches<'a> {
     ///     .case_insensitive(true)
     ///     .build(["LOREM", "IPSUM"]);
     ///
-    /// let matches = f.search_non_overlapping("ZZZ LrEM ISuM Lorm", 0.8);
+    /// let matches = f.search_non_overlapping("ZZZ LrEM ISuM Lorm", 0.8).unwrap();
     /// assert_eq!(matches.strip_postfix(), "ZZZ");
     /// ```
     #[must_use]
@@ -315,7 +315,7 @@ impl<'a> FuzzyMatches<'a> {
     ///     .build(["FOO", "BAR"]);
     ///
     /// let parts: Vec<&str> = engine
-    ///     .search_non_overlapping("xxFoOyyBAARzz", 0.8)
+    ///     .search_non_overlapping("xxFoOyyBAARzz", 0.8).unwrap()
     ///     .split()
     ///     .collect();
     ///
@@ -392,7 +392,7 @@ impl<'a> FuzzyMatches<'a> {
     /// let engine = FuzzyAhoCorasickBuilder::new()
     ///     .build(["rust", "rustacean"]);
     ///
-    /// let mut matches = engine.search_non_overlapping("rustacean and rust", 0.8);
+    /// let mut matches = engine.search_non_overlapping("rustacean and rust", 0.8).unwrap();
     /// // Keep only matches of the exact word "rust"
     /// matches.retain(|m| m.pattern_index == 0);
     ///
@@ -425,7 +425,7 @@ impl<'a> FuzzyMatches<'a> {
     ///     .case_insensitive(true)
     ///     .build(["ipsum", "lorem"]);
     ///
-    /// assert_eq!(engine.search_non_overlapping("ipsum and l0rem", 0.5)
+    /// assert_eq!(engine.search_non_overlapping("ipsum and l0rem", 0.5).unwrap()
     ///     .filter(|m| m.text.contains("0"))
     ///     .replace(|m| Some(format!("**{}**", m.text))), "ipsum and **l0rem**");
     /// ```
@@ -462,7 +462,7 @@ impl<'a> FuzzyMatches<'a> {
     ///     .case_insensitive(true)
     ///     .build(["HELLO", "WORLD"]);
     ///
-    /// let matches = engine.search_non_overlapping("helllo wolrd", 0.8);
+    /// let matches = engine.search_non_overlapping("helllo wolrd", 0.8).unwrap();
     /// // "helllo" spans bytes 0..6 and "wolrd" spans 7..12
     /// assert_eq!(matches.matched_spans(), vec![(0, 6), (7, 12)]);
     /// ```
@@ -490,7 +490,7 @@ impl<'a> FuzzyMatches<'a> {
     ///     .case_insensitive(true)
     ///     .build(["HELLO", "WORLD"]);
     ///
-    /// let matches = engine.search_non_overlapping("helllo wolrd", 0.8);
+    /// let matches = engine.search_non_overlapping("helllo wolrd", 0.8).unwrap();
     /// assert_eq!(matches.matched_strings(), vec!["helllo", "wolrd"]);
     /// ```
     #[must_use]

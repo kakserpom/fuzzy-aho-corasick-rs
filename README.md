@@ -50,7 +50,7 @@ fn main() {
         .build(["hello", "world"]);
 
     // "helllo wolrd" has two typos: an extra 'l' (insertion) and swapped 'lr' (transposition).
-    for m in engine.search_non_overlapping("helllo wolrd", 0.8).iter() {
+    for m in engine.search_non_overlapping("helllo wolrd", 0.8).unwrap().iter() {
         println!("matched '{}' as '{}' (score {:.2})", m.pattern, m.text, m.similarity);
     }
     // Output:
@@ -134,7 +134,7 @@ use fuzzy_aho_corasick::FuzzyAhoCorasickBuilder;
 let engine = FuzzyAhoCorasickBuilder::new()
     .case_insensitive(true)
     .build([("Γειά", 1.0), ("σου", 1.0)]);
-assert!(!engine.search("γειά ΣΟΥ!", 0.8).is_empty());
+assert!(!engine.search("γειά ΣΟΥ!", 0.8).unwrap().is_empty());
 ```
 
 Customizing patterns with per-pattern fuzzy limits, weights, and unique IDs:
@@ -310,8 +310,8 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .build(["vestibulum", "consectetur"]);
 
 let pf = engine.with_prefilter(); // build once, reuse across searches
-let hits = pf.search("… lorem vestibulm ipsum …", 0.85);
-// Same matches as engine.search(…), just faster on large, sparse inputs.
+let hits = pf.search("… lorem vestibulm ipsum …", 0.85).unwrap();
+// Same matches as engine.search(…).unwrap(), just faster on large, sparse inputs.
 ```
 
 **How the budget is derived.** The score threshold bounds the total penalty a kept match may carry
@@ -341,7 +341,7 @@ use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
     .build(["input", "more"]);
-let matches = engine.search_non_overlapping("someinptandm0re", 0.75);
+let matches = engine.search_non_overlapping("someinptandm0re", 0.75).unwrap();
 assert_eq!(matches.segment_text(), "some inpt and m0re");
 ```
 
@@ -362,7 +362,7 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .build(["FOO", "BAR"]);
 
 // Treat each fuzzy match (>= 0.8) as a separator:
-let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", 0.8).collect();
+let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", 0.8).unwrap().collect();
 assert_eq!(parts, vec!["xx", "yy", "zz"]);
 ```
 
@@ -395,7 +395,7 @@ let replacer = FuzzyAhoCorasickBuilder::new()
     .build_replacer([("hello", "hi"), ("world", "earth")]);
 
 // '0'↔'o' is a near-match in the default table, so both fuzzy tokens are replaced:
-assert_eq!(replacer.replace("hell0 w0rld!", 0.8), "hi earth!");
+assert_eq!(replacer.replace("hell0 w0rld!", 0.8).unwrap(), "hi earth!");
 ```
 
 ## Custom Similarity
@@ -435,8 +435,8 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .min_symbol_similarity(0.3) // reject any substitution below 0.3 similarity
     .build(["vestibulum"]);
 
-assert!(engine.search("vxstibulum", 0.8).is_empty()); // e↔x has similarity 0 -> rejected
-assert_eq!(engine.search("vestibulom", 0.8).len(), 1); // u↔o (0.6) is fine
+assert!(engine.search("vxstibulum", 0.8).unwrap().is_empty()); // e↔x has similarity 0 -> rejected
+assert_eq!(engine.search("vestibulom", 0.8).unwrap().len(), 1); // u↔o (0.6) is fine
 ```
 
 The floor applies only to character-level substitutions; exact matches and explicit mappings (which
@@ -461,9 +461,9 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .build(["encyclopaedia", "alexander"]);
 
 // 'æ' in the haystack matches the "ae" in the pattern (and vice versa):
-assert_eq!(engine.search("encyclopædia", 0.95).len(), 1);
+assert_eq!(engine.search("encyclopædia", 0.95).unwrap().len(), 1);
 // 'x' in the pattern matches "ks" in the haystack:
-assert_eq!(engine.search("aleksander", 0.95).len(), 1);
+assert_eq!(engine.search("aleksander", 0.95).unwrap().len(), 1);
 ```
 
 - **[`mapping(a, b)`](https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/struct.FuzzyAhoCorasickBuilder.html#method.mapping)** — exact equivalence (score `1.0`, no penalty).

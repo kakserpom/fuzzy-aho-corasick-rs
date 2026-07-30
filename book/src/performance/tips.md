@@ -51,9 +51,9 @@ automaton plus a small, bounded slice per in-flight search.
 
 A single [`search`](../searching/search.md) call keeps grapheme positions as `u32`, so one haystack
 must contain at most `u32::MAX` grapheme clusters (roughly a 4 GiB ASCII input). A larger haystack
-**panics** rather than silently truncating positions to wrong offsets — for inputs that big (or
-unbounded streams), use the [streaming API](../streaming/search.md), which windows the input and
-reports absolute `u64` offsets.
+returns `Err(SearchError::HaystackTooLarge)` rather than silently truncating positions to wrong
+offsets — for inputs that big (or unbounded streams), use the [streaming API](../streaming/search.md),
+which windows the input and reports absolute `u64` offsets.
 
 ## Measuring
 

@@ -34,7 +34,7 @@ surrounding text — a quick way to "tokenize" run-together text:
 let engine = FuzzyAhoCorasickBuilder::new()
     .fuzzy(FuzzyLimits::new().edits(1))
     .build(["input", "more"]);
-let matches = engine.search_non_overlapping("someinptandm0re", 0.75);
+let matches = engine.search_non_overlapping("someinptandm0re", 0.75).unwrap();
 assert_eq!(matches.segment_text(), "some inpt and m0re");
 ```
 
@@ -50,7 +50,7 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .case_insensitive(true)
     .build(["FOO", "BAR"]);
 
-let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", 0.8).collect();
+let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", 0.8).unwrap().collect();
 assert_eq!(parts, vec!["xx", "yy", "zz"]);
 ```
 
@@ -71,8 +71,8 @@ let f = FuzzyAhoCorasickBuilder::new()
     .build(["LOREM", "IPSUM"]);
 
 // "LrEM ISuM" fuzzily matches "LOREM IPSUM"; it and the leading space are stripped.
-assert_eq!(f.strip_prefix("LrEM ISuM Lorm ZZZ", 0.8), "ZZZ");
-assert_eq!(f.strip_postfix("ZZZ LrEM ISuM", 0.8), "ZZZ");
+assert_eq!(f.strip_prefix("LrEM ISuM Lorm ZZZ", 0.8).unwrap(), "ZZZ");
+assert_eq!(f.strip_postfix("ZZZ LrEM ISuM", 0.8).unwrap(), "ZZZ");
 ```
 
 All of these are convenience wrappers over `search_non_overlapping` followed by a method on the

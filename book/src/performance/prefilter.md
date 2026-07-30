@@ -18,8 +18,8 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .build(["vestibulum", "consectetur"]);
 
 let pf = engine.with_prefilter(); // build once, reuse across searches
-let hits = pf.search("… lorem vestibulm ipsum …", 0.85);
-// Same matches as engine.search(…), just faster on large, sparse inputs.
+let hits = pf.search("… lorem vestibulm ipsum …", 0.85).unwrap();
+// Same matches as engine.search(…).unwrap(), just faster on large, sparse inputs.
 ```
 
 ## Why it's sound

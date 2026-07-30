@@ -1,6 +1,7 @@
 # Search & Selection
 
-A search returns a [`FuzzyMatches`] collection — the matches found at or above the threshold. The
+A search returns `Result<`[`FuzzyMatches`]`, `[`SearchError`]`>` — the matches found at or above the
+threshold, or an error if the haystack is too large to index (see [Fallibility](#fallibility)). The
 different entry points differ only in how the results are **ordered** and whether **overlaps** are
 resolved.
 
@@ -21,6 +22,15 @@ Each takes `(haystack, threshold)`:
 `search_unsorted` is the primitive: it returns the single best-scoring match for each distinct
 `(start, end, pattern)` span, in no particular order. Everything else is `search_unsorted` plus a
 sort and/or an overlap resolver, so you can also build your own pipeline.
+
+## Fallibility
+
+Every entry point returns `Result<_, `[`SearchError`]`>`. The only failure is a haystack with more
+than `u32::MAX` grapheme clusters (~4 GiB ASCII): the engine indexes positions with `u32`, so a
+larger haystack returns `Err(SearchError::HaystackTooLarge { graphemes })` instead of silently
+truncating to wrong offsets. Reach for the [streaming API](../streaming/search.md) for inputs that
+large. The examples here `.unwrap()` for brevity; in real code propagate with `?` or handle the
+error.
 
 ## Ordering strategies
 
@@ -50,7 +60,7 @@ let engine = FuzzyAhoCorasickBuilder::new()
     .case_insensitive(true)
     .build(["hello", "world"]);
 
-let matches = engine.search_non_overlapping("helllo wolrd", 0.8);
+let matches = engine.search_non_overlapping("helllo wolrd", 0.8).unwrap();
 let found: Vec<&str> = matches.iter().map(|m| m.pattern.as_str()).collect();
 assert!(found.contains(&"hello") && found.contains(&"world"));
 ```
@@ -72,3 +82,4 @@ Each [`FuzzyMatch`] carries `pattern_index`, `pattern`, `start`/`end` (byte offs
 
 [`FuzzyMatches`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/structs/struct.FuzzyMatches.html
 [`FuzzyMatch`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/structs/struct.FuzzyMatch.html
+[`SearchError`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/enum.SearchError.html

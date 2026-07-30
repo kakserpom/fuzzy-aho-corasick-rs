@@ -1,7 +1,9 @@
 //! Core fuzzy search: the monomorphized BFS over grapheme storage and its helpers.
 use crate::grapheme::{AsciiGraphemes, GraphemeStorage};
 use crate::structs::{FxHashMap, Node, State};
-use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, FuzzyMatches, NumEdits, Pattern};
+use crate::{
+    FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, FuzzyMatches, NumEdits, Pattern, SearchError,
+};
 use std::borrow::Cow;
 use std::collections::hash_map::Entry;
 use std::hash::{Hash, Hasher};
@@ -190,26 +192,30 @@ impl FuzzyAhoCorasick {
     /// # Returns
     /// A `FuzzyMatches` containing the best per-span matches meeting the threshold.
     ///
-    /// # Panics
-    /// Grapheme positions are stored as `u32`, so the haystack must contain at most `u32::MAX`
-    /// grapheme clusters (roughly a 4 GiB ASCII input). Larger inputs would silently truncate to
-    /// wrong offsets, so they panic instead — use the [streaming API](crate::StreamMatches)
+    /// # Errors
+    /// Returns [`SearchError::HaystackTooLarge`] if `haystack` has more than `u32::MAX` grapheme
+    /// clusters (roughly a 4 GiB ASCII input): positions are indexed with `u32`, so larger inputs
+    /// must use the [streaming API](crate::StreamMatches)
     /// ([`search_stream`](Self::search_stream) / [`stream_matches`](Self::stream_matches) /
     /// [`replace_stream`](Self::replace_stream)), which windows the input and reports absolute
     /// `u64` offsets.
     #[inline]
-    #[must_use]
     pub fn search_unsorted<'a>(
         &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
-    ) -> FuzzyMatches<'a> {
+    ) -> Result<FuzzyMatches<'a>, SearchError> {
         // Precompute a Vec<char> for the text so search_unsorted_impl can use direct slice
         // indexing instead of the GraphemeStorage::gs_first_char method (which has a match on
         // the enum discriminant, albeit predictable). This eliminates the enum dispatch overhead
         // in the hot loop (~2 calls per expanded state).
-        if haystack.is_ascii() {
+        Ok(if haystack.is_ascii() {
             let g = AsciiGraphemes::new(haystack, self.case_insensitive);
+            if u32::try_from(g.gs_len()).is_err() {
+                return Err(SearchError::HaystackTooLarge {
+                    graphemes: g.gs_len(),
+                });
+            }
             let text_chars: Vec<char> = (0..g.gs_len()).map(|i| g.gs_first_char(i)).collect();
             if self.mappings.is_empty() {
                 match self.max_edits_fast {
@@ -304,6 +310,11 @@ impl FuzzyAhoCorasick {
             }
         } else {
             let g = self.build_unicode_graphemes(haystack);
+            if u32::try_from(g.gs_len()).is_err() {
+                return Err(SearchError::HaystackTooLarge {
+                    graphemes: g.gs_len(),
+                });
+            }
             let text_chars: Vec<char> = (0..g.gs_len()).map(|i| g.gs_first_char(i)).collect();
             if self.mappings.is_empty() {
                 match self.max_edits_fast {
@@ -396,7 +407,7 @@ impl FuzzyAhoCorasick {
                     ),
                 }
             }
-        }
+        })
     }
 
     /// Build the `Vec<(usize, Cow<str>)>` grapheme list for non-ASCII haystacks.
@@ -439,18 +450,9 @@ impl FuzzyAhoCorasick {
                 inner: vec![],
             };
         }
-        // Grapheme positions are stored as `u32` (see the crate-level note). Reject any haystack
-        // whose grapheme count would not fit: otherwise the `as u32` casts here and in the window
-        // loop would silently truncate and produce wrong offsets. Inputs this large must use the
-        // streaming API (`search_stream` / `stream_matches` / `replace_stream`), which windows the
-        // input and reports absolute `u64` offsets. A single length check per search is negligible.
-        assert!(
-            u32::try_from(text_chars.len()).is_ok(),
-            "haystack has {} graphemes, exceeding the u32 position space this engine indexes with; \
-             use the streaming API for inputs larger than ~4 GiB",
-            text_chars.len(),
-        );
-        // Grapheme count as `u32` for comparisons against the `u32` state positions.
+        // Grapheme count as `u32` for comparisons against the `u32` state positions. The public
+        // `search_unsorted` has already rejected haystacks whose grapheme count exceeds `u32::MAX`,
+        // so this cast never truncates.
         let text_len = text_chars.len() as u32;
 
         // Keyed by (start_byte, end_byte, pattern_index). Uses the fast FxHash hasher instead of

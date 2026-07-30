@@ -1,5 +1,5 @@
 //! Public search / replace / segmentation convenience wrappers over the core engine.
-use crate::{FuzzyAhoCorasick, FuzzyMatch, FuzzyMatches, Segment};
+use crate::{FuzzyAhoCorasick, FuzzyMatch, FuzzyMatches, SearchError, Segment};
 use std::borrow::Cow;
 
 impl FuzzyAhoCorasick {
@@ -12,12 +12,19 @@ impl FuzzyAhoCorasick {
     ///
     /// # Returns
     /// `FuzzyMatches` with matches sorted according to the default ranking.
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
     #[inline]
-    #[must_use]
-    pub fn search<'a>(&'a self, haystack: &'a str, similarity_threshold: f32) -> FuzzyMatches<'a> {
-        let mut matches = self.search_unsorted(haystack, similarity_threshold);
+    pub fn search<'a>(
+        &'a self,
+        haystack: &'a str,
+        similarity_threshold: f32,
+    ) -> Result<FuzzyMatches<'a>, SearchError> {
+        let mut matches = self.search_unsorted(haystack, similarity_threshold)?;
         matches.default_sort();
-        matches
+        Ok(matches)
     }
 
     /// Convenience wrapper over `search_unsorted` that applies a greedy sort (via `greedy_sort()`),
@@ -28,16 +35,19 @@ impl FuzzyAhoCorasick {
     ///
     /// # Returns
     /// `FuzzyMatches` with matches sorted by the greedy heuristic.
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
     #[inline]
-    #[must_use]
     pub fn search_greedy<'a>(
         &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
-    ) -> FuzzyMatches<'a> {
-        let mut matches = self.search_unsorted(haystack, similarity_threshold);
+    ) -> Result<FuzzyMatches<'a>, SearchError> {
+        let mut matches = self.search_unsorted(haystack, similarity_threshold)?;
         matches.greedy_sort();
-        matches
+        Ok(matches)
     }
 
     /// Convenience wrapper over `search_unsorted` that applies a coverage-weighted sort.
@@ -49,16 +59,19 @@ impl FuzzyAhoCorasick {
     ///
     /// # Returns
     /// `FuzzyMatches` with matches sorted by coverage-weighted score.
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
     #[inline]
-    #[must_use]
     pub fn search_coverage_weighted<'a>(
         &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
-    ) -> FuzzyMatches<'a> {
-        let mut matches = self.search_unsorted(haystack, similarity_threshold);
+    ) -> Result<FuzzyMatches<'a>, SearchError> {
+        let mut matches = self.search_unsorted(haystack, similarity_threshold)?;
         matches.coverage_weighted_sort();
-        matches
+        Ok(matches)
     }
 
     /// Search that returns non-overlapping matches by delegating to
@@ -72,15 +85,18 @@ impl FuzzyAhoCorasick {
     ///
     /// # Returns
     /// `FuzzyMatches` containing a non-overlapping subset of matches.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
     pub fn search_non_overlapping<'a>(
         &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
-    ) -> FuzzyMatches<'a> {
-        let mut matches = self.search(haystack, similarity_threshold);
+    ) -> Result<FuzzyMatches<'a>, SearchError> {
+        let mut matches = self.search(haystack, similarity_threshold)?;
         matches.non_overlapping();
-        matches
+        Ok(matches)
     }
 
     /// Variation of `search_non_overlapping` that additionally enforces uniqueness
@@ -94,15 +110,18 @@ impl FuzzyAhoCorasick {
     ///
     /// # Returns
     /// `FuzzyMatches` containing a non-overlapping, pattern-unique subset of matches.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
     pub fn search_non_overlapping_unique<'a>(
         &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
-    ) -> FuzzyMatches<'a> {
-        let mut matches = self.search(haystack, similarity_threshold);
+    ) -> Result<FuzzyMatches<'a>, SearchError> {
+        let mut matches = self.search(haystack, similarity_threshold)?;
         matches.non_overlapping_unique();
-        matches
+        Ok(matches)
     }
 
     /// Like `search_non_overlapping_unique`, but uses coverage-weighted sorting.
@@ -116,15 +135,18 @@ impl FuzzyAhoCorasick {
     ///
     /// # Returns
     /// `FuzzyMatches` containing a non-overlapping, pattern-unique subset of matches.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
     pub fn search_non_overlapping_unique_coverage_weighted<'a>(
         &'a self,
         haystack: &'a str,
         similarity_threshold: f32,
-    ) -> FuzzyMatches<'a> {
-        let mut matches = self.search_coverage_weighted(haystack, similarity_threshold);
+    ) -> Result<FuzzyMatches<'a>, SearchError> {
+        let mut matches = self.search_coverage_weighted(haystack, similarity_threshold)?;
         matches.non_overlapping_unique();
-        matches
+        Ok(matches)
     }
 
     /// Perform replacements on `text` by finding non-overlapping fuzzy matches above
@@ -144,27 +166,31 @@ impl FuzzyAhoCorasick {
     /// # Returns
     /// A new `String` with the selected fuzzy matches replaced per `callback`.
     ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
+    ///
     /// # Example
     /// ```rust
     /// use fuzzy_aho_corasick::FuzzyAhoCorasickBuilder;
     /// let automaton = FuzzyAhoCorasickBuilder::new().build(["FOO", "BAR", "BAZ"]);
     /// let result = automaton.replace("FOO BAR BAZ", |m| {
     ///     (m.pattern.pattern == "BAR").then_some("###")
-    /// }, 0.8);
+    /// }, 0.8).unwrap();
     /// assert_eq!(result, "FOO ### BAZ");
     /// ```
-    #[must_use]
     pub fn replace<'a, F, S: Into<Cow<'a, str>>>(
         &'a self,
         text: &'a str,
         callback: F,
         threshold: f32,
-    ) -> String
+    ) -> Result<String, SearchError>
     where
         F: Fn(&FuzzyMatch<'a>) -> Option<S>,
     {
-        self.search_non_overlapping(text, threshold)
-            .replace(callback)
+        Ok(self
+            .search_non_overlapping(text, threshold)?
+            .replace(callback))
     }
 
     /// Strip any leading fuzzy‐matched prefix from `haystack` using the given
@@ -191,6 +217,10 @@ impl FuzzyAhoCorasick {
     /// A `String` containing the remainder of `haystack` after removing the
     /// leading fuzzy‐matched portion and any leading whitespace.
     ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
+    ///
     /// # Examples
     ///
     /// ```
@@ -202,13 +232,17 @@ impl FuzzyAhoCorasick {
     ///
     /// // "LROEM" fuzzy‐matches "LOREM", "PISUM" matches "IPSUM",
     /// // so both are stripped, and leading space before "ZZZ" is trimmed:
-    /// let result = f.strip_prefix("LrEM ISuM Lorm ZZZ", 0.8);
+    /// let result = f.strip_prefix("LrEM ISuM Lorm ZZZ", 0.8).unwrap();
     /// assert_eq!(result, "ZZZ");
     /// ```
-    #[must_use]
-    pub fn strip_prefix<'a>(&'a self, haystack: &'a str, threshold: f32) -> String {
-        self.search_non_overlapping(haystack, threshold)
-            .strip_prefix()
+    pub fn strip_prefix<'a>(
+        &'a self,
+        haystack: &'a str,
+        threshold: f32,
+    ) -> Result<String, SearchError> {
+        Ok(self
+            .search_non_overlapping(haystack, threshold)?
+            .strip_prefix())
     }
 
     /// Perform a non‐overlapping fuzzy search over `haystack` with the given
@@ -235,6 +269,10 @@ impl FuzzyAhoCorasick {
     /// A `String` containing the beginning of `haystack` with any trailing
     /// fuzzy‐matched portion (and trailing whitespace) removed.
     ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
+    ///
     /// # Examples
     ///
     /// ```rust
@@ -247,13 +285,17 @@ impl FuzzyAhoCorasick {
     ///
     /// // The suffix " LrEM ISuM" fuzzily matches " LOREM IPSUM" at ≥0.8,
     /// // so it's stripped from the end, leaving only "ZZZ".
-    /// let result = f.strip_postfix("ZZZ LrEM ISuM", 0.8);
+    /// let result = f.strip_postfix("ZZZ LrEM ISuM", 0.8).unwrap();
     /// assert_eq!(result, "ZZZ");
     /// ```
-    #[must_use]
-    pub fn strip_postfix<'a>(&'a self, haystack: &'a str, threshold: f32) -> String {
-        self.search_non_overlapping(haystack, threshold)
-            .strip_postfix()
+    pub fn strip_postfix<'a>(
+        &'a self,
+        haystack: &'a str,
+        threshold: f32,
+    ) -> Result<String, SearchError> {
+        Ok(self
+            .search_non_overlapping(haystack, threshold)?
+            .strip_postfix())
     }
 
     /// Split `haystack` into unmatched substrings by treating each fuzzy match
@@ -275,7 +317,11 @@ impl FuzzyAhoCorasick {
     ///
     /// # Returns
     ///
-    /// A `Vec<String>` containing the parts of `haystack` between each fuzzy match.
+    /// An iterator over the parts of `haystack` between each fuzzy match.
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
     ///
     /// # Examples
     ///
@@ -287,31 +333,41 @@ impl FuzzyAhoCorasick {
     ///     .case_insensitive(true)
     ///     .build(["FOO", "BAR"]);
     ///
-    /// let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", 0.8).collect();
+    /// let parts: Vec<&str> = engine.split("xxFo0yyBAARzz", 0.8).unwrap().collect();
     /// assert_eq!(parts, vec!["xx", "yy", "zz"]);
     /// ```
     pub fn split<'a>(
         &'a self,
         haystack: &'a str,
         threshold: f32,
-    ) -> impl Iterator<Item = &'a str> + 'a {
-        self.search_non_overlapping(haystack, threshold).split()
+    ) -> Result<impl Iterator<Item = &'a str> + 'a, SearchError> {
+        Ok(self.search_non_overlapping(haystack, threshold)?.split())
     }
 
     /// Returns an **iterator** that yields interleaving [`Segment::Matched`]
     /// [`Segment::Unmatched`] items for the given text.
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
     pub fn segment_iter<'a>(
         &'a self,
         haystack: &'a str,
         threshold: f32,
-    ) -> impl Iterator<Item = Segment<'a>> {
-        self.search_non_overlapping(haystack, threshold)
-            .segment_iter()
+    ) -> Result<impl Iterator<Item = Segment<'a>>, SearchError> {
+        Ok(self
+            .search_non_overlapping(haystack, threshold)?
+            .segment_iter())
     }
+
     /// Convenience wrapper around [`segment_iter`](Self::segment_iter).
-    #[must_use]
-    pub fn segment_text(&self, haystack: &str, threshold: f32) -> String {
-        self.search_non_overlapping(haystack, threshold)
-            .segment_text()
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`search_unsorted`](Self::search_unsorted).
+    pub fn segment_text(&self, haystack: &str, threshold: f32) -> Result<String, SearchError> {
+        Ok(self
+            .search_non_overlapping(haystack, threshold)?
+            .segment_text())
     }
 }

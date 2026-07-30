@@ -14,7 +14,7 @@ fn main() {
         .build(["hello", "world"]);
 
     // "helllo wolrd" has two typos: an extra 'l' (insertion) and swapped 'lr' (transposition).
-    for m in engine.search_non_overlapping("helllo wolrd", 0.8).iter() {
+    for m in engine.search_non_overlapping("helllo wolrd", 0.8).unwrap().iter() {
         println!("matched '{}' as '{}' (score {:.2})", m.pattern, m.text, m.similarity);
     }
     // matched 'hello' as 'helllo' (score 0.90)
@@ -38,7 +38,7 @@ Each [`FuzzyMatch`] tells you what was found and how:
 ```rust
 # use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
 # let engine = FuzzyAhoCorasickBuilder::new().fuzzy(FuzzyLimits::new().edits(1)).build(["needle"]);
-for m in engine.search("find the neeedle", 0.8).iter() {
+for m in engine.search("find the neeedle", 0.8).unwrap().iter() {
     println!(
         "pattern #{} ({}) matched bytes {}..{} = {:?}",
         m.pattern_index, m.pattern, m.start, m.end, m.text,

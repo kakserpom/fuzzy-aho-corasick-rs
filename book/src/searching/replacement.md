@@ -15,7 +15,7 @@ use fuzzy_aho_corasick::FuzzyAhoCorasickBuilder;
 let engine = FuzzyAhoCorasickBuilder::new().build(["FOO", "BAR", "BAZ"]);
 let result = engine.replace("FOO BAR BAZ", |m| {
     (m.pattern.pattern == "BAR").then_some("###")
-}, 0.8);
+}, 0.8).unwrap();
 assert_eq!(result, "FOO ### BAZ");
 ```
 
@@ -36,7 +36,7 @@ let replacer = FuzzyAhoCorasickBuilder::new()
     .build_replacer([("hello", "hi"), ("world", "earth")]);
 
 // '0'↔'o' is a near-match in the default table, so both fuzzy tokens are replaced.
-assert_eq!(replacer.replace("hell0 w0rld!", 0.8), "hi earth!");
+assert_eq!(replacer.replace("hell0 w0rld!", 0.8).unwrap(), "hi earth!");
 ```
 
 `build_replacer` takes `(pattern, replacement)` pairs; the pattern side accepts the same conversions

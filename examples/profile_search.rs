@@ -13,7 +13,7 @@ fn main() {
     let n = 100_000;
     let mut total = 0usize;
     for _ in 0..n {
-        let m = automaton.search_non_overlapping(text, 0.8);
+        let m = automaton.search_non_overlapping(text, 0.8).unwrap();
         total += m.len();
     }
     println!("total matches: {total}");

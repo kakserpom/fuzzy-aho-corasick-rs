@@ -1,4 +1,4 @@
-use crate::FuzzyAhoCorasick;
+use crate::{FuzzyAhoCorasick, SearchError};
 use std::io::{self, Read, Write};
 
 pub struct FuzzyReplacer {
@@ -10,8 +10,11 @@ impl FuzzyReplacer {
     /// Performs a **fuzzy** find‑and‑replace using a list of `(pattern →
     /// replacement)` pairs.  Replacements are applied left‑to‑right, the longest
     /// non‑overlapping match wins.
-    #[must_use]
-    pub fn replace(&self, text: &str, threshold: f32) -> String {
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`FuzzyAhoCorasick::search_unsorted`].
+    pub fn replace(&self, text: &str, threshold: f32) -> Result<String, SearchError> {
         self.engine
             .replace(text, |m| self.replacements.get(m.pattern_index), threshold)
     }

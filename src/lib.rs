@@ -26,7 +26,7 @@
 //!     .build(["hello", "world"]);
 //!
 //! // Two typos: an extra 'l' (insertion) and swapped 'lr' (transposition).
-//! let matches = engine.search_non_overlapping("helllo wolrd", 0.8);
+//! let matches = engine.search_non_overlapping("helllo wolrd", 0.8).unwrap();
 //! let found: Vec<&str> = matches.iter().map(|m| m.pattern.as_str()).collect();
 //! assert!(found.contains(&"hello") && found.contains(&"world"));
 //! ```
@@ -45,6 +45,7 @@
 //!
 //! See the [README](https://github.com/kakserpom/fuzzy-aho-corasick-rs) for a full guide.
 mod builder;
+mod error;
 mod grapheme;
 mod matches;
 mod prefilter;
@@ -57,6 +58,7 @@ pub mod structs;
 mod tests;
 
 pub use builder::FuzzyAhoCorasickBuilder;
+pub use error::SearchError;
 pub use prefilter::Prefiltered;
 pub use replacer::FuzzyReplacer;
 pub use stream::{StreamMatch, StreamMatches};

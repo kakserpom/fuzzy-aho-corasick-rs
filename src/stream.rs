@@ -267,7 +267,12 @@ impl FuzzyAhoCorasick {
         threshold: f32,
         out: &mut Vec<StreamMatch>,
     ) {
-        for m in self.search_non_overlapping(text, threshold).iter() {
+        // Windows are bounded by the configured window size (far below `u32::MAX` graphemes), so the
+        // size guard in `search_non_overlapping` can never trip here.
+        let matches = self
+            .search_non_overlapping(text, threshold)
+            .expect("streaming window fits the u32 position space");
+        for m in matches.iter() {
             if m.start < commit {
                 out.push(StreamMatch {
                     start: base + m.start as u64,
@@ -488,8 +493,10 @@ impl FuzzyAhoCorasick {
         commit: usize,
         threshold: f32,
     ) -> Vec<FuzzyMatch<'a>> {
+        // Windows are bounded well below `u32::MAX` graphemes, so the size guard can't trip here.
         let mut matches: Vec<FuzzyMatch> = self
             .search_non_overlapping(text, threshold)
+            .expect("streaming window fits the u32 position space")
             .into_iter()
             .filter(|m| m.start < commit)
             .collect();

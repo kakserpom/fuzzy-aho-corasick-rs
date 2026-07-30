@@ -16,7 +16,7 @@ use unicode_segmentation::UnicodeSegmentation;
 ///     .case_insensitive(true)
 ///     .build(["hello", "world"]);
 ///
-/// let result = engine.segment_text("justheLLowOrLd!", 1.);
+/// let result = engine.segment_text("justheLLowOrLd!", 1.).unwrap();
 /// assert_eq!(result, "just heLLo wOrLd!");
 /// ```
 #[derive(Debug, Default)]
@@ -172,7 +172,7 @@ impl FuzzyAhoCorasickBuilder {
     ///     .case_insensitive(true)
     ///     .build([("Γειά", 1.0), ("σου", 1.0)]);
     ///
-    /// assert!(!engine.search("γειά ΣΟΥ!", 0.8).is_empty());
+    /// assert!(!engine.search("γειά ΣΟΥ!", 0.8).unwrap().is_empty());
     /// ```
     pub fn build<T>(self, inputs: impl IntoIterator<Item = T>) -> FuzzyAhoCorasick
     where

@@ -40,7 +40,7 @@ fn main() {
     // reassembly, not formatting.
 
     // Correctness: every path must produce identical bytes.
-    let whole = engine.replace(&input, |_m| Some("N"), 0.85);
+    let whole = engine.replace(&input, |_m| Some("N"), 0.85).unwrap();
     let mut st_out = Vec::with_capacity(whole.len());
     engine
         .replace_stream(input.as_bytes(), &mut st_out, |_m| Some("N"), 0.85)
@@ -66,7 +66,11 @@ fn main() {
 
     // Whole-input replace (loads all into memory; reference only).
     let t = Instant::now();
-    black_box(engine.replace(black_box(&input), |_m| Some("N"), 0.85));
+    black_box(
+        engine
+            .replace(black_box(&input), |_m| Some("N"), 0.85)
+            .unwrap(),
+    );
     let whole_secs = t.elapsed().as_secs_f64();
     println!(
         "  replace (whole-input)      : {:8.1} MB/s",

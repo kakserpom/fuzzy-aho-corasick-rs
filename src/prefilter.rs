@@ -23,7 +23,7 @@
 //! See `examples/bitap_prototype.rs` for the standalone algorithm + a fuzzed correctness check.
 
 use crate::structs::FxHashMap;
-use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, FuzzyMatches};
+use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, FuzzyMatches, SearchError};
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Longest pattern (in graphemes) the `u64` bit-vectors can hold.
@@ -106,8 +106,8 @@ impl FuzzyAhoCorasick {
     ///     .build(["vestibulum", "consectetur"]);
     /// let pf = engine.with_prefilter();
     /// // Identical results to engine.search(..), just faster on large sparse inputs.
-    /// let hits = pf.search("lorem vestibulm ipsum", 0.85);
-    /// assert_eq!(hits.len(), engine.search("lorem vestibulm ipsum", 0.85).len());
+    /// let hits = pf.search("lorem vestibulm ipsum", 0.85).unwrap();
+    /// assert_eq!(hits.len(), engine.search("lorem vestibulm ipsum", 0.85).unwrap().len());
     /// ```
     #[must_use]
     pub fn with_prefilter(&self) -> Prefiltered<'_> {
@@ -128,16 +128,30 @@ impl Prefiltered<'_> {
 
     /// Fuzzy search with the pre-filter applied. Returns exactly what
     /// [`FuzzyAhoCorasick::search`] would for the same arguments.
-    #[must_use]
-    pub fn search<'a>(&'a self, haystack: &'a str, threshold: f32) -> FuzzyMatches<'a> {
-        let mut matches = self.search_unsorted(haystack, threshold);
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`FuzzyAhoCorasick::search_unsorted`].
+    pub fn search<'a>(
+        &'a self,
+        haystack: &'a str,
+        threshold: f32,
+    ) -> Result<FuzzyMatches<'a>, SearchError> {
+        let mut matches = self.search_unsorted(haystack, threshold)?;
         matches.default_sort();
-        matches
+        Ok(matches)
     }
 
     /// Unsorted variant, mirroring [`FuzzyAhoCorasick::search_unsorted`].
-    #[must_use]
-    pub fn search_unsorted<'a>(&'a self, haystack: &'a str, threshold: f32) -> FuzzyMatches<'a> {
+    ///
+    /// # Errors
+    /// Propagates [`SearchError`] when the haystack is too large to index — see
+    /// [`FuzzyAhoCorasick::search_unsorted`].
+    pub fn search_unsorted<'a>(
+        &'a self,
+        haystack: &'a str,
+        threshold: f32,
+    ) -> Result<FuzzyMatches<'a>, SearchError> {
         match &self.filter {
             Some(filter) => filter.search_unsorted(self.engine, haystack, threshold),
             None => self.engine.search_unsorted(haystack, threshold),
@@ -296,7 +310,7 @@ impl BitapFilter {
         engine: &'a FuzzyAhoCorasick,
         haystack: &'a str,
         threshold: f32,
-    ) -> FuzzyMatches<'a> {
+    ) -> Result<FuzzyMatches<'a>, SearchError> {
         // Decide budgets up front; any pattern needing an unbounded/huge k forces a full search.
         let mut ks = Vec::with_capacity(self.patterns.len());
         for pat in &self.patterns {
@@ -315,10 +329,10 @@ impl BitapFilter {
             bitap_windows(&pat.mask, pat.m, k, &ids, &mut windows);
         }
         if windows.is_empty() {
-            return FuzzyMatches {
+            return Ok(FuzzyMatches {
                 haystack,
                 inner: vec![],
-            };
+            });
         }
 
         // Merge overlapping/adjacent grapheme windows into disjoint spans.
@@ -337,7 +351,7 @@ impl BitapFilter {
             let bstart = offsets.byte(gs);
             let bend = offsets.byte(ge.min(n));
             let sub = &haystack[bstart..bend];
-            for m in engine.search_unsorted(sub, threshold) {
+            for m in engine.search_unsorted(sub, threshold)? {
                 let start = bstart + m.start;
                 let end = bstart + m.end;
                 let key = (start, end, m.pattern_index);
@@ -360,7 +374,7 @@ impl BitapFilter {
 
         let mut inner: Vec<FuzzyMatch<'a>> = best.into_values().collect();
         inner.sort_unstable_by_key(|m| (m.start, m.end, m.pattern_index));
-        FuzzyMatches { haystack, inner }
+        Ok(FuzzyMatches { haystack, inner })
     }
 }
 
@@ -498,11 +512,13 @@ mod tests {
 
             let mut expected: Vec<_> = engine
                 .search_unsorted(&hay, threshold)
+                .unwrap()
                 .iter()
                 .map(key)
                 .collect();
             let mut got: Vec<_> = pf
                 .search_unsorted(&hay, threshold)
+                .unwrap()
                 .iter()
                 .map(key)
                 .collect();

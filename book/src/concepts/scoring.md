@@ -31,8 +31,8 @@ Every search takes a `threshold` in `0.0..=1.0`:
 ```rust
 # use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
 # let engine = FuzzyAhoCorasickBuilder::new().fuzzy(FuzzyLimits::new().edits(2)).build(["needle"]);
-let strict  = engine.search("neeedle", 0.9);  // fewer, higher-quality matches
-let lenient = engine.search("neeedle", 0.6);  // more matches, more noise
+let strict  = engine.search("neeedle", 0.9).unwrap();  // fewer, higher-quality matches
+let lenient = engine.search("neeedle", 0.6).unwrap();  // more matches, more noise
 ```
 
 The threshold is your primary quality knob. It is also a performance knob: a higher threshold lets
