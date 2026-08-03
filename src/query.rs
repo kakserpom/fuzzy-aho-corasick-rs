@@ -65,7 +65,8 @@ impl FuzzyAhoCorasick {
 
     /// Fuzzy find-and-replace: for each non-overlapping match (per [`opts`](SearchOptions)),
     /// `callback` returns `Some(replacement)` to substitute the span or `None` to keep it. Overlaps
-    /// are always resolved (see [`segmented`](Self::segmented)).
+    /// are always resolved (the segmentation helpers force a deterministic, non-overlapping match
+    /// set even when `opts` leaves the overlap mode unset).
     ///
     /// # Errors
     /// Propagates [`SearchError`] when the haystack is too large to index — see

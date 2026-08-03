@@ -1,6 +1,11 @@
 use crate::{FuzzyAhoCorasick, SearchError, SearchOptions};
 use std::io::{self, Read, Write};
 
+/// A turnkey fuzzy find-and-replace built from `(pattern → replacement)` pairs.
+///
+/// Pairs the automaton with a parallel list of replacement strings (one per pattern), so a fuzzy
+/// match of pattern *i* is substituted with replacement *i*. Build one with
+/// [`FuzzyAhoCorasickBuilder::build_replacer`](crate::FuzzyAhoCorasickBuilder::build_replacer).
 pub struct FuzzyReplacer {
     pub(crate) engine: FuzzyAhoCorasick,
     pub(crate) replacements: Vec<String>,
@@ -13,7 +18,7 @@ impl FuzzyReplacer {
     ///
     /// # Errors
     /// Propagates [`SearchError`] when the haystack is too large to index — see
-    /// [`FuzzyAhoCorasick::search_unsorted`].
+    /// [`FuzzyAhoCorasick::search`](crate::FuzzyAhoCorasick::search).
     pub fn replace(&self, text: &str, opts: &SearchOptions) -> Result<String, SearchError> {
         self.engine
             .replace(text, opts, |m| self.replacements.get(m.pattern_index))
@@ -38,6 +43,8 @@ impl FuzzyReplacer {
         })
     }
 
+    /// Borrow the underlying [`FuzzyAhoCorasick`], e.g. to run a plain search with the same
+    /// configuration the replacer was built with.
     #[must_use]
     pub fn engine(&self) -> &FuzzyAhoCorasick {
         &self.engine

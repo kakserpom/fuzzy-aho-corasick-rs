@@ -280,6 +280,15 @@ pub(crate) struct Node {
     pub(crate) grapheme: Option<String>,
 }
 
+/// Caps on how far a fuzzy match may deviate from a pattern, set with the chainable builders.
+///
+/// Two ways to bound the fuzziness:
+/// - A **total** budget via [`edits`](Self::edits): a match may use up to that many edits of *any*
+///   mix of types.
+/// - **Per-type** budgets ([`insertions`](Self::insertions), [`deletions`](Self::deletions),
+///   [`substitutions`](Self::substitutions), [`swaps`](Self::swaps)): each named type is capped at
+///   its value, and — unless a total `edits` budget is set — every *unset* type defaults to `0`
+///   (disallowed). So a [`FuzzyLimits::new`] with nothing set means exact matching.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct FuzzyLimits {
     pub(crate) insertions: Option<NumEdits>,
@@ -290,15 +299,22 @@ pub struct FuzzyLimits {
 }
 
 impl FuzzyLimits {
+    /// Blank limits — no fuzziness until a total [`edits`](Self::edits) budget or a per-type cap is
+    /// set. Equivalent to [`FuzzyLimits::default`].
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
+    /// Cap the number of **inserted** graphemes (extra characters present in the haystack but not
+    /// the pattern).
     #[must_use]
     pub fn insertions(mut self, num: NumEdits) -> Self {
         self.insertions = Some(num);
         self
     }
+    // Fill in the defaults the search hot path expects: with no total `edits` budget, any per-type
+    // cap left unset means that edit type is disallowed (`0`); with an `edits` budget, per-type caps
+    // stay `None` (bounded only by the total).
     #[must_use]
     pub(crate) fn finalize(mut self) -> Self {
         if self.edits.is_none() {
@@ -317,22 +333,28 @@ impl FuzzyLimits {
         }
         self
     }
+    /// Cap the number of **deleted** graphemes (pattern characters missing from the haystack).
     #[must_use]
     pub fn deletions(mut self, num: NumEdits) -> Self {
         self.deletions = Some(num);
         self
     }
+    /// Cap the number of **substituted** graphemes (one character replaced by another).
     #[must_use]
     pub fn substitutions(mut self, num: NumEdits) -> Self {
         self.substitutions = Some(num);
         self
     }
+    /// Cap the number of **transpositions** (two adjacent characters swapped).
     #[must_use]
     pub fn swaps(mut self, num: NumEdits) -> Self {
         self.swaps = Some(num);
         self
     }
 
+    /// Cap the **total** number of edits, of any mix of types. When set, per-type caps are left
+    /// unbounded (bounded only by this total); when *unset*, only the per-type caps apply and every
+    /// unset type defaults to `0`.
     #[must_use]
     pub fn edits(mut self, num: NumEdits) -> Self {
         self.edits = Some(num);
@@ -340,16 +362,26 @@ impl FuzzyLimits {
     }
 }
 
+/// The cost charged for each kind of edit. A match's similarity is reduced by the sum of the
+/// penalties for the edits it used (scaled by how dissimilar the characters are), so a larger
+/// penalty makes that edit hurt the score more. Tune these to fit which mistakes your domain
+/// considers "cheap" (e.g. a dropped vowel) versus "expensive" (a changed first letter).
 #[derive(Debug, Clone)]
 pub struct FuzzyPenalties {
+    /// Penalty for an inserted grapheme.
     pub insertion: f32,
+    /// Penalty for a deleted grapheme.
     pub deletion: f32,
+    /// Penalty for a substituted grapheme (before scaling by the character-pair similarity).
     pub substitution: f32,
+    /// Penalty for a transposition (two adjacent characters swapped).
     pub swap: f32,
 }
 
 impl Default for FuzzyPenalties {
     fn default() -> Self {
+        // Hand-tuned defaults: substitutions cost the most, insertions/swaps the least, deletions in
+        // between; `m` scales the whole set together while keeping their relative weights.
         let m = 1.3;
         Self {
             substitution: 1.1 * m,
@@ -361,21 +393,25 @@ impl Default for FuzzyPenalties {
 }
 
 impl FuzzyPenalties {
+    /// Set the insertion penalty.
     #[must_use]
     pub fn insertion(mut self, penalty: f32) -> Self {
         self.insertion = penalty;
         self
     }
+    /// Set the deletion penalty.
     #[must_use]
     pub fn deletion(mut self, penalty: f32) -> Self {
         self.deletion = penalty;
         self
     }
+    /// Set the substitution penalty.
     #[must_use]
     pub fn substitution(mut self, penalty: f32) -> Self {
         self.substitution = penalty;
         self
     }
+    /// Set the transposition (swap) penalty.
     #[must_use]
     pub fn swap(mut self, penalty: f32) -> Self {
         self.swap = penalty;
@@ -483,6 +519,12 @@ impl Node {
     }
 }
 
+/// A compiled, immutable fuzzy Aho–Corasick automaton.
+///
+/// Built once from a set of [`Pattern`]s via [`FuzzyAhoCorasickBuilder`](crate::FuzzyAhoCorasickBuilder),
+/// then queried repeatedly and shared across threads. Searching is driven by
+/// [`SearchOptions`](crate::SearchOptions); see [`search`](crate::FuzzyAhoCorasick::search) and the
+/// segmentation / replace / streaming helpers.
 #[derive(Clone)]
 pub struct FuzzyAhoCorasick {
     /// Nodes
@@ -538,18 +580,32 @@ impl fmt::Debug for FuzzyAhoCorasick {
     }
 }
 
+/// Identity used to enforce pattern-uniqueness during overlap resolution
+/// ([`Overlap::NonOverlappingUnique`](crate::Overlap)). Two matches count as "the same pattern" when
+/// their `UniqueId`s are equal.
 #[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq)]
 pub enum UniqueId {
+    /// The pattern's index in the automaton (used when no [`custom_unique_id`](Pattern::custom_unique_id) was set).
     Automatic(usize),
+    /// A caller-assigned id, so several distinct patterns can share one identity.
     Custom(usize),
 }
 
+/// One search pattern plus its per-pattern settings. Build with the `Pattern::from`
+/// conversions and refine with the chainable setters; passed to
+/// [`FuzzyAhoCorasickBuilder::build`](crate::FuzzyAhoCorasickBuilder::build).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pattern {
+    /// Length of the pattern in grapheme clusters (not bytes).
     pub grapheme_len: usize,
+    /// The pattern text.
     pub pattern: String,
+    /// Optional caller-assigned identity for pattern-unique overlap resolution (see [`UniqueId`]).
     pub custom_unique_id: Option<usize>,
+    /// Score multiplier for this pattern (default `1.0`); a weight above `1.0` can push a match's
+    /// similarity past `1.0` to prioritize it.
     pub weight: f32,
+    /// Per-pattern fuzzy limits, overriding the builder's global limits for this pattern.
     pub limits: Option<FuzzyLimits>,
 }
 
@@ -561,16 +617,19 @@ impl fmt::Display for Pattern {
 }
 
 impl Pattern {
+    /// The pattern text as a `&str`.
     #[must_use]
     pub fn as_str(&self) -> &str {
         self.pattern.as_str()
     }
 
+    /// Length of the pattern in **bytes** (for graphemes, use [`grapheme_len`](Self::grapheme_len)).
     #[must_use]
     pub fn len(&self) -> usize {
         self.pattern.len()
     }
 
+    /// Whether the pattern is the empty string.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
@@ -583,13 +642,14 @@ impl Pattern {
         self
     }
 
-    /// Set Fuzzy limits per-pattern pattern
+    /// Set per-pattern [`FuzzyLimits`], overriding the builder's global limits for this pattern.
     #[must_use]
     pub fn fuzzy(mut self, limits: FuzzyLimits) -> Self {
         self.limits = Some(limits.finalize());
         self
     }
 
+    /// Assign a caller-defined identity for pattern-unique overlap resolution (see [`UniqueId`]).
     #[must_use]
     pub fn custom_unique_id(mut self, id: usize) -> Self {
         self.custom_unique_id = Some(id);
@@ -724,10 +784,13 @@ pub struct FuzzyMatch<'a> {
 /// an "unmatched" gap between them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Segment<'a> {
+    /// A matched span.
     Matched(FuzzyMatch<'a>),
+    /// An unmatched gap between (or around) matches.
     Unmatched(UnmatchedSegment<'a>),
 }
 impl<'a> Segment<'a> {
+    /// The inner [`FuzzyMatch`] if this is a [`Matched`](Segment::Matched) segment, else `None`.
     #[must_use]
     pub fn matched(&'a self) -> Option<&'a FuzzyMatch<'a>> {
         if let Segment::Matched(matched) = self {
@@ -736,6 +799,7 @@ impl<'a> Segment<'a> {
             None
         }
     }
+    /// The inner [`UnmatchedSegment`] if this is an [`Unmatched`](Segment::Unmatched) segment, else `None`.
     #[must_use]
     pub fn unmatched(&'a self) -> Option<&'a UnmatchedSegment<'a>> {
         if let Segment::Unmatched(unmatched) = self {
@@ -745,6 +809,8 @@ impl<'a> Segment<'a> {
         }
     }
 }
+/// An unmatched run of the haystack — the text between matches produced by
+/// [`segment_iter`](crate::FuzzyAhoCorasick::segment_iter).
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnmatchedSegment<'a> {
     /// Inclusive start byte index.
@@ -756,6 +822,7 @@ pub struct UnmatchedSegment<'a> {
 }
 
 impl Segment<'_> {
+    /// Byte length of the segment's text (matched or unmatched).
     #[must_use]
     pub fn len(&self) -> usize {
         match self {
@@ -763,10 +830,12 @@ impl Segment<'_> {
             Segment::Unmatched(u) => u.text.len(),
         }
     }
+    /// Whether the segment's text is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+    /// The segment's slice of the haystack, whichever variant it is.
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
@@ -776,9 +845,14 @@ impl Segment<'_> {
     }
 }
 
+/// The matches from a search — the result of [`FuzzyAhoCorasick::search`](crate::FuzzyAhoCorasick::search).
+///
+/// Derefs to `[FuzzyMatch]` (so it iterates and indexes like a slice) and carries the ranking
+/// (`*_sort`), overlap-resolution (`non_overlapping*`), and segmentation/replace helpers.
 #[derive(Debug)]
 pub struct FuzzyMatches<'a> {
     pub(crate) haystack: &'a str,
+    /// The matches themselves, in the current order.
     pub inner: Vec<FuzzyMatch<'a>>,
 }
 impl<'a, 'b> IntoIterator for &'b FuzzyMatches<'a> {

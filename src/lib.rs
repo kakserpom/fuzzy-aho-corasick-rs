@@ -1,7 +1,8 @@
 #![warn(clippy::pedantic)]
+#![warn(missing_docs)]
 // The automaton deliberately stores node indices and grapheme positions as `u32` to keep the
 // hot-path structs compact; the corresponding `usize -> u32` casts are sound for any realistic
-// input (fewer than ~4 billion nodes, haystacks under ~4 GiB — see `search_unsorted`).
+// input (fewer than ~4 billion nodes, haystacks under ~4 GiB — see `search_raw`).
 #![allow(
     clippy::too_many_lines,
     clippy::cast_precision_loss,
@@ -54,6 +55,9 @@ mod query;
 mod replacer;
 mod search;
 mod stream;
+/// The crate's public data types (patterns, limits, penalties, matches, segments, …). Everything
+/// here is also re-exported at the crate root, so `use fuzzy_aho_corasick::Pattern` and
+/// `use fuzzy_aho_corasick::structs::Pattern` are equivalent.
 pub mod structs;
 #[cfg(test)]
 mod tests;
@@ -95,5 +99,7 @@ pub use options::{DEFAULT_THRESHOLD, Order, Overlap, SearchOptions};
 pub use prefilter::Prefiltered;
 pub use replacer::FuzzyReplacer;
 pub use stream::{StreamMatch, StreamMatches};
+/// Index of a pattern within the automaton's pattern list — the `pattern_index` on a
+/// [`FuzzyMatch`], and the position of a pattern in the slice passed to `build`.
 pub type PatternIndex = usize;
 pub use structs::*;

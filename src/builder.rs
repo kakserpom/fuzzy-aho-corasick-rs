@@ -149,6 +149,10 @@ impl FuzzyAhoCorasickBuilder {
         weight * ((word_len - prefix_len + 1) as f32 / word_len as f32)
     }
 
+    /// Build a [`FuzzyReplacer`] from `(pattern, replacement)` pairs: each pattern is matched
+    /// fuzzily (with this builder's configuration) and substituted with its paired replacement.
+    /// A turnkey alternative to [`build`](Self::build) + [`FuzzyAhoCorasick::replace`].
+    #[must_use]
     pub fn build_replacer<T, R>(self, pairs: impl IntoIterator<Item = (T, R)>) -> FuzzyReplacer
     where
         T: Into<Pattern>,
