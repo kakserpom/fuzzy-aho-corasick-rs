@@ -23,6 +23,21 @@ jobs:
           toolchain: ${{ matrix.rust }}
       - run: cargo test --all-features
 
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    env:
+      # Allow host time/getrandom access if a test ever needs it; does not weaken UB detection.
+      MIRIFLAGS: -Zmiri-disable-isolation
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      # Interpret the test suite under Miri to catch UB in the `unsafe` (grapheme `from_utf8_unchecked`)
+      # and pointer/index logic. Doctests aren't run under Miri; `cargo test` covers those.
+      - run: cargo miri test --all-features
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
