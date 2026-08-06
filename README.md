@@ -37,6 +37,9 @@ Then in code:
 use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
 ```
 
+> **Upgrading from 0.4.x?** 0.5.0 unifies the `search_*` methods into `search(hay, &SearchOptions)`
+> and makes searching fallible. See [`MIGRATING.md`](MIGRATING.md) for a mechanical before/after.
+
 ## Quick Start
 
 ```rust

@@ -43,5 +43,6 @@
 
 # Reference
 
+- [Migrating from 0.4.x](reference/migrating.md)
 - [How It Works](reference/internals.md)
 - [Acknowledgements](reference/acknowledgements.md)
