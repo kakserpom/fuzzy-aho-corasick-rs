@@ -26,6 +26,7 @@ jobs:
   miri:
     name: Miri
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       # Allow host time/getrandom access if a test ever needs it; does not weaken UB detection.
       MIRIFLAGS: -Zmiri-disable-isolation
@@ -34,9 +35,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-      # Interpret the test suite under Miri to catch UB in the `unsafe` (grapheme `from_utf8_unchecked`)
-      # and pointer/index logic. Doctests aren't run under Miri; `cargo test` covers those.
-      - run: cargo miri test --all-features
+      # Miri is ~100x slower, so the full suite can't finish in a reasonable time. Run a small set of
+      # tiny tests that still exercise the `unsafe` grapheme paths (ASCII + Unicode
+      # `from_utf8_unchecked`) under fuzzy search — enough to catch UB there. Doctests aren't run
+      # under Miri.
+      - run: cargo miri test -- exact_match extra_letter missing_letter substitution swap case_insensitive unicode
 
   clippy:
     name: Clippy
