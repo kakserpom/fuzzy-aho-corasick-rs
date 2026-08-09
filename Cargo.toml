@@ -2,15 +2,24 @@
 name = "fuzzy-aho-corasick"
 version = "0.5.0"
 edition = "2024"
+rust-version = "1.85"
 license = "MIT"
 description = "Aho–Corasick automaton with fuzzy matching"
 repository = "https://github.com/kakserpom/fuzzy-aho-corasick-rs"
 documentation = "https://kakserpom.github.io/fuzzy-aho-corasick-rs/"
 keywords = ["aho-corasick", "fuzzy", "levenshtein", "string-matching", "unicode"]
 categories = ["text-processing", "algorithms"]
-# Keep the published crate lean: the guide sources, the paper PDF, and CI config aren't needed by
-# consumers (the book is hosted, and README/docs link the PDF on GitHub).
-exclude = ["/book", "/DOCS", "/.github"]
+# Keep the published crate lean: the guide sources, the paper PDF, CI config, and the internal
+# profiling examples aren't needed by consumers (the book is hosted, README/docs link the PDF on
+# GitHub, and the reader-facing examples — bitap_prototype, streaming, replace_bench — are kept).
+exclude = [
+    "/book",
+    "/DOCS",
+    "/.github",
+    "/examples/micro_bench.rs",
+    "/examples/profile_bench.rs",
+    "/examples/profile_search.rs",
+]
 [dependencies]
 unicode-segmentation = "1.13"
 [dev-dependencies]

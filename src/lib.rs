@@ -67,7 +67,10 @@ mod tests;
 // `cargo test --doc`. Blocks that can't actually execute (open files, etc.) are tagged `no_run` in
 // the source markdown. (The README is not included here: it renders verbatim on GitHub/crates.io,
 // where the hidden `#` lines and `no_run` tags doctests need would show as noise.)
-#[cfg(doctest)]
+//
+// Gated on `book_present` (set by `build.rs` when `book/src` exists) so the packaged crate — which
+// excludes `/book` — doesn't try to `include_str!` files that aren't shipped.
+#[cfg(all(doctest, book_present))]
 mod book_doctests {
     macro_rules! chapter {
         ($name:ident, $path:literal) => {
