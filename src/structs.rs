@@ -378,6 +378,59 @@ impl FuzzyLimits {
         self.edits = Some(num);
         self
     }
+
+    /// Collapse these limits into five concrete upper bounds, applying the same interpretation
+    /// `finalize` sets up.
+    ///
+    /// An unset per-type cap means `0` when there is no total budget, and is bounded by that budget
+    /// when there is one. An unset *total* means there is no total constraint at all, which becomes
+    /// [`NumEdits::MAX`] rather than `0` — a pattern limited only to, say, two deletions is not
+    /// limited to zero edits overall.
+    pub(crate) fn effective_bounds(&self) -> NodeLimits {
+        let bound = |cap: Option<NumEdits>| self.edits.or(cap).unwrap_or(0);
+        NodeLimits {
+            edits: self.edits.unwrap_or(NumEdits::MAX),
+            insertions: bound(self.insertions),
+            deletions: bound(self.deletions),
+            substitutions: bound(self.substitutions),
+            swaps: bound(self.swaps),
+        }
+    }
+}
+
+/// The union of the edit budgets of every pattern whose trie path includes a given node.
+///
+/// A search walk sitting at a node is not necessarily on its way to the pattern that *ends* there:
+/// it may equally be part of the way to a longer pattern sharing that prefix, and that longer pattern
+/// may have a much larger budget. Gating such a walk on the ending pattern's limits alone therefore
+/// loses matches — with `["ab"` capped at 0 substitutions, `"abc"` allowed 1], `"abc"` cannot match
+/// `"abx"`, because the substitution that leaves the `"ab"` node is refused.
+///
+/// Taking the element-wise maximum over all patterns on the node's path is sound: if any pattern `P`
+/// admits a walk with `count[k]` of type `k`, then `count[k] < bound_P[k] <= bound[k]` for every
+/// `k`, so the union admits it too. The union can admit walks that *no* single pattern admits, but
+/// the per-pattern check when a match is reported is what decides that, and it stays authoritative.
+///
+/// Built once per automaton, and only when some pattern carries its own limits — otherwise the
+/// engine-wide limits already describe every pattern.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NodeLimits {
+    pub(crate) edits: NumEdits,
+    pub(crate) insertions: NumEdits,
+    pub(crate) deletions: NumEdits,
+    pub(crate) substitutions: NumEdits,
+    pub(crate) swaps: NumEdits,
+}
+
+impl NodeLimits {
+    /// Widen these bounds to cover `other`, slot by slot.
+    pub(crate) fn union_with(&mut self, other: NodeLimits) {
+        self.edits = self.edits.max(other.edits);
+        self.insertions = self.insertions.max(other.insertions);
+        self.deletions = self.deletions.max(other.deletions);
+        self.substitutions = self.substitutions.max(other.substitutions);
+        self.swaps = self.swaps.max(other.swaps);
+    }
 }
 
 /// The cost charged for each kind of edit. A match's similarity is reduced by the sum of the
@@ -582,6 +635,9 @@ pub struct FuzzyAhoCorasick {
     /// Whether any pattern carries its own [`FuzzyLimits`]. When false, the per-node limit lookup on
     /// the search hot path is skipped entirely and the global `limits` are used directly.
     pub(crate) has_pattern_limits: bool,
+    /// Per-node union of the edit budgets of every pattern whose path includes the node. Empty
+    /// unless some pattern carries its own limits. See [`NodeLimits`].
+    pub(crate) node_limits: Vec<NodeLimits>,
     /// Which haystack bytes can begin a match, derived from the root's `edge_bits`. Precomputed
     /// once here rather than per search: enumerating the root's outgoing characters is a
     /// 128-iteration loop, which is real money on a short haystack.

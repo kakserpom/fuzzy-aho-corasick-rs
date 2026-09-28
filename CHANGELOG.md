@@ -8,6 +8,22 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **A pattern's own limits no longer gate longer patterns that share its prefix.** The search gates
+  each step of a walk on the limits of *the pattern ending at the current automaton node*. A walk
+  there may instead be on its way to a longer pattern whose trie path runs through that node, and
+  that pattern may have a far larger budget. With `["ab"` capped at 0 substitutions, `"abc"` allowed
+  1], the substitution that leaves the `"ab"` node was refused, so **`"abc"` did not match `"abx"` at
+  all**. Each node now carries the element-wise maximum of the budgets of every pattern whose path
+  includes it, which is sound — if any one pattern admits a walk, the maximum admits it too. The
+  per-pattern check when a match is reported is unchanged and stays authoritative. This also fixes
+  duplicate patterns that carry different limits, where only the first one's applied.
+- **A pattern with no limits of its own is exact again, even in a set where others have limits.**
+  When no engine-wide limits were set, the builder derived a permissive set from the patterns that did
+  have limits, and a pattern carrying none fell back to it. That derived set was never `finalize`d,
+  so its unset fields read as *unconstrained* rather than `0`: mixing one limited pattern with a
+  plain one made the plain one match with **unbounded** edits. `FuzzyLimits::default` is documented as
+  "no fuzziness", so a pattern that sets no limits now stays exact. The reason the derivation existed
+  — walks being blocked at a node no pattern ends — is now handled by the per-node budgets above.
 - **Equally-cheap alignments of one pattern at different spans are no longer conflated.** The search
   deduplicates equivalent states per window, and the dedup key briefly omitted the matched span's
   end, on the reasoning that it is recoverable from the text position and the insertion count. That

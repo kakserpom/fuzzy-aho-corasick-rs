@@ -1,5 +1,5 @@
 use crate::grapheme::EdgeSkip;
-use crate::structs::{FxHashMap, Similarity};
+use crate::structs::{FxHashMap, NodeLimits, Similarity};
 use crate::{
     Edge, FuzzyAhoCorasick, FuzzyLimits, FuzzyPenalties, FuzzyReplacer, MappingTransition, Node,
     Pattern,
@@ -193,8 +193,31 @@ impl FuzzyAhoCorasickBuilder {
             None,
         )];
 
+        // Per-node edit budgets, needed only when some pattern carries its own limits: the search
+        // gates a walk on the union of the budgets of every pattern that could still be completed
+        // from the node it is sitting at. See `NodeLimits` for why a single pattern's limits are not
+        // enough. Both vectors grow in lockstep with `nodes`, and stay empty otherwise.
+        let has_pattern_limits = patterns.iter().any(|p| p.limits.is_some());
+        let mut node_limits: Vec<NodeLimits> = Vec::new();
+        // Nodes on a path of some pattern that relies on the engine-wide limits rather than its own.
+        let mut needs_global_limits: Vec<bool> = Vec::new();
+        if has_pattern_limits {
+            node_limits = vec![NodeLimits::default(); nodes.len()];
+            needs_global_limits = vec![false; nodes.len()];
+        }
+
         for (i, pattern) in patterns.iter().enumerate() {
             let mut current: usize = 0;
+            // The root is on every pattern's path, so it needs the same treatment as the nodes
+            // below -- the walk starts there, and with a zeroed budget every edit from the root
+            // would be refused.
+            if has_pattern_limits {
+                if let Some(lim) = &pattern.limits {
+                    node_limits[0].union_with(lim.effective_bounds());
+                } else {
+                    needs_global_limits[0] = true;
+                }
+            }
             let word_iter: Vec<String> = if self.case_insensitive {
                 UnicodeSegmentation::graphemes(pattern.pattern.as_str(), true)
                     .map(str::to_lowercase)
@@ -221,11 +244,28 @@ impl FuzzyAhoCorasickBuilder {
                         #[cfg(debug_assertions)]
                         Some(grapheme),
                     ));
+                    if has_pattern_limits {
+                        node_limits.push(NodeLimits::default());
+                        needs_global_limits.push(false);
+                    }
                     new_index
                 };
 
                 // Track the first pattern to touch this node
                 nodes[next].pattern_index.get_or_insert(i);
+
+                // Every pattern that passes through a node can be completed from it, so the node's
+                // gate has to cover all of them, not just the one ending there. Merged here while
+                // the path is in hand. A pattern that carries no limits of its own falls back to
+                // the engine-wide ones, which are not settled yet -- those nodes are noted and
+                // folded in once `effective_limits` exists.
+                if has_pattern_limits {
+                    if let Some(lim) = &pattern.limits {
+                        node_limits[next].union_with(lim.effective_bounds());
+                    } else {
+                        needs_global_limits[next] = true;
+                    }
+                }
 
                 current = next;
 
@@ -303,50 +343,32 @@ impl FuzzyAhoCorasickBuilder {
             }
         }
 
-        // Compute effective limits: if no global limits are set but patterns have limits,
-        // derive a permissive global limit from the max of all pattern limits.
-        // This fixes the bug where deletions at non-final nodes were blocked.
-        let effective_limits = self.limits.or_else(|| {
-            let mut max_edits = None;
-            let mut max_insertions = None;
-            let mut max_deletions = None;
-            let mut max_substitutions = None;
-            let mut max_swaps = None;
-            let mut any_pattern_has_limits = false;
+        // The engine-wide limits are exactly what the caller set. Nothing is derived from the
+        // patterns here: the reason this once was, to stop a walk being blocked at a node no pattern
+        // ends, is now handled properly by the per-node union above, which covers every pattern a
+        // walk at that node could still complete.
+        //
+        // Deriving a set was actively wrong, because it became the authoritative fallback for a
+        // pattern carrying no limits of its own. The derived set is not `finalize`d, so its unset
+        // fields read as *unconstrained* rather than `0` -- mixing a limited pattern with a plain
+        // one made the plain one match with unbounded edits. `FuzzyLimits::default` is documented as
+        // "no fuzziness", so a pattern that sets no limits has to stay exact.
+        let effective_limits = self.limits;
 
-            for p in &patterns {
-                if let Some(ref lim) = p.limits {
-                    any_pattern_has_limits = true;
-                    if let Some(e) = lim.edits {
-                        max_edits = Some(max_edits.unwrap_or(0).max(e));
-                    }
-                    if let Some(i) = lim.insertions {
-                        max_insertions = Some(max_insertions.unwrap_or(0).max(i));
-                    }
-                    if let Some(d) = lim.deletions {
-                        max_deletions = Some(max_deletions.unwrap_or(0).max(d));
-                    }
-                    if let Some(s) = lim.substitutions {
-                        max_substitutions = Some(max_substitutions.unwrap_or(0).max(s));
-                    }
-                    if let Some(sw) = lim.swaps {
-                        max_swaps = Some(max_swaps.unwrap_or(0).max(sw));
+        // Fold the engine-wide limits into every node that a limit-less pattern can be completed
+        // from, so those nodes gate on the fallback its own patterns resolve to. With no
+        // engine-wide limits either, such a pattern is exact, so those nodes keep a zero budget and
+        // no fuzzy walk is started from them.
+        if has_pattern_limits {
+            if let Some(lim) = effective_limits.as_ref() {
+                let global = lim.effective_bounds();
+                for (n, &needs) in needs_global_limits.iter().enumerate() {
+                    if needs {
+                        node_limits[n].union_with(global);
                     }
                 }
             }
-
-            if any_pattern_has_limits {
-                Some(FuzzyLimits {
-                    edits: max_edits,
-                    insertions: max_insertions,
-                    deletions: max_deletions,
-                    substitutions: max_substitutions,
-                    swaps: max_swaps,
-                })
-            } else {
-                None
-            }
-        });
+        }
 
         // Materialise the flat edge list the search hot path iterates over, now that the trie
         // (including any minimisation) is final. Order follows `transitions`' iteration order —
@@ -511,6 +533,7 @@ impl FuzzyAhoCorasickBuilder {
             edge_skip,
             has_suffix_patterns,
             has_pattern_limits,
+            node_limits,
             max_edits_fast,
             mappings,
             beam_width: self.beam_width,

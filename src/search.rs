@@ -1,6 +1,6 @@
 //! Core fuzzy search: the monomorphized BFS over grapheme storage and its helpers.
 use crate::grapheme::{AsciiGraphemes, GraphemeStorage};
-use crate::structs::{FxHashMap, Node, Similarity, State};
+use crate::structs::{FxHashMap, Node, NodeLimits, Similarity, State};
 use crate::{
     FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, FuzzyMatches, NumEdits, Pattern, SearchError,
 };
@@ -256,77 +256,75 @@ impl DedupTable {
 
 /// Fuzzy Aho—Corasick engine
 impl FuzzyAhoCorasick {
-    /// Get the per-node limits if this node corresponds to a pattern that has
-    /// its own `FuzzyLimits`.
+    /// The edit budget a walk sitting at `node` is gated on: the union over every pattern that
+    /// could still be completed from there, not the limits of the single pattern ending at it.
+    ///
+    /// `None` means no pattern carries its own limits, so the engine-wide limits already describe
+    /// every pattern and the per-node table is empty.
     #[inline]
-    fn get_node_limits(&self, node: u32) -> Option<&FuzzyLimits> {
-        self.nodes[node as usize]
-            .pattern_index
-            .and_then(|i| self.patterns.get(i).and_then(|p| p.limits.as_ref()))
+    fn get_node_limits(&self, node: u32) -> Option<&NodeLimits> {
+        self.node_limits.get(node as usize)
+    }
+
+    /// The five bounds a transition is checked against: the per-node union when patterns carry
+    /// their own limits, otherwise the engine-wide limits.
+    #[inline]
+    fn gate_bounds(&self, node_limits: Option<&NodeLimits>) -> NodeLimits {
+        match node_limits {
+            Some(l) => *l,
+            None => self
+                .limits
+                .as_ref()
+                .map_or_else(NodeLimits::default, FuzzyLimits::effective_bounds),
+        }
     }
 
     /// Check ahead whether an insertion would stay within the allowed limits.
-    /// Considers both the node-specific limits and the global fallback `self.limits`.
     #[inline]
     fn within_limits_insertion_ahead(
         &self,
-        limits: Option<&FuzzyLimits>,
+        node_limits: Option<&NodeLimits>,
         edits: NumEdits,
         insertions: NumEdits,
     ) -> bool {
-        if let Some(max) = limits.or(self.limits.as_ref()) {
-            max.edits.is_none_or(|max| edits < max)
-                && max.insertions.is_none_or(|max| insertions < max)
-        } else {
-            false
-        }
+        let b = self.gate_bounds(node_limits);
+        edits < b.edits && insertions < b.insertions
     }
 
     /// Check ahead whether a deletion would stay within the allowed limits.
     #[inline]
     fn within_limits_deletion_ahead(
         &self,
-        limits: Option<&FuzzyLimits>,
+        node_limits: Option<&NodeLimits>,
         edits: NumEdits,
         deletions: NumEdits,
     ) -> bool {
-        if let Some(max) = limits.or(self.limits.as_ref()) {
-            max.edits.is_none_or(|max| edits < max)
-                && max.deletions.is_none_or(|max| deletions < max)
-        } else {
-            false
-        }
+        let b = self.gate_bounds(node_limits);
+        edits < b.edits && deletions < b.deletions
     }
 
     /// Check ahead whether a swap (transposition) would stay within the allowed limits.
     #[inline]
     fn within_limits_swap_ahead(
         &self,
-        limits: Option<&FuzzyLimits>,
+        node_limits: Option<&NodeLimits>,
         edits: NumEdits,
         swaps: NumEdits,
     ) -> bool {
-        if let Some(max) = limits.or(self.limits.as_ref()) {
-            max.edits.is_none_or(|max| edits < max) && max.swaps.is_none_or(|max| swaps < max)
-        } else {
-            false
-        }
+        let b = self.gate_bounds(node_limits);
+        edits < b.edits && swaps < b.swaps
     }
 
     /// Check ahead whether a substitution would stay within the allowed limits.
     #[inline]
     fn within_limits_subst(
         &self,
-        limits: Option<&FuzzyLimits>,
+        node_limits: Option<&NodeLimits>,
         edits: NumEdits,
         substitutions: NumEdits,
     ) -> bool {
-        if let Some(max) = limits.or(self.limits.as_ref()) {
-            max.edits.is_none_or(|max| edits < max)
-                && max.substitutions.is_none_or(|max| substitutions < max)
-        } else {
-            edits == 0 && substitutions == 0
-        }
+        let b = self.gate_bounds(node_limits);
+        edits < b.edits && substitutions < b.substitutions
     }
 
     /// General limits check: given all edit counts, returns whether they are

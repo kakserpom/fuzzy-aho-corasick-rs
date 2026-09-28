@@ -6,8 +6,12 @@
  *  wrong bound does not fail loudly: it just stops reporting matches. These tests compare the engine
  *  against `reference::reference_search`, which enumerates every alignment with no pruning at all,
  *  over many randomly generated configurations.
+ *
+ *  Between them the sweeps below cover both search paths: a total edit budget (the monomorphised
+ *  fast path) and per-type caps (the `MAX_EDITS_FAST == 255` slow path with `within_limits_*`
+ *  checks), which are separate code and were previously untested against anything.
  * ---------------------------------------------------------------------- */
-use crate::reference::{RefConfig, RefPattern, RefPenalties, reference_search};
+use crate::reference::{RefConfig, RefLimits, RefPattern, RefPenalties, reference_search};
 use crate::{
     FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, Pattern, SearchOptions,
     Similarity,
@@ -28,11 +32,54 @@ const SIMILARITY_PAIRS: &[((char, char), f32)] = &[
     (('y', 'x'), 0.75),
 ];
 
+/// Shared fixtures: a similarity table, the engine's penalties, and the reference's mirror of them.
+struct Fixture {
+    sim_map: HashMap<(char, char), f32>,
+    similarity: &'static Similarity,
+    penalties: FuzzyPenalties,
+    ref_pen: RefPenalties,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let sim_map: HashMap<(char, char), f32> = SIMILARITY_PAIRS.iter().copied().collect();
+        let similarity: &'static Similarity =
+            Box::leak(Box::new(Similarity::from_map(sim_map.clone())));
+        let penalties = FuzzyPenalties::default();
+        let ref_pen = RefPenalties {
+            substitution: penalties.substitution,
+            insertion: penalties.insertion,
+            deletion: penalties.deletion,
+            swap: penalties.swap,
+        };
+        Self {
+            sim_map,
+            similarity,
+            penalties,
+            ref_pen,
+        }
+    }
+
+    /// Reference configuration for a total edit budget -- the fast path.
+    fn total(&self, max_edits: u8, threshold: f32, case_insensitive: bool) -> RefConfig {
+        RefConfig {
+            pen: self.ref_pen,
+            min_symbol_similarity: 0.0,
+            limits: RefLimits {
+                max_edits: Some(max_edits),
+                ..RefLimits::default()
+            },
+            threshold,
+            case_insensitive,
+        }
+    }
+}
+
 /// Canonical form of the engine's matches: `(start, end, pattern_index, similarity_bits)`, sorted.
 ///
 /// Only the span and the score are compared. The engine also reports per-type edit counts, and
-/// those depend on which of several equally-cheap alignments its BFS reaches first, so they are not
-/// part of the contract under test.
+/// those depend on which of several equally-cheap alignments its BFS happens to reach first, so
+/// they are not part of the contract under test.
 fn engine_matches(
     engine: &FuzzyAhoCorasick,
     text: &str,
@@ -74,26 +121,9 @@ fn search_matches_brute_force_reference() {
     const ALPHABET: &[char] = &['a', 'b', 'c', 'd', 'e', 'x', 'y'];
     const CASES: u32 = 500;
 
-    let sim_map: HashMap<(char, char), f32> = SIMILARITY_PAIRS.iter().copied().collect();
-    let similarity: &'static Similarity =
-        Box::leak(Box::new(Similarity::from_map(sim_map.clone())));
-
-    let penalties = FuzzyPenalties::default();
-    let ref_pen = RefPenalties {
-        substitution: penalties.substitution,
-        insertion: penalties.insertion,
-        deletion: penalties.deletion,
-        swap: penalties.swap,
-    };
-    let config = |max_edits: u8, threshold: f32, case_insensitive: bool| RefConfig {
-        pen: ref_pen,
-        min_symbol_similarity: 0.0,
-        max_edits,
-        threshold,
-        case_insensitive,
-    };
-
+    let fx = Fixture::new();
     let mut rng = Rng(0x5EED_1234_ABCD_0001);
+
     for case in 0..CASES {
         let max_edits = rng.below(3) as u8;
         let threshold = [0.0f32, 0.5, 0.7, 0.85, 1.0][rng.below(5)];
@@ -118,8 +148,8 @@ fn search_matches_brute_force_reference() {
         }
 
         let engine = FuzzyAhoCorasickBuilder::new()
-            .similarity(similarity)
-            .penalties(penalties.clone())
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone())
             .case_insensitive(case_insensitive)
             .fuzzy(FuzzyLimits::new().edits(max_edits))
             .build(
@@ -134,13 +164,14 @@ fn search_matches_brute_force_reference() {
             .map(|p| RefPattern {
                 text: p.as_str(),
                 weight: 1.0,
+                limits: None,
             })
             .collect();
         let expected = reference_search(
             &text,
             &refs,
-            &sim_map,
-            config(max_edits, threshold, case_insensitive),
+            &fx.sim_map,
+            fx.total(max_edits, threshold, case_insensitive),
         );
         let got = engine_matches(&engine, &text, threshold);
 
@@ -148,6 +179,262 @@ fn search_matches_brute_force_reference() {
             got, expected,
             "case {case}: max_edits={max_edits} threshold={threshold} \
              case_insensitive={case_insensitive} patterns={patterns:?} text={text:?}"
+        );
+    }
+}
+
+/// Per-type caps instead of a total budget.
+///
+/// Setting a per-type cap leaves `edits` unset, which drops the search onto the `MAX_EDITS_FAST == 255`
+/// slow path: every transition is gated by a separate `within_limits_*` check instead of one shared
+/// counter. Caps are also randomly *left unset*, because `FuzzyLimits::finalize` turns an unset
+/// per-type cap into `0` -- that type is then disallowed -- and the reference has to agree. All four
+/// capped at zero degenerates to an exact search, so this also walks the exact path with a pattern
+/// set and limits that would not otherwise produce it.
+#[test]
+fn search_matches_reference_with_per_type_caps() {
+    const ALPHABET: &[char] = &['a', 'b', 'c', 'd', 'x', 'y'];
+    const CASES: u32 = 600;
+
+    let fx = Fixture::new();
+    let mut rng = Rng(0xB0A7_5EED_1234_5678);
+
+    for case in 0..CASES {
+        let threshold = [0.0f32, 0.4, 0.65, 0.9][rng.below(4)];
+        let n_patterns = 1 + rng.below(3);
+        let word_len = 1 + rng.below(4);
+        // Each cap is independently absent or 0..=2.
+        let mut cap = || match rng.below(3) {
+            0 => None,
+            n => Some(n as u8 - 1),
+        };
+        let (ins, del, sub, swp) = (cap(), cap(), cap(), cap());
+
+        let patterns: Vec<String> = (0..n_patterns)
+            .map(|_| {
+                (0..word_len)
+                    .map(|_| ALPHABET[rng.below(ALPHABET.len())])
+                    .collect()
+            })
+            .collect();
+        let text: String = (0..(3 + rng.below(5)))
+            .map(|_| ALPHABET[rng.below(ALPHABET.len())])
+            .collect();
+
+        // Build the limits the same way the test declares them, so the engine and the reference
+        // are driven by one set of numbers.
+        let mut limits = FuzzyLimits::new();
+        if let Some(n) = ins {
+            limits = limits.insertions(n);
+        }
+        if let Some(n) = del {
+            limits = limits.deletions(n);
+        }
+        if let Some(n) = sub {
+            limits = limits.substitutions(n);
+        }
+        if let Some(n) = swp {
+            limits = limits.swaps(n);
+        }
+
+        let engine = FuzzyAhoCorasickBuilder::new()
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone())
+            .fuzzy(limits)
+            .build(
+                patterns
+                    .iter()
+                    .map(|p| Pattern::from(p.as_str()))
+                    .collect::<Vec<_>>(),
+            );
+
+        let refs: Vec<RefPattern<'_>> = patterns
+            .iter()
+            .map(|p| RefPattern {
+                text: p.as_str(),
+                weight: 1.0,
+                limits: None,
+            })
+            .collect();
+        let expected = reference_search(
+            &text,
+            &refs,
+            &fx.sim_map,
+            RefConfig {
+                pen: fx.ref_pen,
+                min_symbol_similarity: 0.0,
+                limits: RefLimits {
+                    max_edits: None,
+                    max_insertions: ins,
+                    max_deletions: del,
+                    max_substitutions: sub,
+                    max_swaps: swp,
+                },
+                threshold,
+                case_insensitive: false,
+            },
+        );
+        let got = engine_matches(&engine, &text, threshold);
+
+        assert_eq!(
+            got, expected,
+            "case {case}: caps(ins={ins:?} del={del:?} sub={sub:?} swap={swp:?}) \
+             threshold={threshold} patterns={patterns:?} text={text:?}"
+        );
+    }
+}
+
+/// Mirror engine [`FuzzyLimits`] into the reference's own type, so the two cannot drift on what an
+/// unset cap means.
+fn to_ref(lim: &FuzzyLimits) -> RefLimits {
+    RefLimits {
+        max_edits: lim.edits,
+        max_insertions: lim.insertions,
+        max_deletions: lim.deletions,
+        max_substitutions: lim.substitutions,
+        max_swaps: lim.swaps,
+    }
+}
+
+/// Per-pattern limits, mixed with engine-wide ones and with patterns that carry none.
+///
+/// A pattern with its own limits sets `has_pattern_limits`, which forces the search off the
+/// monomorphised fast path *and* makes the walk consult per-node limits: at each node the limits of
+/// the pattern ending there are looked up and used to gate every outgoing transition. That is the
+/// one place where a limit can be applied to a walk that another pattern at the same node would have
+/// allowed, so it is worth checking against a reference that applies limits only per pattern.
+///
+/// Patterns may also be duplicates carrying *different* limits, which is the sharpest version of
+/// that concern: two entries, one automaton node.
+#[test]
+fn search_matches_reference_with_per_pattern_limits() {
+    const ALPHABET: &[char] = &['a', 'b', 'c', 'd', 'x', 'y'];
+    const CASES: u32 = 500;
+
+    let fx = Fixture::new();
+    let mut rng = Rng(0xDEAD_BEEF_0BAD_F00D);
+
+    for case in 0..CASES {
+        let threshold = [0.0f32, 0.4, 0.7][rng.below(3)];
+        let n_patterns = 2 + rng.below(3);
+        let word_len = 1 + rng.below(4);
+
+        // A random limit set: either a total budget, or per-type caps with some left unset.
+        let random_limits = |rng: &mut Rng| {
+            let mut lim = FuzzyLimits::new();
+            let mut ref_lim = RefLimits::default();
+            if rng.below(2) == 0 {
+                let n = rng.below(3) as u8;
+                lim = lim.edits(n);
+                ref_lim.max_edits = Some(n);
+            } else {
+                let cap = |rng: &mut Rng| match rng.below(3) {
+                    0 => None,
+                    n => Some(n as u8 - 1),
+                };
+                let (i, d, s, w) = (cap(rng), cap(rng), cap(rng), cap(rng));
+                if let Some(n) = i {
+                    lim = lim.insertions(n);
+                }
+                if let Some(n) = d {
+                    lim = lim.deletions(n);
+                }
+                if let Some(n) = s {
+                    lim = lim.substitutions(n);
+                }
+                if let Some(n) = w {
+                    lim = lim.swaps(n);
+                }
+                ref_lim.max_insertions = i;
+                ref_lim.max_deletions = d;
+                ref_lim.max_substitutions = s;
+                ref_lim.max_swaps = w;
+            }
+            (lim, ref_lim)
+        };
+
+        // Each pattern independently gets its own limits, or falls back to the engine-wide set.
+        // The global set is itself sometimes absent, in which case the builder derives one from the
+        // per-pattern maxima.
+        let global = match rng.below(3) {
+            0 => Some(random_limits(&mut rng).0),
+            _ => None,
+        };
+
+        let mut patterns: Vec<String> = Vec::new();
+        let mut engine_patterns: Vec<Pattern> = Vec::new();
+        let mut own: Vec<Option<RefLimits>> = Vec::new();
+        for _ in 0..n_patterns {
+            let p: String = (0..word_len)
+                .map(|_| ALPHABET[rng.below(ALPHABET.len())])
+                .collect();
+            // Reuse an earlier pattern text now and then, so duplicates land on one node with
+            // different limits.
+            let p = if !patterns.is_empty() && rng.below(3) == 0 {
+                patterns[rng.below(patterns.len())].clone()
+            } else {
+                p
+            };
+            let pat = Pattern::from(p.as_str());
+            let (lim, ref_lim) = if rng.below(2) == 0 {
+                let pair = random_limits(&mut rng);
+                (Some(pair.0), Some(pair.1))
+            } else {
+                (None, None)
+            };
+            engine_patterns.push(match lim {
+                Some(l) => pat.fuzzy(l),
+                None => pat,
+            });
+            patterns.push(p);
+            own.push(ref_lim);
+        }
+
+        let text: String = (0..(3 + rng.below(5)))
+            .map(|_| ALPHABET[rng.below(ALPHABET.len())])
+            .collect();
+
+        let mut builder = FuzzyAhoCorasickBuilder::new()
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone());
+        if let Some(l) = global.clone() {
+            builder = builder.fuzzy(l);
+        }
+        let engine = builder.build(engine_patterns);
+
+        // A pattern carrying no limits of its own falls back to the engine-wide limits, and with
+        // none of those it is exact -- which is what `RefLimits::default` says here.
+        let effective_global = global
+            .as_ref()
+            .map_or_else(RefLimits::default, |l| to_ref(&l.clone().finalize()));
+
+        let refs: Vec<RefPattern<'_>> = patterns
+            .iter()
+            .zip(&own)
+            .map(|(p, l)| RefPattern {
+                text: p.as_str(),
+                weight: 1.0,
+                limits: *l,
+            })
+            .collect();
+        let expected = reference_search(
+            &text,
+            &refs,
+            &fx.sim_map,
+            RefConfig {
+                pen: fx.ref_pen,
+                min_symbol_similarity: 0.0,
+                limits: effective_global,
+                threshold,
+                case_insensitive: false,
+            },
+        );
+        let got = engine_matches(&engine, &text, threshold);
+
+        assert_eq!(
+            got, expected,
+            "case {case}: effective_global={effective_global:?} own_limits={own:?} \
+             threshold={threshold} patterns={patterns:?} text={text:?}"
         );
     }
 }
@@ -160,11 +447,9 @@ fn search_matches_brute_force_reference() {
 /// them, and one match vanished. Found by the sweep above, at case 121.
 #[test]
 fn equal_penalty_alignments_with_different_span_ends_both_survive() {
-    let sim_map: HashMap<(char, char), f32> = SIMILARITY_PAIRS.iter().copied().collect();
-    let similarity: &'static Similarity =
-        Box::leak(Box::new(Similarity::from_map(sim_map.clone())));
+    let fx = Fixture::new();
     let engine = FuzzyAhoCorasickBuilder::new()
-        .similarity(similarity)
+        .similarity(fx.similarity)
         .fuzzy(FuzzyLimits::new().edits(2))
         .build([Pattern::from("yx")]);
 
@@ -190,16 +475,7 @@ fn equal_penalty_alignments_with_different_span_ends_both_survive() {
 #[test]
 fn search_matches_reference_with_weights() {
     const ALPHABET: &[char] = &['a', 'b', 'c', 'x', 'y'];
-    let sim_map: HashMap<(char, char), f32> = SIMILARITY_PAIRS.iter().copied().collect();
-    let similarity: &'static Similarity =
-        Box::leak(Box::new(Similarity::from_map(sim_map.clone())));
-    let penalties = FuzzyPenalties::default();
-    let ref_pen = RefPenalties {
-        substitution: penalties.substitution,
-        insertion: penalties.insertion,
-        deletion: penalties.deletion,
-        swap: penalties.swap,
-    };
+    let fx = Fixture::new();
 
     let mut rng = Rng(0xC0FF_EE00_1234_5678);
     for case in 0..300u32 {
@@ -223,8 +499,8 @@ fn search_matches_reference_with_weights() {
             .collect();
 
         let engine = FuzzyAhoCorasickBuilder::new()
-            .similarity(similarity)
-            .penalties(penalties.clone())
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone())
             .fuzzy(FuzzyLimits::new().edits(max_edits))
             .build(
                 patterns
@@ -240,16 +516,15 @@ fn search_matches_reference_with_weights() {
             .map(|(p, &w)| RefPattern {
                 text: p.as_str(),
                 weight: w,
+                limits: None,
             })
             .collect();
-        let config = RefConfig {
-            pen: ref_pen,
-            min_symbol_similarity: 0.0,
-            max_edits,
-            threshold,
-            case_insensitive: false,
-        };
-        let expected = reference_search(&text, &refs, &sim_map, config);
+        let expected = reference_search(
+            &text,
+            &refs,
+            &fx.sim_map,
+            fx.total(max_edits, threshold, false),
+        );
         let got = engine_matches(&engine, &text, threshold);
 
         assert_eq!(
@@ -258,4 +533,33 @@ fn search_matches_reference_with_weights() {
              patterns={patterns:?} weights={weights:?} text={text:?}"
         );
     }
+}
+
+/// A pattern's limits must not gate walks that are not its own.
+///
+/// `get_node_limits` returns the limits of *the* pattern ending at a node, and the search uses that
+/// to gate every transition leaving the node. A walk sitting at a node may equally be on its way to
+/// some longer pattern whose trie path runs through that node, and that longer pattern may have a
+/// much larger budget. The gate therefore has to be the *union* of the budgets of every pattern
+/// whose path includes the node, not any one of them.
+///
+/// Short pattern "ab" forbids substitutions; longer pattern "abc" allows one. "abc" against "abx"
+/// needs a substitution to leave the "ab" node, so a gate that reads "ab"'s limits loses it.
+#[test]
+fn a_patterns_limits_do_not_gate_longer_patterns() {
+    let short = Pattern::from("ab").fuzzy(FuzzyLimits::new().substitutions(0));
+    let long = Pattern::from("abc").fuzzy(FuzzyLimits::new().edits(1));
+    let engine = FuzzyAhoCorasickBuilder::new().build([short, long]);
+
+    let got = engine_matches(&engine, "abx", 0.0);
+    let ends: Vec<usize> = got
+        .iter()
+        .filter(|(s, _, pi, _)| *s == 0 && *pi == 1)
+        .map(|(_, e, _, _)| *e)
+        .collect();
+    assert!(
+        ends.contains(&3),
+        "\"abc\" must match \"abx\" at [0,3) with one substitution; \
+         the walk is gated by \"ab\"'s zero substitution budget. Engine reported ends {ends:?}"
+    );
 }
