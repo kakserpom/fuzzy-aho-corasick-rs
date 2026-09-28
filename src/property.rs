@@ -845,7 +845,7 @@ fn reported_spans_are_self_consistent_over_grapheme_clusters() {
     const CASES: u32 = 400;
 
     let fx = Fixture::new();
-    let mut rng = Rng(0x9C1_C1E57_1234_5678);
+    let mut rng = Rng(0x9C1C_1E57_1234_5678);
     // Matches actually inspected, and how many were multi-byte or multi-char spans -- without these
     // the sweep could check nothing at all on a generation that happens to find no matches.
     let mut checked = 0usize;
