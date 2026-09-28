@@ -1,3 +1,4 @@
+use crate::grapheme::EdgeSkip;
 use crate::structs::{FxHashMap, Similarity};
 use crate::{
     Edge, FuzzyAhoCorasick, FuzzyLimits, FuzzyPenalties, FuzzyReplacer, MappingTransition, Node,
@@ -499,6 +500,7 @@ impl FuzzyAhoCorasickBuilder {
             }
         };
 
+        let edge_skip = EdgeSkip::new(nodes[0].edge_bits);
         FuzzyAhoCorasick {
             nodes,
             patterns,
@@ -506,6 +508,7 @@ impl FuzzyAhoCorasickBuilder {
             limits: effective_limits,
             penalties: self.penalties,
             case_insensitive: self.case_insensitive,
+            edge_skip,
             has_suffix_patterns,
             has_pattern_limits,
             max_edits_fast,

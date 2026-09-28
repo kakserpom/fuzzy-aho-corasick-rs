@@ -1,4 +1,5 @@
 use crate::PatternIndex;
+use crate::grapheme::EdgeSkip;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -553,6 +554,10 @@ pub struct FuzzyAhoCorasick {
     /// Whether any pattern carries its own [`FuzzyLimits`]. When false, the per-node limit lookup on
     /// the search hot path is skipped entirely and the global `limits` are used directly.
     pub(crate) has_pattern_limits: bool,
+    /// Which haystack bytes can begin a match, derived from the root's `edge_bits`. Precomputed
+    /// once here rather than per search: enumerating the root's outgoing characters is a
+    /// 128-iteration loop, which is real money on a short haystack.
+    pub(crate) edge_skip: EdgeSkip,
     /// Whether any pattern is a *proper suffix* of another pattern's grapheme sequence — i.e.
     /// whether any node has a failure ancestor with patterns of its own.
     ///

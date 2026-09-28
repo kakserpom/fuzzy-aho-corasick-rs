@@ -374,7 +374,7 @@ impl FuzzyAhoCorasick {
         // the scan does not model.
         if self.max_edits_fast == 0 && self.nodes[0].output.is_empty() {
             return Ok(if haystack.is_ascii() {
-                let g = AsciiGraphemes::new(haystack, self.case_insensitive);
+                let g = AsciiGraphemes::new(haystack, self.case_insensitive, self.edge_skip);
                 if u32::try_from(g.gs_len()).is_err() {
                     return Err(SearchError::HaystackTooLarge {
                         graphemes: g.gs_len(),
@@ -396,7 +396,7 @@ impl FuzzyAhoCorasick {
         // the enum discriminant, albeit predictable). This eliminates the enum dispatch overhead
         // in the hot loop (~2 calls per expanded state).
         Ok(if haystack.is_ascii() {
-            let g = AsciiGraphemes::new(haystack, self.case_insensitive);
+            let g = AsciiGraphemes::new(haystack, self.case_insensitive, self.edge_skip);
             if u32::try_from(g.gs_len()).is_err() {
                 return Err(SearchError::HaystackTooLarge {
                     graphemes: g.gs_len(),
@@ -641,7 +641,7 @@ impl FuzzyAhoCorasick {
             // first-occurrence prefilter `aho-corasick` and `regex` apply, and it is what closes
             // most of the remaining gap to them on text where matches are sparse.
             if state == 0 {
-                i = graphemes.gs_next_possible(&nodes[0], i);
+                i = graphemes.gs_skip_unstartable(i);
                 if i >= text_len {
                     break;
                 }

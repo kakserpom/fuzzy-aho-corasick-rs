@@ -26,6 +26,12 @@ All notable changes to this project are documented here. The format is based on
   position — it makes a single left-to-right Aho–Corasick pass, using the failure links the builder
   already computed. That closes most of the gap to the `aho-corasick` crate (1.6 ns/byte) and puts
   it far ahead of the `eregex` engine (318 ns/byte). Fuzzy searches are unchanged.
+- **A SIMD scan replaces the byte-at-a-time skip** over haystack that cannot start a match, and the
+  set of match-starting bytes is precomputed once per automaton rather than per search. A pattern
+  set whose first graphemes are rare (`z`/`q`/`x`…) skips long runs, which is where SIMD pays:
+  ~22% faster on such a corpus. Dense first-grapheme sets are unaffected — the skip stays scalar
+  there anyway, because `memchr` has a fixed per-call setup that only pays beyond a ~30-byte run.
+- **New dependency:** `memchr`, for that scan.
 
 ### Known issues
 
