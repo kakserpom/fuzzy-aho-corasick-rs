@@ -12,8 +12,8 @@
 //! than fast. If the two agree over many random configurations, the pruning is sound; if they
 //! disagree, the engine has a bug that hand-written examples would not have caught.
 //!
-//! Multi-character mappings and beam pruning are out of scope: this pins the edit model, which is
-//! where the pruning lives.
+//! Beam pruning is out of scope: it is lossy by design, so it is checked by a weaker invariant
+//! (a beam may only lose matches, never invent them) rather than by equality.
 //!
 //! Not compiled outside `cfg(test)`.
 
@@ -76,13 +76,26 @@ pub(crate) struct RefPenalties {
     pub(crate) swap: f32,
 }
 
+/// A directed multi-character mapping: the pattern-side sequence, the haystack-side sequence it
+/// stands in for, and the penalty already applied. One configured bidirectional rule expands to two
+/// of these, mirroring the builder.
+#[derive(Clone, Debug)]
+pub(crate) struct RefMapping {
+    pub(crate) pattern_side: Vec<char>,
+    pub(crate) haystack_side: Vec<char>,
+    pub(crate) penalty: f32,
+}
+
 /// Knobs the engine exposes that the reference has to mirror.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct RefConfig {
+pub(crate) struct RefConfig<'a> {
     pub(crate) pen: RefPenalties,
     pub(crate) min_symbol_similarity: f32,
     /// Engine-wide limits, used for any pattern that does not carry its own.
     pub(crate) limits: RefLimits,
+    /// Raw `(pattern_side, haystack_side, score)` rules, expanded here into the directed form the
+    /// builder compiles. Scores become `substitution * (1 - score)`.
+    pub(crate) mappings: &'a [(String, String, f32)],
     pub(crate) threshold: f32,
     pub(crate) case_insensitive: bool,
 }
@@ -104,6 +117,12 @@ const INS: usize = 0;
 const DEL: usize = 1;
 const SUB: usize = 2;
 const SWAP: usize = 3;
+
+/// The penalty a mapping score turns into. Spelled out so the reference and the builder cannot
+/// quietly disagree about whether the score is applied before or after the factor.
+fn pen_penalty(substitution: f32, score: f32) -> f32 {
+    substitution * (1.0 - score)
+}
 
 /// The similarity the engine uses for a substituted pair.
 fn sim(table: RefSim<'_>, a: char, b: char) -> f32 {
@@ -141,6 +160,28 @@ pub(crate) fn reference_search(
         .map(|p| fold(p.text).chars().collect())
         .collect();
 
+    // Expand each configured rule into its two directed forms, exactly as the builder does: an empty
+    // or self-equal rule is dropped, and the score becomes a penalty up front.
+    let mut directed: Vec<RefMapping> = Vec::new();
+    for (a, b, score) in cfg.mappings {
+        let ga: Vec<char> = fold(a).chars().collect();
+        let gb: Vec<char> = fold(b).chars().collect();
+        if ga.is_empty() || gb.is_empty() || ga == gb {
+            continue;
+        }
+        let penalty = pen_penalty(cfg.pen.substitution, *score);
+        directed.push(RefMapping {
+            pattern_side: ga.clone(),
+            haystack_side: gb.clone(),
+            penalty,
+        });
+        directed.push(RefMapping {
+            pattern_side: gb,
+            haystack_side: ga,
+            penalty,
+        });
+    }
+
     let mut found: Vec<RefMatch> = Vec::new();
     // Start positions are `0..len`, not `0..=len`: the engine's window loop excludes the end
     // offset, so an all-deletion zero-length match sitting exactly at the end of the haystack
@@ -151,7 +192,7 @@ pub(crate) fn reference_search(
             // A pattern's own limits win; the engine-wide ones are the fallback, exactly as
             // `within_limits` resolves them.
             let limits = patterns[pi].limits.unwrap_or(cfg.limits);
-            for (end, penalty) in align_all(&text, start, pat, table, cfg, limits) {
+            for (end, penalty) in align_all(&text, start, pat, table, cfg, limits, &directed) {
                 let len = pat.len() as f32;
                 let similarity = (len - penalty) / len * patterns[pi].weight;
                 if similarity < threshold {
@@ -211,8 +252,9 @@ fn align_all(
     start: usize,
     pat: &[char],
     table: RefSim<'_>,
-    cfg: RefConfig,
+    cfg: RefConfig<'_>,
     limits: RefLimits,
+    mappings: &[RefMapping],
 ) -> Vec<(usize, f32)> {
     let pattern_len = pat.len();
     let pen = cfg.pen;
@@ -225,8 +267,14 @@ fn align_all(
     // of an OOM kill. The sweeps stay far below the cap.
     let per_type: [u8; 4] = std::array::from_fn(|k| bounds[k].min(total).min(TRACKED_EDITS));
 
-    // A match consumes at most one text grapheme per pattern grapheme, plus one per insertion.
-    let max_j = (pattern_len + per_type[INS] as usize).min(text.len() - start);
+    // A match consumes at most one text grapheme per pattern grapheme, plus one per insertion, plus
+    // whatever a mapping's haystack side adds beyond the pattern graphemes it stands in for.
+    let mapping_slack = mappings
+        .iter()
+        .map(|m| m.haystack_side.len().saturating_sub(m.pattern_side.len()))
+        .max()
+        .unwrap_or(0);
+    let max_j = (pattern_len + per_type[INS] as usize + mapping_slack).min(text.len() - start);
     let j_span = max_j + 1;
 
     // Mixed-radix index over the per-type counts, with a decoded table so the inner loop does no
@@ -320,6 +368,27 @@ fn align_all(
                     if spend[INS] && j < max_j && me > 0 {
                         let to = stride(i, j + 1, me, c + radix[INS]);
                         cells[to] = cells[to].min(here + pen.insertion);
+                    }
+                    // 5) multi-character mapping: consumes the whole pattern side and the whole
+                    //    haystack side, advancing `me` past the haystack side, and is charged to
+                    //    `substitutions` like any other substitution. The builder only records a
+                    //    mapping where the pattern side is a real trie path, so matching both
+                    //    sequences here reproduces that: a rule whose pattern side is not in this
+                    //    pattern simply never matches.
+                    if spend[SUB] {
+                        for m in mappings {
+                            let pl = m.pattern_side.len();
+                            let hl = m.haystack_side.len();
+                            if i + pl > pattern_len || start + j + hl > text.len() {
+                                continue;
+                            }
+                            let pat_ok = (0..pl).all(|k| pat[i + k] == m.pattern_side[k]);
+                            let hay_ok = (0..hl).all(|k| text[start + j + k] == m.haystack_side[k]);
+                            if pat_ok && hay_ok {
+                                let to = stride(i + pl, j + hl, j + hl, c + radix[SUB]);
+                                cells[to] = cells[to].min(here + m.penalty);
+                            }
+                        }
                     }
                 }
             }

@@ -61,7 +61,7 @@ impl Fixture {
     }
 
     /// Reference configuration for a total edit budget -- the fast path.
-    fn total(&self, max_edits: u8, threshold: f32, case_insensitive: bool) -> RefConfig {
+    fn total(&self, max_edits: u8, threshold: f32, case_insensitive: bool) -> RefConfig<'_> {
         RefConfig {
             pen: self.ref_pen,
             min_symbol_similarity: 0.0,
@@ -69,6 +69,7 @@ impl Fixture {
                 max_edits: Some(max_edits),
                 ..RefLimits::default()
             },
+            mappings: &[],
             threshold,
             case_insensitive,
         }
@@ -272,6 +273,7 @@ fn search_matches_reference_with_per_type_caps() {
                     max_substitutions: sub,
                     max_swaps: swp,
                 },
+                mappings: &[],
                 threshold,
                 case_insensitive: false,
             },
@@ -284,6 +286,14 @@ fn search_matches_reference_with_per_type_caps() {
              threshold={threshold} patterns={patterns:?} text={text:?}"
         );
     }
+}
+
+/// A random sequence of `len` graphemes drawn from `alphabet`. Takes the generator by argument so
+/// it can be called from inside another iterator that also draws from it.
+fn seq(alphabet: &[char], rng: &mut Rng, len: usize) -> String {
+    (0..len)
+        .map(|_| alphabet[rng.below(alphabet.len())])
+        .collect()
 }
 
 /// Mirror engine [`FuzzyLimits`] into the reference's own type, so the two cannot drift on what an
@@ -427,6 +437,7 @@ fn search_matches_reference_with_per_pattern_limits() {
                 pen: fx.ref_pen,
                 min_symbol_similarity: 0.0,
                 limits: effective_global,
+                mappings: &[],
                 threshold,
                 case_insensitive: false,
             },
@@ -660,5 +671,140 @@ fn beam_pruning_only_loses_matches() {
     assert!(
         pruned_somewhere > CASES as usize / 10,
         "the beam pruned nothing in {pruned_somewhere} of {CASES} cases, so this test proved nothing"
+    );
+}
+
+/// Multi-character mappings, the last search feature the reference could not previously express.
+///
+/// A rule stands one grapheme sequence in for another, bidirectionally, and applies as a single
+/// substitution: it consumes the whole pattern side and the whole haystack side and is charged to
+/// `substitutions` alone. The builder only records a rule where its pattern side is a real path in
+/// the trie, so a rule that no pattern contains can never fire — which is what keeps a mapping from
+/// costing anything on the many nodes it does not apply to.
+///
+/// Sequences here are built from the same alphabet as the patterns, so every "grapheme" is one
+/// ASCII byte. Scores vary so the mapped penalty is not always the full substitution.
+#[test]
+fn search_matches_reference_with_mappings() {
+    const ALPHABET: &[char] = &['a', 'b', 'c', 'd', 'x', 'y'];
+    const CASES: u32 = 500;
+
+    let fx = Fixture::new();
+    let mut rng = Rng(0xAAAB_BBB0_1234_5678);
+    // Cases where the mappings actually changed the outcome. Without this the test could pass
+    // vacuously, if no rule ever lined up with a pattern and a haystack.
+    let mut changed_something = 0usize;
+
+    for case in 0..CASES {
+        let max_edits = rng.below(3) as u8;
+        let threshold = [0.0f32, 0.4, 0.65, 0.85][rng.below(4)];
+        let n_patterns = 1 + rng.below(3);
+        let word_len = 3 + rng.below(3);
+
+        let patterns: Vec<String> = (0..n_patterns)
+            .map(|_| seq(ALPHABET, &mut rng, word_len))
+            .collect();
+
+        // Take each rule's pattern side from an actual pattern, so the builder records it and it
+        // has a chance to fire. Drawing both sides at random instead made almost every rule
+        // unapplicable, and the sweep passed without really testing anything. Half the rules are
+        // reversed, to exercise both directions of the expansion.
+        let n_rules = rng.below(3);
+        let mut rules: Vec<(String, String, f32)> = Vec::new();
+        for _ in 0..n_rules {
+            let host: Vec<char> = patterns[rng.below(patterns.len())].chars().collect();
+            let alen = 1 + rng.below(host.len());
+            let astart = rng.below(host.len() - alen + 1);
+            let a: String = host[astart..astart + alen].iter().collect();
+            let blen = 1 + rng.below(3);
+            let b = seq(ALPHABET, &mut rng, blen);
+            let score = [0.0f32, 0.5, 1.0][rng.below(3)];
+            if rng.below(2) == 0 {
+                rules.push((a, b, score));
+            } else {
+                rules.push((b, a, score));
+            }
+        }
+
+        // Half the time, plant a haystack side in the text so the rule has something to match.
+        let mut text: String = (0..(4 + rng.below(6)))
+            .map(|_| ALPHABET[rng.below(ALPHABET.len())])
+            .collect();
+        if let Some((_, b, _)) = rules.first() {
+            if rng.below(2) == 0 {
+                let at = rng.below(text.chars().count() + 1);
+                let mut chars: Vec<char> = text.chars().collect();
+                for (k, c) in b.chars().enumerate() {
+                    chars.insert(at + k, c);
+                }
+                text = chars.into_iter().collect();
+            }
+        }
+
+        let mut builder = FuzzyAhoCorasickBuilder::new()
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone())
+            .fuzzy(FuzzyLimits::new().edits(max_edits));
+        for (a, b, score) in rules.clone() {
+            builder = builder.mapping_scored(a, b, score);
+        }
+        let engine = builder.build(
+            patterns
+                .iter()
+                .map(|p| Pattern::from(p.as_str()))
+                .collect::<Vec<_>>(),
+        );
+
+        let refs: Vec<RefPattern<'_>> = patterns
+            .iter()
+            .map(|p| RefPattern {
+                text: p.as_str(),
+                weight: 1.0,
+                limits: None,
+            })
+            .collect();
+        let expected = reference_search(
+            &text,
+            &refs,
+            &fx.sim_map,
+            RefConfig {
+                pen: fx.ref_pen,
+                min_symbol_similarity: 0.0,
+                limits: RefLimits {
+                    max_edits: Some(max_edits),
+                    ..RefLimits::default()
+                },
+                mappings: &rules,
+                threshold,
+                case_insensitive: false,
+            },
+        );
+        let got = engine_matches(&engine, &text, threshold);
+
+        assert_eq!(
+            got, expected,
+            "case {case}: max_edits={max_edits} threshold={threshold} rules={rules:?} \
+             patterns={patterns:?} text={text:?}"
+        );
+
+        // The same search with no mappings at all: where the two differ, a rule did real work.
+        let without = FuzzyAhoCorasickBuilder::new()
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone())
+            .fuzzy(FuzzyLimits::new().edits(max_edits))
+            .build(
+                patterns
+                    .iter()
+                    .map(|p| Pattern::from(p.as_str()))
+                    .collect::<Vec<_>>(),
+            );
+        if engine_matches(&without, &text, threshold) != got {
+            changed_something += 1;
+        }
+    }
+    assert!(
+        changed_something > CASES as usize / 20,
+        "mappings changed the result in only {changed_something} of {CASES} cases, \
+         so this test proved little about them"
     );
 }
