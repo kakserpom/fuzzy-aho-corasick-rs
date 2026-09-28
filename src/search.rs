@@ -14,27 +14,31 @@ type NodeIndex = u32;
 type HaystackPos = u32;
 /// Start grapheme index of the matched span in the haystack.
 type MatchStart = u32;
+/// End grapheme index of the matched span in the haystack. Not derivable from the other state
+/// fields — see [`VisitedKey`].
+type MatchEnd = u32;
 
-/// Key for the per-window state-dedup map: automaton position, matched span start, and the four
-/// per-edit-type counts packed into one `u32` (one byte each). Two states with equal keys behave
-/// identically going forward, so only the lowest-penalty one needs expanding.
+/// Key for the per-window state-dedup map: automaton position, both ends of the matched span, and
+/// the four per-edit-type counts packed into one `u32` (one byte each). Two states with equal keys
+/// behave identically going forward, so only the lowest-penalty one needs expanding.
 ///
-/// The span *end* is deliberately not part of the key: every transition either advances `j` and
-/// `matched_end` together (exact / substitution / swap / mapping) or advances `j` alone (insertion)
-/// or neither (deletion), so the invariant `matched_end == j - insertions` holds from the initial
-/// state onwards. `insertions` is a byte of `packed_counts`, hence the end is recoverable from
-/// fields already in the key. Dropping it takes the key from five fields to four, which halves the
-/// number of words the per-state hash has to mix.
+/// `matched_end` has to be in the key, and it is *not* recoverable from the other fields. The
+/// tempting shortcut is that it is a function of `j` and the insertion count, since `matched_end`
+/// advances on exact / substitution / swap / mapping but not on an insertion. That is wrong: it
+/// equals `j` minus the insertions taken *after* the last alignment, so two paths can reach the same
+/// `j` with the same insertion count at different ends. For pattern `"yx"` on `"ybyyya"` at
+/// `edits(2)`, `E I S` ends at `matched_end == 6` and `E S I` at `5`, both at penalty 1.95, and they
+/// key identically without it — collapsing them silently drops one of the two matches. (A property
+/// test against a brute-force reference caught this; the invariant it was justified by is false.)
 ///
-/// The custom `Hash` impl packs each pair of `u32`s into a `u64`, so the whole key costs two
-/// `FxHash` rounds (two dependent multiply chains) instead of one round per field. `packed_counts`
-/// shares the second round with `matched_start`: it does not reduce the number of rounds, but it
-/// does spread the keys, which measurably lowers the probe count in multi-edit search.
+/// The custom `Hash` impl packs pairs of `u32`s into `u64`s, so five fields cost three `FxHash`
+/// rounds rather than one per field.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct VisitedKey {
     node: NodeIndex,
     j: HaystackPos,
     matched_start: MatchStart,
+    matched_end: MatchEnd,
     packed_counts: u32,
 }
 
@@ -42,7 +46,8 @@ impl Hash for VisitedKey {
     #[inline]
     fn hash<H: Hasher>(&self, hasher: &mut H) {
         hasher.write_u64(u64::from(self.node) | (u64::from(self.j) << 32));
-        hasher.write_u64(u64::from(self.matched_start) | (u64::from(self.packed_counts) << 32));
+        hasher.write_u64(u64::from(self.matched_start) | (u64::from(self.matched_end) << 32));
+        hasher.write_u32(self.packed_counts);
     }
 }
 
@@ -238,6 +243,7 @@ impl DedupTable {
                     node: 0,
                     j: 0,
                     matched_start: 0,
+                    matched_end: 0,
                     packed_counts: 0,
                 },
                 penalty: 0.0,
@@ -1005,6 +1011,7 @@ impl FuzzyAhoCorasick {
                                 node,
                                 j,
                                 matched_start,
+                                matched_end,
                                 packed_counts,
                             },
                             penalties,
@@ -1512,6 +1519,7 @@ mod dedup_table_tests {
             node: a,
             j: a.wrapping_mul(7),
             matched_start: a.wrapping_mul(13),
+            matched_end: a.wrapping_mul(11),
             packed_counts: a.wrapping_mul(3),
         }
     }

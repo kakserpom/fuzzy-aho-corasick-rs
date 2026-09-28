@@ -51,7 +51,14 @@ mod grapheme;
 mod matches;
 mod options;
 mod prefilter;
+/// Property tests against that reference.
+#[cfg(test)]
+mod property;
 mod query;
+/// A naive, unpruned reference implementation of the search, used only to property-test the real
+/// one. See `reference.rs` for why.
+#[cfg(test)]
+mod reference;
 mod replacer;
 mod search;
 mod stream;

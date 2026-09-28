@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **Equally-cheap alignments of one pattern at different spans are no longer conflated.** The search
+  deduplicates equivalent states per window, and the dedup key briefly omitted the matched span's
+  end, on the reasoning that it is recoverable from the text position and the insertion count. That
+  is false: the span end sits just past the *last pattern grapheme that was aligned*, so it is the
+  text position minus the insertions taken *after* that alignment. Two alignments can therefore
+  reach the same automaton node, text position, span start, edit counts **and penalty** at different
+  span ends — for pattern `"yx"` on `"ybyyya"`, an exact-then-insert-then-substitute run ends at 6
+  while exact-then-substitute-then-insert ends at 5 — and the dedup merged them, dropping one match.
+  Caught by a new property test that checks the search against a brute-force reference.
 - **Matches are reported at the span of the pattern that matched, in fuzzy searches too.** A
   pattern that is a *suffix* of the text a match consumed was reported a second time, at the
   consuming walk's whole span rather than the pattern's own. For the patterns `["abcd", "cd"]` on
