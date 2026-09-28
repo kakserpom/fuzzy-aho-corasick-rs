@@ -1,11 +1,10 @@
 //! Core fuzzy search: the monomorphized BFS over grapheme storage and its helpers.
 use crate::grapheme::{AsciiGraphemes, GraphemeStorage};
-use crate::structs::{FxHashMap, Node, State};
+use crate::structs::{FxHashMap, Node, Similarity, State};
 use crate::{
     FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, FuzzyMatches, NumEdits, Pattern, SearchError,
 };
 use std::borrow::Cow;
-use std::collections::hash_map::Entry;
 use std::hash::{Hash, Hasher};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -15,24 +14,27 @@ type NodeIndex = u32;
 type HaystackPos = u32;
 /// Start grapheme index of the matched span in the haystack.
 type MatchStart = u32;
-/// End grapheme index of the matched span in the haystack.
-type MatchEnd = u32;
 
-/// Key for the per-window state-dedup map: automaton position, matched span, and the four
+/// Key for the per-window state-dedup map: automaton position, matched span start, and the four
 /// per-edit-type counts packed into one `u32` (one byte each). Two states with equal keys behave
-/// identically going forward, so only the lowest-penalty one needs expanding. Packing the counts
-/// keeps the key at five fields, so the per-state hash mixes four words instead of eight.
+/// identically going forward, so only the lowest-penalty one needs expanding.
 ///
-/// The custom `Hash` impl packs pairs of `u32`s into `u64`s, reducing `FxHash` rounds from 5 to 2
-/// `(2 × write_u64 + write_u32)`. `packed_counts` is included via a third
-/// `write_u32` call — it reduces probe count significantly in multi-edit
-/// search (4-edit beam: ~10% faster) while costing ~1.5% on 1-edit search.
+/// The span *end* is deliberately not part of the key: every transition either advances `j` and
+/// `matched_end` together (exact / substitution / swap / mapping) or advances `j` alone (insertion)
+/// or neither (deletion), so the invariant `matched_end == j - insertions` holds from the initial
+/// state onwards. `insertions` is a byte of `packed_counts`, hence the end is recoverable from
+/// fields already in the key. Dropping it takes the key from five fields to four, which halves the
+/// number of words the per-state hash has to mix.
+///
+/// The custom `Hash` impl packs each pair of `u32`s into a `u64`, so the whole key costs two
+/// `FxHash` rounds (two dependent multiply chains) instead of one round per field. `packed_counts`
+/// shares the second round with `matched_start`: it does not reduce the number of rounds, but it
+/// does spread the keys, which measurably lowers the probe count in multi-edit search.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct VisitedKey {
     node: NodeIndex,
     j: HaystackPos,
     matched_start: MatchStart,
-    matched_end: MatchEnd,
     packed_counts: u32,
 }
 
@@ -40,12 +42,7 @@ impl Hash for VisitedKey {
     #[inline]
     fn hash<H: Hasher>(&self, hasher: &mut H) {
         hasher.write_u64(u64::from(self.node) | (u64::from(self.j) << 32));
-        hasher.write_u64(u64::from(self.matched_start) | (u64::from(self.matched_end) << 32));
-        // Including `packed_counts` in the hash dramatically reduces probe count
-        // for multi-edit search (4-edit beam: ~10% faster). For 1-edit search
-        // the extra write_u32 adds ~2% overhead but the net win is large in
-        // absolute terms (50µs saved on beam vs 0.05µs lost on 1-edit).
-        hasher.write_u32(self.packed_counts);
+        hasher.write_u64(u64::from(self.matched_start) | (u64::from(self.packed_counts) << 32));
     }
 }
 
@@ -59,6 +56,190 @@ macro_rules! trace {
 macro_rules! trace {
     ($($arg:tt)*) => {};
 }
+
+/// Similarity of a substituted pair, with the exact-match case short-circuited before the table
+/// lookup. A free function so the hot loop can hoist the `&Similarity` out of `&self` (see the
+/// locals bound at the top of `search_unsorted_impl`) instead of re-loading it for every candidate
+/// edge — the BFS writes to `queue`/`visited`, which the optimiser must assume might alias the
+/// engine.
+#[inline]
+fn similarity_of(similarity: &Similarity, a: char, b: char) -> f32 {
+    if a == b { 1.0 } else { similarity.get(a, b) }
+}
+
+/// One slot of [`DedupTable`]. Key, value and generation stamp live inline so a probe reads a
+/// single cache line.
+#[derive(Clone, Copy)]
+struct DedupSlot {
+    /// Window generation this slot was written in. A slot stamped with an older generation is
+    /// treated as empty, which is what makes the per-window reset O(1).
+    epoch: u32,
+    /// Full 64-bit fingerprint of the key. Checked before the key itself so that two distinct keys
+    /// landing in the same slot are rejected without touching the 16-byte key.
+    hash: u64,
+    key: VisitedKey,
+    penalty: f32,
+}
+
+/// Per-window state-dedup table: open addressing with linear probing over a power-of-two table.
+///
+/// This is the hottest structure in the search — one probe per expanded state, and 13M of them on
+/// a 250 KiB haystack against a 500-pattern automaton — so it is hand-rolled rather than a
+/// `HashMap` for three reasons:
+/// * **O(1) reset.** Windows are started hundreds of thousands of times per search;
+///   `HashMap::clear` memsets the whole control array each time, whereas bumping an epoch
+///   invalidates every slot at once.
+/// * **A cheaper hash.** One multiply-and-shift, versus two dependent `FxHash` rounds.
+/// * **One cache line per probe.** Hashbrown keeps keys and values together but pays for a
+///   separate control array and its group-probe bookkeeping; here the stamp, fingerprint, key and
+///   penalty are contiguous in a single 32-byte slot.
+///
+/// The load factor is kept at or below 3/4 by growing, so linear probing stays short.
+struct DedupTable {
+    slots: Box<[DedupSlot]>,
+    /// `slots.len() - 1`; the table length is always a power of two.
+    mask: usize,
+    /// Current window generation. Starts at 1 so that the all-zero `slots` read as empty.
+    epoch: u32,
+    /// Slots occupied in the current generation, used to decide when to grow.
+    len: usize,
+}
+
+impl DedupTable {
+    /// Multiplicative constant (Fibonacci hashing) for the slot index.
+    const K: u64 = 0x9E37_79B9_7F4A_7C15;
+
+    /// A table sized for `expected` states per window. `expected == 0` builds a table that is never
+    /// used (the exact search, which needs no dedup at all).
+    fn new(expected: usize) -> Self {
+        let slots = expected
+            .max(8)
+            .checked_next_power_of_two()
+            .unwrap_or(1 << 20);
+        Self {
+            slots: Self::empty_slots(slots),
+            mask: slots - 1,
+            epoch: 1,
+            len: 0,
+        }
+    }
+
+    /// Discard every entry, in constant time, by advancing the window generation.
+    fn next_window(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            // Wrapped past `u32::MAX`: the stamps can no longer distinguish old slots from
+            // empty ones, so wipe them. Unreachable in practice (a search is bounded by the
+            // haystack's grapheme count), but cheap to keep correct.
+            self.slots.iter_mut().for_each(|s| s.epoch = 0);
+            self.epoch = 1;
+        }
+        self.len = 0;
+    }
+
+    /// Fingerprint of a key. The key's four `u32`s are folded into two words, mixed with one
+    /// multiply, and the *high* half of the product picks the slot (classic Fibonacci hashing, so
+    /// the low bits of the inputs still spread). Collisions cannot lose an entry: the full
+    /// fingerprint and then the key itself are compared before any slot is overwritten.
+    #[inline]
+    fn hash_key(key: &VisitedKey) -> u64 {
+        let a = u64::from(key.node) | (u64::from(key.j) << 32);
+        let b = u64::from(key.matched_start) | (u64::from(key.packed_counts) << 32);
+        (a ^ b.rotate_left(29)).wrapping_mul(Self::K)
+    }
+
+    /// Record that `key` has been expanded with `penalty`, and report the penalty of a
+    /// previously-expanded equal key if it is `<=` the new one.
+    ///
+    /// The caller skips the state when this returns `Some(seen) <= penalties`: an equal or better
+    /// (lower-penalty) state with the same automaton position, span and edit counts was already
+    /// expanded, and being identical in every respect that affects the future, its subtree has
+    /// been (or is being) explored at least as well. A stored *higher* penalty is overwritten,
+    /// since this state is strictly better for the same future.
+    #[inline]
+    fn probe_and_update(&mut self, key: VisitedKey, penalty: f32) -> Option<f32> {
+        let hash = Self::hash_key(&key);
+        let mut idx = ((hash >> 32) as usize) & self.mask;
+        loop {
+            let slot = &mut self.slots[idx];
+            if slot.epoch == self.epoch {
+                if slot.hash == hash && slot.key == key {
+                    if slot.penalty <= penalty {
+                        return Some(slot.penalty);
+                    }
+                    slot.penalty = penalty;
+                    return None;
+                }
+            } else {
+                slot.epoch = self.epoch;
+                slot.hash = hash;
+                slot.key = key;
+                slot.penalty = penalty;
+                self.len += 1;
+                if self.len * 4 > self.slots.len() * 3 {
+                    self.grow();
+                }
+                return None;
+            }
+            idx = (idx + 1) & self.mask;
+        }
+    }
+
+    /// Double the table and reinsert the current window's entries, keeping the load factor at or
+    /// below 3/4 so linear probes stay short.
+    fn grow(&mut self) {
+        let old = std::mem::take(&mut self.slots);
+        // The length must stay a power of two: `mask = len - 1` is what turns the linear probe
+        // into a wrap-around, and that only works if `len` is a power of two.
+        self.slots = Self::empty_slots(old.len() * 2);
+        self.mask = self.slots.len() - 1;
+        self.len = 0;
+        for slot in old {
+            if slot.epoch == self.epoch {
+                self.reinsert(slot);
+            }
+        }
+    }
+
+    /// Insert a known-unoccupied key/value pair during a rehash (no growth check).
+    #[inline]
+    fn reinsert(&mut self, slot: DedupSlot) {
+        let mut idx = ((slot.hash >> 32) as usize) & self.mask;
+        while self.slots[idx].epoch == self.epoch {
+            idx = (idx + 1) & self.mask;
+        }
+        self.slots[idx] = DedupSlot {
+            epoch: self.epoch,
+            ..slot
+        };
+        self.len += 1;
+    }
+
+    /// `len` zeroed slots. An `epoch` of 0 marks them all as empty, which is why the generation
+    /// counter starts at 1.
+    fn empty_slots(len: usize) -> Box<[DedupSlot]> {
+        debug_assert!(
+            len.is_power_of_two(),
+            "probe mask requires a power-of-two table"
+        );
+        vec![
+            DedupSlot {
+                epoch: 0,
+                hash: 0,
+                key: VisitedKey {
+                    node: 0,
+                    j: 0,
+                    matched_start: 0,
+                    packed_counts: 0,
+                },
+                penalty: 0.0,
+            };
+            len
+        ]
+        .into_boxed_slice()
+    }
+}
+
 /// Fuzzy Aho—Corasick engine
 impl FuzzyAhoCorasick {
     /// Get the per-node limits if this node corresponds to a pattern that has
@@ -68,17 +249,6 @@ impl FuzzyAhoCorasick {
         self.nodes[node as usize]
             .pattern_index
             .and_then(|i| self.patterns.get(i).and_then(|p| p.limits.as_ref()))
-    }
-
-    /// Fast path similarity lookup with inline handling of common cases.
-    /// Uses precomputed ASCII table for O(1) lookup, falls back to `HashMap` for non-ASCII.
-    #[inline]
-    fn get_similarity(&self, a: char, b: char) -> f32 {
-        // Fast path: exact match
-        if a == b {
-            return 1.0;
-        }
-        self.similarity.get(a, b)
     }
 
     /// Check ahead whether an insertion would stay within the allowed limits.
@@ -442,42 +612,52 @@ impl FuzzyAhoCorasick {
         // Keyed by (start_byte, end_byte, pattern_index). Uses the fast FxHash hasher instead of
         // the default SipHash: keys are small integer tuples looked up on every accepted match.
         let mut best: FxHashMap<(usize, usize, usize), FuzzyMatch> = FxHashMap::default();
-        // Cap the reservation: `best` only ever holds one entry per accepted match span (typically a
-        // handful), yet `patterns.len() * 4` pre-sizes it to ~4x the automaton's total pattern count.
-        // On a large automaton that is megabytes of untouched table per search; the cap keeps the
-        // rehash-avoidance for the common (small) case while bounding the pathological one. `reserve`
-        // is a capacity hint only — results are unaffected.
-        best.reserve((self.patterns.len() * 4).min(1024));
+        // Reserve only a token amount. `best` holds one entry per accepted match span, and an entry
+        // is ~90 bytes (a 24-byte key plus the full `FuzzyMatch`), so sizing the table off the
+        // pattern count is a bad proxy: a 500-pattern automaton used to reserve ~90 KiB per search
+        // call even when the search finds nothing at all. The overwhelming majority of searches
+        // return a handful of matches, and growing from a small table costs a couple of rehashes
+        // against a search that has already done thousands of expansions. `reserve` is a capacity
+        // hint only — results are unaffected.
+        best.reserve(8);
 
-        // Pre-allocate queue - size based on beam width or a generous default. The default
-        // of 128 avoids the first-window realloc (profiled at ~0.3% of search time with 64).
-        let mut queue: Vec<State> = Vec::with_capacity(self.beam_width.unwrap_or(128));
+        // Pre-allocate the queue. A state's count per window is bounded by the search's branching
+        // factor, not by the haystack, so this is deliberately small: capping it by the haystack
+        // length keeps short inputs from paying for a large allocation they can never use, while
+        // long ones still get the default. `reserve` is a capacity hint only.
+        let mut queue: Vec<State> = Vec::with_capacity(
+            self.beam_width
+                .unwrap_or(128)
+                .min(16usize.saturating_add(text_len as usize)),
+        );
 
-        // Visited set for state deduplication, reused (cleared) per start window. Insertions and
+        // Visited set for state deduplication, reused (reset) per start window. Insertions and
         // deletions can reach the same automaton position via exponentially many distinct paths;
         // without dedup this BFS explodes in time and memory on long haystacks. Two states that
         // agree on automaton position, matched span, and per-edit-type counts behave identically
-        // in the future, so only the lowest-penalty one needs to be expanded. FxHash is used
-        // because the key is an integer tuple hashed once per expanded state (the hottest map).
-        let mut visited: FxHashMap<VisitedKey, f32> = FxHashMap::default();
-        // Pre-warm the visited map to avoid incremental rehashing (0→4→8→16…) during the
-        // first few windows. Profiling showed `reserve_rehash` at ~3.5% of search time for
-        // texts under 128 graphemes because the map started at capacity 0 and grew on every
-        // window until stabilizing. A modest pre-allocation eliminates this: the capacity is
-        // retained by `clear()` between windows, so it's a one-time cost per search call.
-        // For very short inputs (< 16 graphemes) the overhead of even a small allocation
-        // outweighs the rehashing savings, so we skip those.
-        if text_len > 16 {
-            // Smaller tables reduce `clear()` memset cost between windows. The dead-end
-            // filter (opt-17/18) reduces the number of states per window, so smaller
-            // reserves suffice. Scale with edit budget: more edits → more states.
+        // in the future, so only the lowest-penalty one needs to be expanded.
+        //
+        // With `MAX_EDITS_FAST == 0` the search is a pure trie walk: only exact transitions fire,
+        // and a trie node has exactly one path from the root, so every state in a window sits on a
+        // distinct path and the table can never report a duplicate. Every use below is therefore
+        // behind a `MAX_EDITS_FAST != 0` const guard, which compiles the exact search down to no
+        // hashing and no per-window reset at all — it used to pay a hash insert for every start
+        // position, which was pure overhead. (The table itself is still built, so a tiny allocation
+        // remains; making it conditional on the const generic measured *slower* everywhere, the
+        // extra branch on the state loop costing more than the one small allocation saves.)
+        let mut visited = DedupTable::new(if MAX_EDITS_FAST == 0 {
+            0
+        } else {
+            // Size for the states one window is expected to expand. The dead-end filter keeps
+            // that well below the raw branching factor, and the table grows itself if a window
+            // turns out to be wider, so this only has to avoid the first few rehashes.
             let cap = match MAX_EDITS_FAST {
                 1 => 64,
                 2 => 128,
                 _ => 256,
             };
-            visited.reserve((text_len as usize * 4).min(cap));
-        }
+            (text_len as usize * 4).clamp(16, cap).next_power_of_two()
+        });
 
         // Global penalty ceiling, used for the cheap push-time guards below: a state carrying more
         // penalty than this can never reach the threshold. The root reaches every pattern, so its
@@ -492,6 +672,14 @@ impl FuzzyAhoCorasick {
         // `255` disables the fast path; otherwise the hot loop checks `edits <= MAX_EDITS_FAST`
         // (or `<` for ahead-checks) instead of calling `within_limits_*`.
         let has_pattern_limits = self.has_pattern_limits;
+        // The rest of the engine's immutable configuration, hoisted into locals. `self` is only
+        // ever shared-borrowed here, but the BFS writes to `queue`/`visited` and the optimiser has
+        // to assume those writes might alias the engine, so each access would otherwise be a
+        // re-load from memory — once per expanded state, for a handful of fields the loop reads
+        // repeatedly. Binding them up front keeps them in registers.
+        let nodes = &self.nodes;
+        let pen = &self.penalties;
+        let similarity = self.similarity;
 
         // 2-gram window skip for 1-edit search: precompute bitmaps of root edge chars
         // (first chars) and root children's edge chars (second chars). A window can only
@@ -507,7 +695,7 @@ impl FuzzyAhoCorasick {
                 let mut second = 0u128;
                 let mut child_output = false;
                 for edge in &root.edges {
-                    let child = &self.nodes[edge.next() as usize];
+                    let child = &nodes[edge.next() as usize];
                     let child_bits = child.single_char_edge_bits();
                     second |= child_bits;
                     first |= child_bits;
@@ -558,7 +746,9 @@ impl FuzzyAhoCorasick {
             );
 
             queue.clear();
-            visited.clear();
+            if MAX_EDITS_FAST != 0 {
+                visited.next_window();
+            }
             let start = start as u32;
             queue.push(State {
                 node: 0,
@@ -605,29 +795,26 @@ impl FuzzyAhoCorasick {
                 // same automaton position, matched span, and per-edit-type counts was already
                 // expanded. This collapses the exponential set of insertion/deletion paths that
                 // reach the same position into a polynomial number of distinct states.
-                let dedup_key = VisitedKey {
-                    node,
-                    j,
-                    matched_start,
-                    matched_end,
-                    packed_counts,
-                };
-                // Use the entry API so the key is hashed once (a plain `get` followed by `insert`
-                // hashes it twice); this map is probed on every expanded state, so that second hash
-                // was a measurable slice of the hot path.
-                match visited.entry(dedup_key) {
-                    Entry::Occupied(mut slot) => {
-                        if *slot.get() <= penalties {
-                            continue;
-                        }
-                        slot.insert(penalties);
-                    }
-                    Entry::Vacant(slot) => {
-                        slot.insert(penalties);
-                    }
+                //
+                // Skipped entirely when no edit is permitted: the walk is then a pure trie
+                // traversal, whose states all have distinct nodes, so the map could never match.
+                if MAX_EDITS_FAST != 0
+                    && visited
+                        .probe_and_update(
+                            VisitedKey {
+                                node,
+                                j,
+                                matched_start,
+                                packed_counts,
+                            },
+                            penalties,
+                        )
+                        .is_some_and(|seen| seen <= penalties)
+                {
+                    continue;
                 }
 
-                let node_ref = &self.nodes[node as usize];
+                let node_ref = &nodes[node as usize];
 
                 // Early pruning against this node's own (tight) ceiling: a state whose penalties
                 // exceed what the longest/heaviest pattern still reachable from here allows cannot
@@ -821,12 +1008,12 @@ impl FuzzyAhoCorasick {
                                 continue;
                             }
                             // substitution
-                            let sim = self.get_similarity(edge.first_char, current_ch);
+                            let sim = similarity_of(similarity, edge.first_char, current_ch);
                             // Weakest-link floor: reject a too-dissimilar character outright.
                             if sim < min_symbol_similarity {
                                 continue;
                             }
-                            let penalty = self.penalties.substitution * (1.0 - sim);
+                            let penalty = pen.substitution * (1.0 - sim);
 
                             // Skip substitutions that would push the state past the global ceiling.
                             if penalty > remaining {
@@ -837,7 +1024,7 @@ impl FuzzyAhoCorasick {
                             // only do exact match and output check. If the child has no
                             // output and no edge matching text[j+1], skip the push.
                             if is_last_edit {
-                                let child = &self.nodes[next_node as usize];
+                                let child = &nodes[next_node as usize];
                                 if child.output.is_empty()
                                     && next_ch_opt
                                         .is_none_or(|ch| !child.has_matching_edge_char(ch))
@@ -933,7 +1120,7 @@ impl FuzzyAhoCorasick {
                     // path (MAX_EDITS_FAST == 255) and eliminate the inner guard for the
                     // fast path.
                     if j + 1 < text_len
-                        && self.penalties.swap <= remaining
+                        && pen.swap <= remaining
                         && (MAX_EDITS_FAST == 255 || edits < MAX_EDITS_FAST)
                     {
                         // Reuse next_ch_opt when available (1-edit: always Some here);
@@ -956,8 +1143,7 @@ impl FuzzyAhoCorasick {
                             node_ref
                                 .find_transition_char_no_mappings(next_ch)
                                 .and_then(|x| {
-                                    self.nodes[x as usize]
-                                        .find_transition_char_no_mappings(current_ch)
+                                    nodes[x as usize].find_transition_char_no_mappings(current_ch)
                                 })
                         } && (MAX_EDITS_FAST != 255
                             || self.within_limits_swap_ahead(
@@ -979,7 +1165,7 @@ impl FuzzyAhoCorasick {
                                 j: j + 2,
                                 matched_start,
                                 matched_end: j + 2,
-                                penalties: penalties + self.penalties.swap,
+                                penalties: penalties + pen.swap,
                                 edits: edits + 1,
                                 packed_counts: packed_counts + 0x100_0000,
                                 #[cfg(debug_assertions)]
@@ -992,7 +1178,7 @@ impl FuzzyAhoCorasick {
                     // 3a) Insertion (skip a haystack character)
                     //
                     if (matched_start != matched_end || matched_start != j)
-                        && self.penalties.insertion <= remaining
+                        && pen.insertion <= remaining
                         && if MAX_EDITS_FAST == 255 {
                             self.within_limits_insertion_ahead(
                                 node_limits,
@@ -1020,7 +1206,7 @@ impl FuzzyAhoCorasick {
                             j: j + 1,
                             matched_start,
                             matched_end,
-                            penalties: penalties + self.penalties.insertion,
+                            penalties: penalties + pen.insertion,
                             edits: edits + 1,
                             packed_counts: packed_counts + 1,
                             #[cfg(debug_assertions)]
@@ -1032,7 +1218,7 @@ impl FuzzyAhoCorasick {
                 //
                 // 3b) Deletion (skip a pattern character) — always, even if j == len
                 //
-                if self.penalties.deletion <= remaining
+                if pen.deletion <= remaining
                     && if MAX_EDITS_FAST == 255 {
                         self.within_limits_deletion_ahead(
                             node_limits,
@@ -1062,10 +1248,7 @@ impl FuzzyAhoCorasick {
                                 continue;
                             }
                         }
-                        trace!(
-                            "  delete to node={next_node2} penalty={:.2}",
-                            self.penalties.deletion
-                        );
+                        trace!("  delete to node={next_node2} penalty={:.2}", pen.deletion);
                         #[cfg(debug_assertions)]
                         let mut notes = notes.clone();
                         #[cfg(debug_assertions)]
@@ -1079,7 +1262,7 @@ impl FuzzyAhoCorasick {
                             j,
                             matched_start,
                             matched_end,
-                            penalties: penalties + self.penalties.deletion,
+                            penalties: penalties + pen.deletion,
                             edits: edits + 1,
                             packed_counts: packed_counts + 0x100,
                             #[cfg(debug_assertions)]
@@ -1116,5 +1299,97 @@ impl FuzzyAhoCorasick {
             })
             .collect();
         FuzzyMatches { haystack, inner }
+    }
+}
+
+#[cfg(test)]
+mod dedup_table_tests {
+    use super::{DedupTable, VisitedKey};
+    use std::collections::HashMap;
+
+    fn key(a: u32) -> VisitedKey {
+        VisitedKey {
+            node: a,
+            j: a.wrapping_mul(7),
+            matched_start: a.wrapping_mul(13),
+            packed_counts: a.wrapping_mul(3),
+        }
+    }
+
+    /// The table must behave exactly like the `HashMap<VisitedKey, f32>` it replaced: report a
+    /// stored penalty when it is `<=` the incoming one, overwrite when it is higher.
+    #[test]
+    fn matches_hashmap_semantics() {
+        // A tiny table forces the growth path.
+        let mut table = DedupTable::new(8);
+        let mut reference: HashMap<VisitedKey, f32> = HashMap::new();
+
+        let mut state = 12345u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) as u32
+        };
+
+        for window in 0..200 {
+            table.next_window();
+            reference.clear();
+            for step in 0..500 {
+                let k = key(next() % 400);
+                let penalty = (step % 17) as f32 * 0.25;
+
+                let expected = match reference.get(&k) {
+                    Some(&seen) if seen <= penalty => Some(seen),
+                    // A stored higher penalty is overwritten: the new state is strictly better.
+                    Some(_) | None => {
+                        reference.insert(k, penalty);
+                        None
+                    }
+                };
+                assert_eq!(
+                    table.probe_and_update(k, penalty),
+                    expected,
+                    "window {window} step {step}"
+                );
+                assert_eq!(reference.len(), table.len, "window {window} step {step}");
+            }
+        }
+    }
+
+    /// A stale slot from a previous window must read as empty, so the per-window reset cannot let
+    /// an old key suppress a new state.
+    #[test]
+    fn reset_invalidates_previous_window() {
+        let mut table = DedupTable::new(8);
+        let k = key(1);
+        assert_eq!(table.probe_and_update(k, 1.0), None);
+        assert_eq!(table.probe_and_update(k, 1.0), Some(1.0));
+        table.next_window();
+        assert_eq!(table.probe_and_update(k, 1.0), None);
+        assert_eq!(table.len, 1);
+    }
+
+    /// A better (lower-penalty) state for an already-expanded key must be admitted, not skipped.
+    #[test]
+    fn admits_strictly_better_state() {
+        let mut table = DedupTable::new(8);
+        let k = key(2);
+        assert_eq!(table.probe_and_update(k, 5.0), None);
+        assert_eq!(table.probe_and_update(k, 1.0), None);
+        assert_eq!(table.probe_and_update(k, 1.0), Some(1.0));
+        assert_eq!(table.probe_and_update(k, 9.0), Some(1.0));
+    }
+
+    /// The generation counter must keep working when it wraps.
+    #[test]
+    fn epoch_wrap_resets_slots() {
+        let mut table = DedupTable::new(8);
+        let k = key(3);
+        table.probe_and_update(k, 1.0);
+        table.epoch = u32::MAX;
+        table.next_window();
+        assert_eq!(table.epoch, 1);
+        assert_eq!(table.probe_and_update(k, 1.0), None);
     }
 }
