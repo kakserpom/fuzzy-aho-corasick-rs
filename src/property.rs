@@ -17,6 +17,7 @@ use crate::{
     Similarity,
 };
 use std::collections::HashMap;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// The similarity pairs, as one source of truth for both the engine's table and the reference's, so
 /// the two cannot disagree about what "similar" means. Values are deliberately not all equal, so
@@ -806,5 +807,154 @@ fn search_matches_reference_with_mappings() {
         changed_something > CASES as usize / 20,
         "mappings changed the result in only {changed_something} of {CASES} cases, \
          so this test proved little about them"
+    );
+}
+
+/// Self-consistency of reported spans, over grapheme clusters rather than bytes.
+///
+/// The reference is `char`-based, so it cannot adjudicate the Unicode path — where a "position" is a
+/// grapheme and a "span" is a pair of byte offsets that have to survive clusters of unequal length.
+/// What it *can* do is tell us which invariants any correct result set has to satisfy, and those are
+/// checkable without it:
+///
+/// * every reported offset is a `char` boundary, and `text` is exactly the haystack slice it claims;
+/// * `edits` is the sum of the per-type counts (a swap and a mapping each count as one edit, and a
+///   mapping is charged to `substitutions`);
+/// * **zero edits implies the span is exactly the pattern** — in graphemes, not bytes. This is the
+///   invariant that caught a suffix pattern being reported at a longer walk's span, and it is the
+///   sharpest thing here, because an off-by-one anywhere in the grapheme-to-byte mapping breaks it.
+///
+/// The clusters are chosen to span the awkward cases: a precomposed accented letter, the same letter
+/// decomposed, a ZWJ emoji sequence, a regional-indicator flag, a Hangul syllable in both forms, and
+/// a ligature — several of which are more than one byte and more than one `char`.
+#[test]
+fn reported_spans_are_self_consistent_over_grapheme_clusters() {
+    const CLUSTERS: &[&str] = &[
+        "a",
+        "b",
+        "c",
+        "\u{e9}",                                      // é precomposed: 2 bytes, 1 char
+        "e\u{301}",                                    // é decomposed: 3 bytes, 2 chars, 1 grapheme
+        "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}", // family, ZWJ-joined
+        "\u{1F1EC}\u{1F1E7}",                          // flag, two regional indicators
+        "\u{AC00}",                                    // 가 precomposed Hangul
+        "\u{1112}\u{1161}",                            // 한 as Jamo: one grapheme, two chars
+        "\u{FB01}",                                    // ﬁ ligature
+        "\u{DF}",                                      // ß, which case-folds to two chars
+    ];
+    const CASES: u32 = 400;
+
+    let fx = Fixture::new();
+    let mut rng = Rng(0x9C1_C1E57_1234_5678);
+    // Matches actually inspected, and how many were multi-byte or multi-char spans -- without these
+    // the sweep could check nothing at all on a generation that happens to find no matches.
+    let mut checked = 0usize;
+    let mut multi_char_clusters = 0usize;
+
+    for case in 0..CASES {
+        let max_edits = rng.below(2) as u8;
+        let threshold = [0.0f32, 0.5, 0.8][rng.below(3)];
+        let case_insensitive = rng.below(2) == 0;
+        let n_patterns = 1 + rng.below(3);
+
+        let patterns: Vec<String> = (0..n_patterns)
+            .map(|_| {
+                let n = 1 + rng.below(3);
+                (0..n)
+                    .map(|_| CLUSTERS[rng.below(CLUSTERS.len())])
+                    .collect::<String>()
+            })
+            .collect();
+        let text: String = (0..(2 + rng.below(6)))
+            .map(|_| CLUSTERS[rng.below(CLUSTERS.len())])
+            .collect();
+
+        let engine = FuzzyAhoCorasickBuilder::new()
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone())
+            .case_insensitive(case_insensitive)
+            .fuzzy(FuzzyLimits::new().edits(max_edits))
+            .build(
+                patterns
+                    .iter()
+                    .map(|p| Pattern::from(p.as_str()))
+                    .collect::<Vec<_>>(),
+            );
+
+        let found = engine.search(&text, &SearchOptions::new().threshold(threshold));
+        let found = found
+            .as_ref()
+            .unwrap_or_else(|e| panic!("search failed in case {case}: {e}"));
+
+        for m in found {
+            checked += 1;
+            // A span whose graphemes are not all single `char`s, i.e. the case where getting the
+            // grapheme-to-byte mapping wrong would actually show up.
+            if m.text.chars().count() != m.text.graphemes(true).count() {
+                multi_char_clusters += 1;
+            }
+            let where_ = format!(
+                "case {case}: pattern {:?} span [{},{}) text {:?} edits={} \
+                 (i{} d{} s{} w{}) case_insensitive={case_insensitive} text={text:?}",
+                m.pattern.as_str(),
+                m.start,
+                m.end,
+                m.text,
+                m.edits,
+                m.insertions,
+                m.deletions,
+                m.substitutions,
+                m.swaps,
+            );
+
+            assert!(m.start <= m.end, "inverted span at {where_}");
+            assert!(
+                text.is_char_boundary(m.start),
+                "start {} is not a char boundary at {where_}",
+                m.start
+            );
+            assert!(
+                text.is_char_boundary(m.end),
+                "end {} is not a char boundary at {where_}",
+                m.end
+            );
+            assert_eq!(
+                m.text,
+                &text[m.start..m.end],
+                "reported text disagrees with the haystack slice at {where_}"
+            );
+            assert_eq!(
+                m.edits,
+                m.insertions + m.deletions + m.substitutions + m.swaps,
+                "edits is not the sum of the per-type counts at {where_}"
+            );
+
+            if m.edits == 0 {
+                // The invariant that a grapheme/byte confusion breaks.
+                assert_eq!(
+                    m.text.graphemes(true).count(),
+                    m.pattern.grapheme_len,
+                    "a zero-edit match must span exactly its pattern in graphemes at {where_}"
+                );
+                assert!(
+                    (m.similarity - m.pattern.weight).abs() < 1e-6,
+                    "a zero-edit match must score exactly the pattern weight at {where_}"
+                );
+            }
+            assert!(
+                m.similarity <= m.pattern.weight + 1e-6,
+                "similarity {} exceeds the weight at {where_}",
+                m.similarity
+            );
+        }
+    }
+    assert!(
+        checked > 200,
+        "only {checked} matches were inspected across {CASES} cases"
+    );
+    assert!(
+        multi_char_clusters > 20,
+        "only {multi_char_clusters} inspected matches spanned a multi-char grapheme cluster, \
+         which is the whole point of this sweep"
     );
 }
