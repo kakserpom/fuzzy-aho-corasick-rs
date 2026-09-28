@@ -172,16 +172,18 @@ fn align_all(
     // A match consumes at most one text grapheme per pattern grapheme, plus one per insertion.
     let max_j = (pattern_len + max_edits as usize).min(text.len() - start);
     let budget = max_edits as usize;
-    // `f32::INFINITY` as the unreachable marker. The comparison below is exact by construction --
-    // nothing here ever computes `inf - x`, so a tolerance comparison would be the wrong tool.
-    let inf = f32::INFINITY;
 
     let stride = |i: usize, j: usize, edits: usize, me: usize| {
         let a = i * (max_j + 1) + j;
         let b = a * (budget + 1) + edits;
         b * (max_j + 1) + me
     };
-    let mut cells = vec![inf; (pattern_len + 1) * (max_j + 1) * (budget + 1) * (max_j + 1)];
+    // `INFINITY` marks an unreachable cell, recognised with `is_infinite()` rather than an equality
+    // test. Every value stored here is a non-negative penalty, so `+inf` is the only infinity that
+    // can ever appear and the two are equivalent -- but asking the question we mean ("is this cell
+    // unreachable?") beats asserting a sentinel.
+    let mut cells =
+        vec![f32::INFINITY; (pattern_len + 1) * (max_j + 1) * (budget + 1) * (max_j + 1)];
     cells[stride(0, 0, 0, 0)] = 0.0;
 
     let mut out = Vec::new();
@@ -190,8 +192,7 @@ fn align_all(
             for edits in 0..=budget {
                 for me in 0..=j {
                     let here = cells[stride(i, j, edits, me)];
-                    #[allow(clippy::float_cmp)] // exact: see the `inf` note above
-                    if here == inf {
+                    if here.is_infinite() {
                         continue;
                     }
                     if i == pattern_len {

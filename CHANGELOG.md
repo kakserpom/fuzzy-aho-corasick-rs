@@ -26,7 +26,11 @@ All notable changes to this project are documented here. The format is based on
   "zero edits ⇒ span length == pattern grapheme length". Visible in `search`'s output; the
   segmentation helpers were unaffected because overlap resolution happened to discard the extra
   match. A node's `output` now holds only the patterns that end at it, and the exact scan reaches
-  suffix patterns by walking the failure chain.
+  suffix patterns by walking the failure chain. The same change also fixed a related scoring bug: a
+  suffix pattern used to be scored with the penalties of the longer walk that reached its node, so
+  its `similarity` could be understated. Since a reported match's node is now always the node where
+  its own pattern ends, the walk that reaches it *is* that pattern's alignment, and every match is
+  scored on the edit sequence that actually produced it.
 
 ### Performance
 
@@ -41,12 +45,6 @@ All notable changes to this project are documented here. The format is based on
   ~22% faster on such a corpus. Dense first-grapheme sets are unaffected — the skip stays scalar
   there anyway, because `memchr` has a fixed per-call setup that only pays beyond a ~30-byte run.
 - **New dependency:** `memchr`, for that scan.
-
-### Known issues
-
-- A fuzzy match is scored with the penalties of the whole walk that reached its node. That is
-  correct for a pattern ending at that node, but the walk may have covered a longer pattern, so the
-  score can be understated for a shorter one reached along the same path.
 
 ## [0.5.0] - 2026-08-09
 

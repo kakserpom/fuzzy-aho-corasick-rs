@@ -1917,3 +1917,53 @@ fn exact_scan_finds_every_pattern_ending_at_each_position() {
         assert_eq!(found, expected, "pattern set {patterns:?} on {text:?}");
     }
 }
+
+/// A pattern that is a suffix of another pattern's trie path must be scored on *its own* alignment.
+///
+/// This was listed as a known issue: a walk that matches `"abcd"` also passes through the node where
+/// `"cd"` ends, so when a node's output list merged inherited patterns the short pattern inherited
+/// the long walk's penalties and was understated. Since `output` now holds only the patterns ending
+/// at their own node, a reported match's node *is* the pattern's end node and the walk is that
+/// pattern's alignment.
+#[test]
+fn suffix_pattern_is_scored_on_its_own_alignment() {
+    let subst = FuzzyPenalties::default().substitution;
+    // 'X' is 0x58, outside the `b'a'..=b'z'` range the default similarity table draws its consonant
+    // pairs from, so it scores 0 against 'c' and the substitution costs the full amount.
+    let subst_x_for_c = subst;
+
+    let fac = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(2))
+        .build(["abcd", "cd"]);
+
+    let mut m = fac
+        .search("abXd", &SearchOptions::new().threshold(0.0))
+        .unwrap();
+    m.sort_by_key(|x| (x.start, x.end, x.pattern_index));
+
+    // "cd" against "Xd" at offset 2: one substitution, so (2 - cost) / 2.
+    let cd_own = (2.0 - subst_x_for_c) / 2.0;
+    let scored = m
+        .iter()
+        .find(|x| x.pattern.as_str() == "cd" && x.start == 2 && x.end == 4)
+        .expect("\"cd\" should match \"Xd\" at [2,4)");
+    assert!(
+        (scored.similarity - cd_own).abs() < 1e-6,
+        "\"cd\" at [2,4) scored {} but its own alignment gives {cd_own}",
+        scored.similarity
+    );
+
+    // Nothing anywhere may carry the long walk's score. A two-substitution walk that reaches
+    // "abcd"'s node would score "cd" at (2 - 2 * 1.43) / 2, i.e. negative, and a threshold below
+    // zero would be needed to keep it -- so compare the scores directly rather than relying on that.
+    let long_walk = (2.0 - 2.0 * subst) / 2.0;
+    for x in m.iter().filter(|x| x.pattern.as_str() == "cd") {
+        assert!(
+            (x.similarity - long_walk).abs() > 1e-6,
+            "\"cd\" at [{},{}) is scored {} -- the two-substitution long walk's score",
+            x.start,
+            x.end,
+            x.similarity
+        );
+    }
+}
