@@ -128,6 +128,9 @@ fn search_matches_brute_force_reference() {
         let max_edits = rng.below(3) as u8;
         let threshold = [0.0f32, 0.5, 0.7, 0.85, 1.0][rng.below(5)];
         let case_insensitive = rng.below(2) == 0;
+        // A floor on substitution similarity. The table above only has 0.5 and 0.75 pairs, so 0.6
+        // and 0.8 admit strictly fewer substitutions than 0.0 does and exercise the filter.
+        let min_symbol_similarity = [0.0f32, 0.4, 0.6, 0.8][rng.below(4)];
         let n_patterns = 1 + rng.below(4);
         let n_words = 1 + rng.below(6);
         let word_len = 1 + rng.below(4);
@@ -151,6 +154,7 @@ fn search_matches_brute_force_reference() {
             .similarity(fx.similarity)
             .penalties(fx.penalties.clone())
             .case_insensitive(case_insensitive)
+            .min_symbol_similarity(min_symbol_similarity)
             .fuzzy(FuzzyLimits::new().edits(max_edits))
             .build(
                 patterns
@@ -167,18 +171,16 @@ fn search_matches_brute_force_reference() {
                 limits: None,
             })
             .collect();
-        let expected = reference_search(
-            &text,
-            &refs,
-            &fx.sim_map,
-            fx.total(max_edits, threshold, case_insensitive),
-        );
+        let mut config = fx.total(max_edits, threshold, case_insensitive);
+        config.min_symbol_similarity = min_symbol_similarity;
+        let expected = reference_search(&text, &refs, &fx.sim_map, config);
         let got = engine_matches(&engine, &text, threshold);
 
         assert_eq!(
             got, expected,
             "case {case}: max_edits={max_edits} threshold={threshold} \
-             case_insensitive={case_insensitive} patterns={patterns:?} text={text:?}"
+             case_insensitive={case_insensitive} min_symbol_similarity={min_symbol_similarity} \
+             patterns={patterns:?} text={text:?}"
         );
     }
 }
@@ -561,5 +563,102 @@ fn a_patterns_limits_do_not_gate_longer_patterns() {
         ends.contains(&3),
         "\"abc\" must match \"abx\" at [0,3) with one substitution; \
          the walk is gated by \"ab\"'s zero substitution budget. Engine reported ends {ends:?}"
+    );
+}
+
+/// Beam pruning may only lose matches, never invent them.
+///
+/// A beam is documented as lossy — `beam_width`'s own doc says it "may miss some fuzzy matches" — so
+/// it cannot be compared for equality against the exhaustive reference. But there is a sharp
+/// invariant that *does* have to hold, and which the reference makes checkable: every match a
+/// beamed search reports is backed by some real alignment, so it must appear in the unpruned result
+/// too, and never with a *better* score than the unpruned search found for that same span. A beam
+/// that produced anything else — a span the unpruned search never found, or a score above the
+/// optimum — would mean the frontier selection is corrupting state rather than discarding it.
+///
+/// The same holds for the automatic beam, which is checked separately with a tiny budget so it
+/// actually engages.
+#[test]
+fn beam_pruning_only_loses_matches() {
+    const ALPHABET: &[char] = &['a', 'b', 'c', 'd', 'x', 'y'];
+    const CASES: u32 = 300;
+
+    let fx = Fixture::new();
+    let mut rng = Rng(0xB3A4_0000_1234_5678);
+    // Count cases where the beam actually cost us something. Without this the test could pass
+    // vacuously -- e.g. if `beam_width` were silently ignored, every case would be unpruned and the
+    // invariant would hold trivially.
+    let mut pruned_somewhere = 0usize;
+
+    for case in 0..CASES {
+        let max_edits = rng.below(3) as u8;
+        let threshold = [0.0f32, 0.4, 0.6][rng.below(3)];
+        let n_patterns = 1 + rng.below(3);
+        let word_len = 2 + rng.below(2);
+
+        let patterns: Vec<String> = (0..n_patterns)
+            .map(|_| {
+                (0..word_len)
+                    .map(|_| ALPHABET[rng.below(ALPHABET.len())])
+                    .collect()
+            })
+            .collect();
+        let text: String = (0..(4 + rng.below(6)))
+            .map(|_| ALPHABET[rng.below(ALPHABET.len())])
+            .collect();
+
+        let refs: Vec<RefPattern<'_>> = patterns
+            .iter()
+            .map(|p| RefPattern {
+                text: p.as_str(),
+                weight: 1.0,
+                limits: None,
+            })
+            .collect();
+        let config = fx.total(max_edits, threshold, false);
+        let expected = reference_search(&text, &refs, &fx.sim_map, config);
+        let best: HashMap<(usize, usize, usize), f32> = expected
+            .iter()
+            .map(|&(s, e, pi, bits)| ((s, e, pi), f32::from_bits(bits)))
+            .collect();
+
+        // A width of 1 or 2 prunes hard; the automatic beam gets a budget of a handful of states so
+        // it engages almost immediately.
+        let engine = FuzzyAhoCorasickBuilder::new()
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone())
+            .fuzzy(FuzzyLimits::new().edits(max_edits))
+            .beam_width(1 + rng.below(2))
+            .auto_beam(4, 2)
+            .build(
+                patterns
+                    .iter()
+                    .map(|p| Pattern::from(p.as_str()))
+                    .collect::<Vec<_>>(),
+            );
+
+        let got = engine_matches(&engine, &text, threshold);
+        if got.len() < expected.len() {
+            pruned_somewhere += 1;
+        }
+        for (start, end, pi, bits) in got {
+            let similarity = f32::from_bits(bits);
+            let optimum = best.get(&(start, end, pi)).unwrap_or_else(|| {
+                panic!(
+                    "case {case}: beam reported ({start},{end},{pi}) at {similarity}, \\
+                         which the unpruned search does not find at all. \\
+                         patterns={patterns:?} text={text:?}"
+                )
+            });
+            assert!(
+                similarity <= *optimum,
+                "case {case}: beam scored ({start},{end},{pi}) at {similarity}, above the \\
+                 unpruned optimum {optimum}. patterns={patterns:?} text={text:?}"
+            );
+        }
+    }
+    assert!(
+        pruned_somewhere > CASES as usize / 10,
+        "the beam pruned nothing in {pruned_somewhere} of {CASES} cases, so this test proved nothing"
     );
 }
