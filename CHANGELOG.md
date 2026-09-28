@@ -8,15 +8,16 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
-- **Exact matches are now reported at their own span.** A pattern that is a *suffix* of the text
-  the search consumed was reported a second time, at the consuming walker's whole span instead of
-  the pattern's own. For the patterns `["abcd", "cd"]` on `"abcd"`, `"cd"` came back as `[0,4)`
-  with `text` `"abcd"` in addition to the correct `[2,4)`. Such a match was self-contradictory: it
-  reported `edits == 0` while its span was longer than the pattern it matched. Visible in
-  `search`'s output; the segmentation helpers were unaffected because overlap resolution happened to
-  discard the extra match. Applies to exact searches; fuzzy searches still report it (see below).
-  A match with insertions legitimately spans more than its pattern, so the invariant is
-  "zero edits ⇒ span length == pattern grapheme length".
+- **Matches are reported at the span of the pattern that matched, in fuzzy searches too.** A
+  pattern that is a *suffix* of the text a match consumed was reported a second time, at the
+  consuming walk's whole span rather than the pattern's own. For the patterns `["abcd", "cd"]` on
+  `"abcd"`, `"cd"` came back as `[0,4)` with `text` `"abcd"` in addition to the correct `[2,4)`.
+  Such a match was self-contradictory: it reported `edits == 0` while its span was longer than the
+  pattern it matched. With insertions a span legitimately *is* longer, so the invariant is
+  "zero edits ⇒ span length == pattern grapheme length". Visible in `search`'s output; the
+  segmentation helpers were unaffected because overlap resolution happened to discard the extra
+  match. A node's `output` now holds only the patterns that end at it, and the exact scan reaches
+  suffix patterns by walking the failure chain.
 
 ### Performance
 
@@ -28,10 +29,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Known issues
 
-- Fuzzy search still reports a suffix pattern at the consuming walker's span, and scores it with
-  that walker's penalties rather than its own alignment. Fixing it needs the builder to keep a
-  node's own output separate from what it inherits along failure links, so the search can tell
-  "this pattern ended here" from "this pattern is a suffix of what I consumed".
+- A fuzzy match is scored with the penalties of the whole walk that reached its node. That is
+  correct for a pattern ending at that node, but the walk may have covered a longer pattern, so the
+  score can be understated for a shorter one reached along the same path.
 
 ## [0.5.0] - 2026-08-09
 

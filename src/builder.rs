@@ -237,6 +237,13 @@ impl FuzzyAhoCorasickBuilder {
         }
 
         // build failure links...
+        // Whether any node ends with a pattern of its own after at least one failure step, i.e.
+        // whether some pattern is a proper suffix of another. Tracked here because the walk below
+        // already visits nodes in increasing depth, and a failure target is always shallower than
+        // the node pointing at it -- so `inherits[fallback]` is settled by the time it is needed.
+        let mut inherits = vec![false; nodes.len()];
+        let mut has_suffix_patterns = false;
+
         let mut queue: VecDeque<u32> = VecDeque::new();
         let root_children: Vec<u32> = nodes[0].transitions.values().copied().collect();
         for child in root_children {
@@ -261,11 +268,23 @@ impl FuzzyAhoCorasickBuilder {
                 let fallback = *nodes[fail as usize].transitions.get(&g).unwrap_or(&0);
                 nodes[next as usize].fail = fallback;
 
-                for &entry in &nodes[fallback as usize].output.clone() {
-                    if !nodes[next as usize].output.contains(&entry) {
-                        nodes[next as usize].output.push(entry);
-                    }
-                }
+                // NB: a node's `output` deliberately holds only the patterns that end *at* that
+                // node — not the ones it inherits along this failure link. The fuzzy search reports
+                // `output` at the span its walk consumed, which is only correct for a pattern whose
+                // own graphemes end there; an inherited one is a suffix of what the walk consumed
+                // and would be reported at the wrong span, with the walk's penalties rather than its
+                // own alignment. (It is also never the only way to find that match: the search
+                // restarts at every start position, so the pattern's own window finds it.)
+                //
+                // The exact single-pass scan still needs the inherited set, and gets it by walking
+                // the failure chain from the reached state — the classic output-link traversal.
+                // Doing it there instead of here also drops a build-time quadratic `contains` per
+                // inherited entry.
+
+                let inherits_here =
+                    !nodes[fallback as usize].output.is_empty() || inherits[fallback as usize];
+                inherits[next as usize] = inherits_here;
+                has_suffix_patterns |= inherits_here;
 
                 if nodes[next as usize].weight < nodes[fallback as usize].weight {
                     nodes[next as usize].weight = nodes[fallback as usize].weight;
@@ -487,6 +506,7 @@ impl FuzzyAhoCorasickBuilder {
             limits: effective_limits,
             penalties: self.penalties,
             case_insensitive: self.case_insensitive,
+            has_suffix_patterns,
             has_pattern_limits,
             max_edits_fast,
             mappings,

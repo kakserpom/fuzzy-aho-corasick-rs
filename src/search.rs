@@ -67,6 +67,14 @@ fn similarity_of(similarity: &Similarity, a: char, b: char) -> f32 {
     if a == b { 1.0 } else { similarity.get(a, b) }
 }
 
+/// Where the exact scan's current position ends, in both units the scan needs: the grapheme index
+/// (to derive each reported pattern's start) and the byte offset (the span's exclusive end).
+#[derive(Clone, Copy)]
+struct ExactEnd {
+    grapheme: usize,
+    byte: usize,
+}
+
 /// One slot of [`DedupTable`]. Key, value and generation stamp live inline so a probe reads a
 /// single cache line.
 #[derive(Clone, Copy)]
@@ -621,6 +629,9 @@ impl FuzzyAhoCorasick {
         let mut inner: Vec<FuzzyMatch> = Vec::new();
 
         let nodes = &self.nodes;
+        // Hoisted: whether any pattern is a proper suffix of another, and so whether a failure
+        // ancestor can have output of its own. False for all but the most nested pattern sets.
+        let has_suffix_patterns = self.has_suffix_patterns;
         let mut state: u32 = 0;
         let mut i = 0;
         while i < text_len {
@@ -663,41 +674,31 @@ impl FuzzyAhoCorasick {
                 state = node.fail;
             }
 
-            // Note the absence of `continue` here: the loop is driven by an explicit `i += 1`, so
-            // an early exit would have to advance `i` too.
-            let output = &nodes[state as usize].output;
-            if !output.is_empty() {
+            // Report every pattern ending at this position. Kept out of line so that the common
+            // position -- no pattern ends here -- costs one test and no extra code in the loop body.
+            //
+            // `output` holds only the patterns that end at their own node, so a pattern that is a
+            // *suffix* of the consumed text lives on a failure ancestor; `report_exact_at` walks
+            // the chain for those when the engine says any exist. When none do -- the usual case --
+            // the reached node is the only candidate and the walk is skipped entirely.
+            if !nodes[state as usize].output.is_empty() || has_suffix_patterns {
                 let end_grapheme = i + 1;
                 let end_byte = if end_grapheme == text_len {
                     haystack.len()
                 } else {
                     graphemes.gs_byte_offset(end_grapheme)
                 };
-                for &pattern_index in output {
-                    let pattern = &self.patterns[pattern_index as usize];
-                    // No edits are permitted on this path, so every match scores exactly its
-                    // weight.
-                    let similarity = pattern.weight;
-                    if similarity < similarity_threshold {
-                        continue;
-                    }
-                    // A reported pattern is a suffix of the text consumed so far, so its length can
-                    // never exceed the graphemes consumed and this cannot underflow.
-                    let start_byte = graphemes.gs_byte_offset(end_grapheme - pattern.grapheme_len);
-                    inner.push(FuzzyMatch {
-                        insertions: 0,
-                        deletions: 0,
-                        substitutions: 0,
-                        edits: 0,
-                        swaps: 0,
-                        pattern_index: pattern_index as usize,
-                        start: start_byte,
-                        end: end_byte,
-                        pattern,
-                        similarity,
-                        text: &haystack[start_byte..end_byte],
-                    });
-                }
+                self.report_exact_at(
+                    haystack,
+                    graphemes,
+                    similarity_threshold,
+                    ExactEnd {
+                        grapheme: end_grapheme,
+                        byte: end_byte,
+                    },
+                    state,
+                    &mut inner,
+                );
             }
             i += 1;
         }
@@ -710,6 +711,57 @@ impl FuzzyAhoCorasick {
         // output is therefore in ascending end order, which `search_unsorted` leaves unspecified
         // and every ranked/overlap-resolved order sorts anyway.
         FuzzyMatches { haystack, inner }
+    }
+
+    /// Append every match of the exact scan that ends at `end`.
+    ///
+    /// Out of line on purpose: the exact scan's inner loop is the hot path for large haystacks, and
+    /// most positions report nothing, so this body should not sit in it.
+    #[inline(never)]
+    fn report_exact_at<'a, G: GraphemeStorage>(
+        &'a self,
+        haystack: &'a str,
+        graphemes: &G,
+        similarity_threshold: f32,
+        end: ExactEnd,
+        state: u32,
+        inner: &mut Vec<FuzzyMatch<'a>>,
+    ) {
+        let nodes = &self.nodes;
+        let mut reporter = state;
+        while reporter != 0 {
+            let node = &nodes[reporter as usize];
+            for &pattern_index in &node.output {
+                let pattern = &self.patterns[pattern_index as usize];
+                // No edits are permitted on this path, so every match scores exactly its weight.
+                let similarity = pattern.weight;
+                if similarity < similarity_threshold {
+                    continue;
+                }
+                // A reported pattern ends at this position, so its length can never exceed the
+                // graphemes consumed and this cannot underflow.
+                let start_byte = graphemes.gs_byte_offset(end.grapheme - pattern.grapheme_len);
+                inner.push(FuzzyMatch {
+                    insertions: 0,
+                    deletions: 0,
+                    substitutions: 0,
+                    edits: 0,
+                    swaps: 0,
+                    pattern_index: pattern_index as usize,
+                    start: start_byte,
+                    end: end.byte,
+                    pattern,
+                    similarity,
+                    text: &haystack[start_byte..end.byte],
+                });
+            }
+            if !self.has_suffix_patterns {
+                // Nothing inherits through failure links, so the reached node was the only
+                // candidate.
+                break;
+            }
+            reporter = node.fail;
+        }
     }
 
     /// Build the `Vec<(usize, Cow<str>)>` grapheme list for non-ASCII haystacks.

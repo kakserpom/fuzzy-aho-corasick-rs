@@ -1850,3 +1850,70 @@ fn exact_scan_agrees_with_bfs_on_non_suffix_patterns() {
         assert_eq!(a, b, "exact scan and BFS disagree at threshold {threshold}");
     }
 }
+
+/// The builder no longer bakes inherited patterns into `output`; the fuzzy search reports only a
+/// node's own patterns, and a suffix pattern is found from its own start position. So the invariant
+/// has to hold for *fuzzy* searches too, where the BFS is still the engine.
+#[test]
+fn fuzzy_matches_of_zero_edits_span_exactly_their_pattern() {
+    let cases: &[(&[&str], u8, &str)] = &[
+        (&["abcd", "cd"], 1, "abcd"),
+        (&["abc", "bc"], 1, "abc"),
+        (&["aa", "aaa"], 1, "aaaa"),
+        (&["привет", "ивет"], 1, "привет"),
+        (&["NA", "MENA"], 1, "xMENAy"),
+    ];
+    for (patterns, edits, text) in cases {
+        let fac = FuzzyAhoCorasickBuilder::new()
+            .fuzzy(FuzzyLimits::new().edits(*edits))
+            .build(patterns.to_vec());
+        let found = fac.search(text, &SearchOptions::new()).unwrap();
+        assert!(!found.is_empty(), "expected matches for {patterns:?}");
+        for m in &found {
+            if m.edits != 0 {
+                continue;
+            }
+            assert_eq!(
+                m.text.chars().count(),
+                m.pattern.grapheme_len,
+                "zero-edit match of {:?} spans {} graphemes ({:?})",
+                m.pattern.as_str(),
+                m.text.chars().count(),
+                m.text
+            );
+        }
+    }
+}
+
+/// Nested / suffix-related pattern sets stress the exact scan's output links: every pattern that
+/// ends at a position must be reported, whether it ends at the reached node or at a failure
+/// ancestor. Checked against a brute-force scan for completeness in both directions, so a broken
+/// link shows up as a missing *or* an extra match.
+#[test]
+fn exact_scan_finds_every_pattern_ending_at_each_position() {
+    let text = "abcabc";
+    for patterns in [
+        vec!["a", "aa", "aaa"],
+        vec!["ab", "b", "bc", "c"],
+        vec!["abc", "bc", "c", "b"],
+    ] {
+        let fac = FuzzyAhoCorasickBuilder::new().build(patterns.clone());
+        let found: std::collections::BTreeSet<(String, usize, usize)> = fac
+            .search(text, &SearchOptions::new())
+            .unwrap()
+            .iter()
+            .map(|m| (m.pattern.as_str().to_string(), m.start, m.end))
+            .collect();
+
+        let mut expected = std::collections::BTreeSet::new();
+        for p in &patterns {
+            let n = p.len();
+            for start in 0..=(text.len() - n) {
+                if &text[start..start + n] == *p {
+                    expected.insert(((*p).to_string(), start, start + n));
+                }
+            }
+        }
+        assert_eq!(found, expected, "pattern set {patterns:?} on {text:?}");
+    }
+}

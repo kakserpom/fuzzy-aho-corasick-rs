@@ -261,7 +261,13 @@ pub(crate) struct Node {
     /// their plain linear scan, since the node they probe is already in cache and its edge list
     /// is usually short — there a bitmap probe measured slower than simply scanning.
     pub(crate) edge_bits: u128,
-    /// All patterns that end in this state.
+    /// All patterns that end *at* this state — the patterns whose own graphemes are exactly the
+    /// path from the root to here.
+    ///
+    /// Deliberately excludes the patterns a node inherits along its [`Node::fail`] chain. Those are
+    /// a suffix of what the walk consumed rather than an ending of it, so a search must not report
+    /// them at the consuming walk's span; the exact scan reaches them by walking the failure chain
+    /// itself, and the fuzzy search reaches them from the pattern's own start position.
     pub(crate) output: Vec<u32>,
     /// Two precomputed coefficients of this node's pruning ceiling. A state at this node can only
     /// complete a pattern still reachable from here (its own `output` plus its transition subtree);
@@ -547,6 +553,14 @@ pub struct FuzzyAhoCorasick {
     /// Whether any pattern carries its own [`FuzzyLimits`]. When false, the per-node limit lookup on
     /// the search hot path is skipped entirely and the global `limits` are used directly.
     pub(crate) has_pattern_limits: bool,
+    /// Whether any pattern is a *proper suffix* of another pattern's grapheme sequence — i.e.
+    /// whether any node has a failure ancestor with patterns of its own.
+    ///
+    /// When false (the usual case) a node's [`Node::output`] already lists every pattern that can
+    /// end at a position the scan reaches there, so the exact search skips walking the failure
+    /// chain for suffix patterns entirely. Hoisted out of the haystack loop, so it costs one
+    /// perfectly-predicted test per position rather than a node load.
+    pub(crate) has_suffix_patterns: bool,
     /// Fast-path edit ceiling for the common case where the global limits only constrain total
     /// `edits` (all per-type fields `None`). Set to that ceiling so the hot loop can check
     /// `edits < max_edits_fast` / `edits <= max_edits_fast` without loading `self.limits` and
