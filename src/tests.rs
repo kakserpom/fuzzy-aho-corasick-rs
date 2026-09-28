@@ -1701,3 +1701,152 @@ fn test_deterministic_stream() {
         assert_eq!(first, next, "replace_stream byte count determinism failure");
     }
 }
+
+/* -------------------------------------------------------------------------
+ *  Exact-search fast path (single-pass Aho-Corasick)
+ * ---------------------------------------------------------------------- */
+
+/// The exact search is a single-pass Aho-Corasick scan rather than a BFS restarted per start
+/// position. It must report each pattern at its own span: a pattern that is a suffix of a longer
+/// match is *not* a match for the whole longer text.
+#[test]
+fn exact_search_reports_true_spans_for_suffix_patterns() {
+    let fac = FuzzyAhoCorasickBuilder::new().build(["abcd", "cd"]);
+    let found = fac.search("abcd", &SearchOptions::new()).unwrap();
+    let mut spans: Vec<(usize, usize, &str)> = found
+        .iter()
+        .map(|m| (m.start, m.end, m.pattern.as_str()))
+        .collect();
+    spans.sort_unstable();
+    assert_eq!(
+        spans,
+        vec![(0, 4, "abcd"), (2, 4, "cd")],
+        "\"cd\" must be reported at [2,4), not at the whole walker's [0,4)"
+    );
+    for m in &found {
+        assert_eq!(
+            m.text,
+            &"abcd"[m.start..m.end],
+            "matched text must be the pattern's own span"
+        );
+    }
+}
+
+/// The skip in the exact scan matches folded bytes against a trie of folded patterns, so a
+/// case-insensitive engine must not skip past an uppercase occurrence.
+#[test]
+fn exact_search_skip_respects_case_folding() {
+    let fac = FuzzyAhoCorasickBuilder::new()
+        .case_insensitive(true)
+        .build(["hello", "world"]);
+    // Uppercase first letters, and text with no lowercase occurrence of either at all.
+    let text = "HELLO WORLD";
+    let found = fac.search(text, &SearchOptions::new()).unwrap();
+    let mut spans: Vec<(usize, usize, &str)> = found
+        .iter()
+        .map(|m| (m.start, m.end, m.pattern.as_str()))
+        .collect();
+    spans.sort_unstable();
+    assert_eq!(spans, vec![(0, 5, "hello"), (6, 11, "world")]);
+
+    // A haystack whose only occurrence is uppercase, buried in filler that shares no grapheme
+    // with any pattern's first letter — so the skip has to cross the filler to reach it.
+    let text = "xyz HELLO xYz";
+    let found = fac.search(text, &SearchOptions::new()).unwrap();
+    let mut spans: Vec<(usize, usize, &str)> = found
+        .iter()
+        .map(|m| (m.start, m.end, m.pattern.as_str()))
+        .collect();
+    spans.sort_unstable();
+    assert_eq!(spans, vec![(4, 9, "hello")]);
+}
+
+/// The exact scan must keep reporting every overlapping occurrence, not just the leftmost.
+#[test]
+fn exact_search_reports_all_overlapping_occurrences() {
+    let fac = FuzzyAhoCorasickBuilder::new().build(["aa"]);
+    let found = fac.search("aaaa", &SearchOptions::new()).unwrap();
+    let mut spans: Vec<(usize, usize)> = found.iter().map(|m| (m.start, m.end)).collect();
+    spans.sort_unstable();
+    assert_eq!(spans, vec![(0, 2), (1, 3), (2, 4)]);
+}
+
+/// Lock in the invariant the single-pass scan restores: a match that consumed no edits must have a
+/// span exactly as long as its pattern.
+///
+/// The BFS this replaced restarted at every start position and read the *fail-propagated* output of
+/// whatever node it reached, so a pattern that is merely a suffix of the consumed text came back a
+/// second time at the walker's whole span -- e.g. `"bcd"` as `[0,4)` / `"abcd"`, `"cat"` as `[0,6)`
+/// / `"concat"`, `"aa"` as `[1,4)` / `"aaa"`. Such a match is self-contradictory: it claims
+/// `edits == 0` while its span is longer than the pattern it matched. (With insertions a span
+/// legitimately *is* longer, which is why the check is conditioned on `edits == 0`.)
+#[test]
+fn exact_matches_of_zero_edits_span_exactly_their_pattern() {
+    let cases: &[(&[&str], &str)] = &[
+        (&["abcd", "cd"], "abcd"),
+        (&["abc", "abcd", "bc", "bcd"], "abcd"),
+        (&["cat", "cats", "concat"], "concats"),
+        (&["aa", "aaa"], "aaaa"),
+        (&["привет", "ивет"], "привет"),
+        (&["日本", "本日"], "日本"),
+    ];
+    for (patterns, text) in cases {
+        let fac = FuzzyAhoCorasickBuilder::new().build(patterns.to_vec());
+        let found = fac.search(text, &SearchOptions::new()).unwrap();
+        assert!(
+            !found.is_empty(),
+            "expected matches for {patterns:?} in {text:?}"
+        );
+        for m in &found {
+            let span_len = m.text.chars().count();
+            assert_eq!(
+                m.edits,
+                0,
+                "probe expects exact-only matches, got pattern={:?} text={:?} edits={}",
+                m.pattern.as_str(),
+                m.text,
+                m.edits
+            );
+            assert_eq!(
+                span_len,
+                m.pattern.grapheme_len,
+                "zero-edit match of {:?} spans {span_len} graphemes ({:?})",
+                m.pattern.as_str(),
+                m.text
+            );
+        }
+    }
+}
+
+/// The single-pass scan is a different code path from the BFS, so it needs its own agreement check:
+/// for patterns where the BFS cannot over-report (no pattern is a suffix of another pattern's
+/// trie path), the two must produce identical match sets.
+#[test]
+fn exact_scan_agrees_with_bfs_on_non_suffix_patterns() {
+    let fac = FuzzyAhoCorasickBuilder::new().build(["abc", "bcd", "cde", "xyz"]);
+    let text = "abc bcd cde xyz abcxyz";
+    for (threshold, options) in [
+        (0.5, SearchOptions::new()),
+        (0.9, SearchOptions::new().sorted().non_overlapping()),
+        (1.0, SearchOptions::new().sorted().non_overlapping()),
+    ] {
+        let exact = fac.search(text, &options.threshold(threshold)).unwrap();
+        // Same patterns on the BFS: a one-edit budget, evaluated at a threshold only an exact
+        // match can clear, which restricts it to the same set of matches.
+        let bfs_engine = FuzzyAhoCorasickBuilder::new()
+            .fuzzy(FuzzyLimits::new().edits(1))
+            .build(["abc", "bcd", "cde", "xyz"]);
+        let via_bfs = bfs_engine.search(text, &options.threshold(1.0)).unwrap();
+        let mut a: Vec<(usize, usize, usize, u32)> = exact
+            .iter()
+            .map(|m| (m.start, m.end, m.pattern_index, m.similarity.to_bits()))
+            .collect();
+        let mut b: Vec<(usize, usize, usize, u32)> = via_bfs
+            .iter()
+            .map(|m| (m.start, m.end, m.pattern_index, m.similarity.to_bits()))
+            .collect();
+        a.sort_unstable();
+        b.sort_unstable();
+        assert_eq!(a, b, "exact scan and BFS disagree at threshold {threshold}");
+    }
+}

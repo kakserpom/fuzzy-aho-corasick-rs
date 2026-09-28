@@ -46,6 +46,13 @@ pub(crate) trait GraphemeStorage {
     /// char-based linear scan. For Unicode storage it delegates to `find_transition` since
     /// multi-byte graphemes need the full `&str` `HashMap` lookup path.
     fn gs_find_transition(&self, node: &Node, idx: usize, ch: char) -> Option<u32>;
+    /// The first index at or after `from` whose grapheme has an outgoing edge from `node`.
+    ///
+    /// Lets the exact scan skip a whole run of graphemes that provably cannot continue the current
+    /// match, instead of visiting each one only to discover that. Only meaningful when the answer
+    /// is exact; the Unicode storage returns `from` unconditionally, because grapheme boundaries
+    /// there are not byte-aligned and so cannot be walked past blindly.
+    fn gs_next_possible(&self, node: &Node, from: usize) -> usize;
 }
 
 impl GraphemeStorage for Vec<(usize, Cow<'_, str>)> {
@@ -69,6 +76,12 @@ impl GraphemeStorage for Vec<(usize, Cow<'_, str>)> {
     fn gs_find_transition(&self, node: &Node, idx: usize, _ch: char) -> Option<u32> {
         node.find_transition(self.gs_text(idx))
     }
+    #[inline]
+    fn gs_next_possible(&self, _node: &Node, from: usize) -> usize {
+        // No skipping: grapheme boundaries are not byte-aligned, so advancing to the next
+        // candidate would mean re-segmenting the text.
+        from
+    }
 }
 
 /// Zero-allocation grapheme storage for all-ASCII haystacks: each byte is a grapheme, and
@@ -85,6 +98,21 @@ impl<'a> AsciiGraphemes<'a> {
             case_insensitive,
         }
     }
+
+    /// The (case-folded) ASCII byte of the `idx`-th grapheme.
+    ///
+    /// Every accessor folds through this one place, so no accessor can disagree with another about
+    /// what a grapheme looks like. That matters for the exact scan's skip, which matches folded
+    /// bytes against a trie of folded patterns.
+    #[inline]
+    fn folded_byte(&self, idx: usize) -> u32 {
+        let b = self.bytes[idx];
+        if self.case_insensitive {
+            u32::from(b.to_ascii_lowercase())
+        } else {
+            u32::from(b)
+        }
+    }
 }
 
 impl GraphemeStorage for AsciiGraphemes<'_> {
@@ -98,28 +126,39 @@ impl GraphemeStorage for AsciiGraphemes<'_> {
     }
     #[inline]
     fn gs_text(&self, idx: usize) -> &str {
-        let b = self.bytes[idx];
-        if self.case_insensitive {
-            ascii_byte_to_str(b.to_ascii_lowercase())
-        } else {
-            // SAFETY: caller guaranteed `haystack.is_ascii()`; every byte is a valid 1-byte
-            // UTF-8 sequence.
-            unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&self.bytes[idx])) }
-        }
+        ascii_byte_to_str(self.folded_byte(idx) as u8)
     }
     #[inline]
     fn gs_first_char(&self, idx: usize) -> char {
-        let b = self.bytes[idx];
-        if self.case_insensitive {
-            b.to_ascii_lowercase() as char
-        } else {
-            b as char
-        }
+        char::from(self.folded_byte(idx) as u8)
     }
     #[inline]
     fn gs_find_transition(&self, node: &Node, _idx: usize, ch: char) -> Option<u32> {
         // All graphemes are single-byte ASCII, so skip the &str creation and
         // byte-length check in `find_transition` and go straight to the char scan.
         node.find_transition_char(ch)
+    }
+    #[inline]
+    fn gs_next_possible(&self, node: &Node, from: usize) -> usize {
+        // Each grapheme is one byte, and `edge_bits` lists exactly the folded ASCII bytes that
+        // have an outgoing edge (a non-ASCII pattern grapheme starts at U+0080 or above and can
+        // never match a byte of an all-ASCII haystack). So this is a plain byte scan over folded
+        // bytes, and it is what turns the exact search from "look at every grapheme" into "look
+        // at every candidate" -- the same first-occurrence prefilter `aho-corasick` and `regex`
+        // apply with SIMD `memchr`. (Byte-at-a-time here; `memchr` would be the next step, at the
+        // cost of a dependency.)
+        let bits = node.edge_bits;
+        let bytes = self.bytes;
+        let ci = self.case_insensitive;
+        let mut i = from;
+        while i < bytes.len() {
+            let b = bytes[i];
+            let b = if ci { b.to_ascii_lowercase() } else { b };
+            if (bits >> u32::from(b)) & 1 != 0 {
+                break;
+            }
+            i += 1;
+        }
+        i
     }
 }

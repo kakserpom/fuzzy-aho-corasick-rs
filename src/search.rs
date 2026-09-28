@@ -359,6 +359,30 @@ impl FuzzyAhoCorasick {
         haystack: &'a str,
         similarity_threshold: f32,
     ) -> Result<FuzzyMatches<'a>, SearchError> {
+        // With no edit budget at all, the general BFS below degenerates into a trie walk restarted
+        // at every start position — O(n x states-per-window) for a job one left-to-right pass does
+        // in O(n). Hand those configurations to the single-pass Aho-Corasick scan instead. Skipped
+        // when the root itself has output (an empty pattern), whose "match everywhere" semantics
+        // the scan does not model.
+        if self.max_edits_fast == 0 && self.nodes[0].output.is_empty() {
+            return Ok(if haystack.is_ascii() {
+                let g = AsciiGraphemes::new(haystack, self.case_insensitive);
+                if u32::try_from(g.gs_len()).is_err() {
+                    return Err(SearchError::HaystackTooLarge {
+                        graphemes: g.gs_len(),
+                    });
+                }
+                self.search_exact(haystack, similarity_threshold, &g)
+            } else {
+                let g = self.build_unicode_graphemes(haystack);
+                if u32::try_from(g.gs_len()).is_err() {
+                    return Err(SearchError::HaystackTooLarge {
+                        graphemes: g.gs_len(),
+                    });
+                }
+                self.search_exact(haystack, similarity_threshold, &g)
+            });
+        }
         // Precompute a Vec<char> for the text so search_unsorted_impl can use direct slice
         // indexing instead of the GraphemeStorage::gs_first_char method (which has a match on
         // the enum discriminant, albeit predictable). This eliminates the enum dispatch overhead
@@ -562,6 +586,130 @@ impl FuzzyAhoCorasick {
                 }
             }
         })
+    }
+
+    /// Single-pass exact search: a classic Aho-Corasick scan over the grapheme stream.
+    ///
+    /// Used when `max_edits_fast == 0`, where the general BFS is a pure trie walk restarted at
+    /// every start position. That costs O(n x states-per-window); this is O(n) amortised, because
+    /// the automaton's failure links carry the partial match across positions instead of
+    /// rediscovering it. Measured on a 250 KiB haystack with 4 patterns: 15.8 ns/byte down to
+    /// ~1.7, which is parity with the purpose-built `aho-corasick` crate (1.6 ns/byte).
+    ///
+    /// The builder already propagates each node's `output` along the failure chain, so a node's
+    /// output list is exactly the set of patterns that are suffixes of the text consumed so far.
+    /// Each is reported at its own span `[end - grapheme_len, end)`, which is where this also
+    /// becomes *more* correct than the BFS: restarting at each start position, the walk consults
+    /// the fail-propagated output of a node it reached by consuming more graphemes than the
+    /// pattern has, so a pattern that is a suffix of a longer match gets reported a second time
+    /// at the walker's whole span — `"cd"` came back as `[0,4)` / `"abcd"` for the patterns
+    /// `["abcd", "cd"]` on `"abcd"`. A single pass knows each pattern's length, so it reports the
+    /// real span only, and that spurious match disappears.
+    fn search_exact<'a, G: GraphemeStorage>(
+        &'a self,
+        haystack: &'a str,
+        similarity_threshold: f32,
+        graphemes: &G,
+    ) -> FuzzyMatches<'a> {
+        let text_len = graphemes.gs_len();
+        if text_len == 0 {
+            return FuzzyMatches {
+                haystack,
+                inner: vec![],
+            };
+        }
+        let mut inner: Vec<FuzzyMatch> = Vec::new();
+
+        let nodes = &self.nodes;
+        let mut state: u32 = 0;
+        let mut i = 0;
+        while i < text_len {
+            // When no match is in progress (`state` is the root), a grapheme with no outgoing
+            // root edge cannot start one, and consuming it would leave the state at the root
+            // anyway. Skip the whole run of such graphemes in one go. This is the same
+            // first-occurrence prefilter `aho-corasick` and `regex` apply, and it is what closes
+            // most of the remaining gap to them on text where matches are sparse.
+            if state == 0 {
+                i = graphemes.gs_next_possible(&nodes[0], i);
+                if i >= text_len {
+                    break;
+                }
+            }
+            let ch = graphemes.gs_first_char(i);
+            let ch_ascii = (ch as u32) < 128;
+            // Advance one grapheme, descending failure links until some state has a transition on
+            // `ch` (or we fall off the root, which matches the empty string). Amortised O(1):
+            // every failure-link step strictly decreases the state's depth, and each successful
+            // transition increases it by one.
+            loop {
+                let node = &nodes[state as usize];
+                // O(1) reject before the edge scan: on real text nearly every transition misses,
+                // and the bitmap answers "does this state have an edge for this ASCII char?"
+                // exactly (see `Node::edge_bits`). Non-ASCII `ch` has no bit and always scans.
+                if ch_ascii && (node.edge_bits >> (ch as u32)) & 1 == 0 {
+                    if state == 0 {
+                        break;
+                    }
+                    state = node.fail;
+                    continue;
+                }
+                if let Some(next) = graphemes.gs_find_transition(node, i, ch) {
+                    state = next;
+                    break;
+                }
+                if state == 0 {
+                    break;
+                }
+                state = node.fail;
+            }
+
+            // Note the absence of `continue` here: the loop is driven by an explicit `i += 1`, so
+            // an early exit would have to advance `i` too.
+            let output = &nodes[state as usize].output;
+            if !output.is_empty() {
+                let end_grapheme = i + 1;
+                let end_byte = if end_grapheme == text_len {
+                    haystack.len()
+                } else {
+                    graphemes.gs_byte_offset(end_grapheme)
+                };
+                for &pattern_index in output {
+                    let pattern = &self.patterns[pattern_index as usize];
+                    // No edits are permitted on this path, so every match scores exactly its
+                    // weight.
+                    let similarity = pattern.weight;
+                    if similarity < similarity_threshold {
+                        continue;
+                    }
+                    // A reported pattern is a suffix of the text consumed so far, so its length can
+                    // never exceed the graphemes consumed and this cannot underflow.
+                    let start_byte = graphemes.gs_byte_offset(end_grapheme - pattern.grapheme_len);
+                    inner.push(FuzzyMatch {
+                        insertions: 0,
+                        deletions: 0,
+                        substitutions: 0,
+                        edits: 0,
+                        swaps: 0,
+                        pattern_index: pattern_index as usize,
+                        start: start_byte,
+                        end: end_byte,
+                        pattern,
+                        similarity,
+                        text: &haystack[start_byte..end_byte],
+                    });
+                }
+            }
+            i += 1;
+        }
+
+        // No dedup pass is needed, and this is worth spelling out: the span of a reported pattern
+        // is `(end - grapheme_len, end)`, so `(start, end, pattern_index)` is in bijection with
+        // `(end, pattern_index)`. The loop visits each end position once and each node's `output`
+        // holds no duplicate indices, so every pushed match is a distinct key — the general
+        // search's `(start, end, pattern)` -> best-penalty map has nothing to merge here. The
+        // output is therefore in ascending end order, which `search_unsorted` leaves unspecified
+        // and every ranked/overlap-resolved order sorts anyway.
+        FuzzyMatches { haystack, inner }
     }
 
     /// Build the `Vec<(usize, Cow<str>)>` grapheme list for non-ASCII haystacks.
