@@ -504,11 +504,36 @@ impl Node {
         self.edge_bits
     }
 
+    /// Edge count at or above which a transition lookup tests `edge_bits` before scanning.
+    ///
+    /// The bitmap turns a miss into a couple of instructions, but a *hit* still has to scan, so on a
+    /// node with a handful of edges the test is pure overhead -- measured ~10% slower on a
+    /// 4-pattern automaton when applied unconditionally. A large automaton's root and first level
+    /// have tens of edges, so that is where a scan starts to cost. Hence a degree gate rather than
+    /// one unconditional rule.
+    ///
+    /// The win is bounded by how often lookups *miss*. On a corpus drawn from the patterns
+    /// themselves, transitions mostly hit and the gate bought 7% fewer edge iterations; against
+    /// unrelated patterns, where misses dominate, it should be worth considerably more. Both cases
+    /// produce identical matches: the test only rejects a lookup that the scan would have missed.
+    const BITMAP_MIN_DEGREE: usize = 8;
+
+    /// Cheap exact reject: is there no edge for this ASCII `char`? Conservative for a non-ASCII
+    /// `ch`, where it always answers "maybe" — see [`Node::edge_bits`].
+    #[inline]
+    fn has_no_edge_for(&self, ch: char) -> bool {
+        let idx = ch as u32;
+        idx < 128 && self.edges.len() >= Self::BITMAP_MIN_DEGREE && (self.edge_bits >> idx) & 1 == 0
+    }
+
     /// Like `find_transition` but takes a `char` directly, skipping the `&str` creation,
     /// `as_bytes()`, and byte-length check. Correct only for single-byte graphemes
     /// (guaranteed by the caller via `GraphemeStorage::gs_find_transition`).
     #[inline]
     pub(crate) fn find_transition_char(&self, ch: char) -> Option<u32> {
+        if self.has_no_edge_for(ch) {
+            return None;
+        }
         for edge in &self.edges {
             if edge.first_char == ch && edge.is_single_byte() {
                 return Some(edge.next());
@@ -522,6 +547,9 @@ impl Node {
     /// every edge is a single ASCII byte.
     #[inline]
     pub(crate) fn find_transition_char_no_mappings(&self, ch: char) -> Option<u32> {
+        if self.has_no_edge_for(ch) {
+            return None;
+        }
         for edge in &self.edges {
             if edge.first_char == ch {
                 return Some(edge.next());
