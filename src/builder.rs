@@ -339,6 +339,19 @@ impl FuzzyAhoCorasickBuilder {
                 .iter()
                 .map(|(g, &next)| Edge::new(g.chars().next().unwrap_or('\0'), next, g.len() == 1))
                 .collect();
+            // Precompute the ASCII edge-char bitmap the dead-end filter probes (see `Node::edge_bits`).
+            // Only single-byte graphemes can have a first `char` < 128, so the bitmap answers every
+            // ASCII probe exactly.
+            let mut bits = 0u128;
+            for edge in &node.edges {
+                if edge.is_single_byte() {
+                    let idx = edge.first_char as u32;
+                    if idx < 128 {
+                        bits |= 1u128 << idx;
+                    }
+                }
+            }
+            node.edge_bits = bits;
         }
 
         // Per-node reachable bounds (longest pattern / heaviest weight reachable from each node).

@@ -250,6 +250,17 @@ pub(crate) struct Node {
     /// Same edges as `transitions`, in a flat layout for hot-path iteration. Derived from
     /// `transitions` in a final build pass; must be kept consistent with it.
     pub(crate) edges: Vec<Edge>,
+    /// Bitmap of this node's single-byte (ASCII) edge chars: bit `i` set iff `edges` contains an
+    /// edge with `first_char == i` and `is_single_byte()`. Derived from `edges` in the same pass.
+    ///
+    /// A multi-byte grapheme always has a first `char` ≥ `U+0080` (a UTF-8 leading byte is ≥ 0xC0),
+    /// so for any ASCII `ch` this bitmap is an *exact* answer to "does this node have an edge for
+    /// `ch`?" — no scan needed. Only [`Node::has_matching_edge_char`] consults it: that check
+    /// probes a *different* (cold) node once per candidate transition, which on a wide automaton
+    /// is the most expensive test in the search. The exact-transition lookups deliberately keep
+    /// their plain linear scan, since the node they probe is already in cache and its edge list
+    /// is usually short — there a bitmap probe measured slower than simply scanning.
+    pub(crate) edge_bits: u128,
     /// All patterns that end in this state.
     pub(crate) output: Vec<u32>,
     /// Two precomputed coefficients of this node's pruning ceiling. A state at this node can only
@@ -429,6 +440,7 @@ impl Node {
             pattern_index: None,
             transitions: FxHashMap::default(),
             edges: Vec::new(),
+            edge_bits: 0,
             fail: 0,
             output: Vec::new(),
             prune_len: 0.0,
@@ -463,33 +475,26 @@ impl Node {
         self.transitions.get(grapheme).copied()
     }
 
-    /// Whether any outgoing single-ASCII-byte edge starts with `ch`. Used by the push-time dead-end
-    /// filter in the deletion/insertion scans. A linear scan of the node's (few) edges: nodes are
-    /// overwhelmingly low-degree, and a per-node cached bitmap costs 16 bytes/node while a side-map
-    /// lookup is slower than the scan on this hot path (both measured).
+    /// Whether any outgoing single-ASCII-byte edge starts with `ch`. Used by the push-time
+    /// dead-end filter in the substitution/deletion scans, which probes one *child* node per
+    /// candidate transition. Answered in O(1) from the precomputed `edge_bits` bitmap for ASCII
+    /// `ch` (exact — see [`Node::edge_bits`]); only a non-ASCII `ch` needs the linear scan.
     #[inline]
     pub(crate) fn has_matching_edge_char(&self, ch: char) -> bool {
+        let idx = ch as u32;
+        if idx < 128 {
+            return (self.edge_bits >> idx) & 1 != 0;
+        }
         self.edges
             .iter()
             .any(|edge| edge.first_char == ch && edge.is_single_byte())
     }
 
-    /// Bitmap of this node's single-ASCII-byte edge chars: bit `i` set iff an edge has
-    /// `first_char == i` with `i < 128`. Recomputed on demand from `edges` — used only by the
-    /// once-per-search window-skip pre-scan over the root and its children, so it isn't worth
-    /// caching 16 bytes on every node.
+    /// Bitmap of this node's single-byte (ASCII) edge chars, precomputed at build time. Used by the
+    /// once-per-search window-skip pre-scan over the root and its children.
     #[inline]
     pub(crate) fn single_char_edge_bits(&self) -> u128 {
-        let mut bits = 0u128;
-        for edge in &self.edges {
-            if edge.is_single_byte() {
-                let idx = edge.first_char as u32;
-                if idx < 128 {
-                    bits |= 1u128 << idx;
-                }
-            }
-        }
-        bits
+        self.edge_bits
     }
 
     /// Like `find_transition` but takes a `char` directly, skipping the `&str` creation,
