@@ -958,3 +958,142 @@ fn reported_spans_are_self_consistent_over_grapheme_clusters() {
          which is the whole point of this sweep"
     );
 }
+
+/// The pre-filter must return exactly what a plain search returns.
+///
+/// `Prefiltered::search` documents that it "returns exactly what
+/// `FuzzyAhoCorasick::search` would for the same `opts`", which is a strong and useful claim: it is
+/// what makes the pre-filter safe to reach for by default. This checks it the same way as everything
+/// else here, over random configurations, and includes the knobs the pre-filter's own construction
+/// does *not* obviously account for:
+///
+/// * `auto_beam` counts expanded states *across all windows* and switches the beam on partway
+///   through. A pre-filtered search examines fewer windows, so the running total differs and the
+///   switch can land in a different place — which would make the two disagree on a lossy search.
+/// * `beam_width` is per window, so it should not matter, but that is worth confirming rather than
+///   assuming.
+/// * `min_symbol_similarity` only ever *rejects* substitutions, so the filter can over-approximate
+///   and stay sound; again, worth confirming.
+///
+/// Any disagreement is a divergence between two APIs that are documented to agree.
+#[test]
+fn prefilter_agrees_with_plain_search() {
+    const ALPHABET: &[char] = &['a', 'b', 'c', 'd', 'x', 'y'];
+    const CASES: u32 = 400;
+
+    let fx = Fixture::new();
+    let mut rng = Rng(0x9EF1_17E4_0000_0001);
+    // Configurations where a filter was actually built, and cases where it changed the result --
+    // without both, this could pass by always falling back.
+    let mut active = 0usize;
+
+    for case in 0..CASES {
+        let max_edits = rng.below(3) as u8;
+        let threshold = [0.0f32, 0.5, 0.7, 0.85, 0.95][rng.below(5)];
+        let case_insensitive = rng.below(2) == 0;
+        let n_patterns = 1 + rng.below(4);
+        let word_len = 2 + rng.below(4);
+        let min_symbol_similarity = [0.0f32, 0.4, 0.6][rng.below(3)];
+        // The beam knobs, cycled through rather than randomised so all three shapes get covered.
+        let beam = case % 3;
+
+        let patterns: Vec<String> = (0..n_patterns)
+            .map(|_| seq(ALPHABET, &mut rng, word_len))
+            .collect();
+        let text: String = (0..(4 + rng.below(10)))
+            .map(|_| ALPHABET[rng.below(ALPHABET.len())])
+            .collect();
+
+        let mut builder = FuzzyAhoCorasickBuilder::new()
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone())
+            .case_insensitive(case_insensitive)
+            .min_symbol_similarity(min_symbol_similarity)
+            .fuzzy(FuzzyLimits::new().edits(max_edits));
+        builder = match beam {
+            0 => builder,
+            1 => builder.beam_width(2),
+            _ => builder.auto_beam(2, 2),
+        };
+        let engine = builder.build(
+            patterns
+                .iter()
+                .map(|p| Pattern::from(p.as_str()))
+                .collect::<Vec<_>>(),
+        );
+
+        let pf = engine.with_prefilter();
+        if pf.is_active() {
+            active += 1;
+        }
+
+        for &sorted in &[false, true] {
+            // The un-beamed result is the yardstick: every reported match must be a real match, so
+            // any lossy configuration is free to omit some but never to invent one.
+            let mut base_opts = SearchOptions::new().threshold(threshold);
+            if sorted {
+                base_opts = base_opts.sorted().non_overlapping();
+            }
+            let unbeammed: HashMap<(usize, usize, usize), f32> = engine
+                .search(&text, &base_opts)
+                .unwrap()
+                .inner
+                .iter()
+                .map(|m| ((m.start, m.end, m.pattern_index), m.similarity))
+                .collect();
+
+            let mut opts = SearchOptions::new().threshold(threshold);
+            if sorted {
+                opts = opts.sorted().non_overlapping();
+            }
+            let plain = engine.search(&text, &opts).unwrap();
+            let filtered = pf.search(&text, &opts).unwrap();
+
+            let plain_set: HashMap<(usize, usize, usize), f32> = plain
+                .inner
+                .iter()
+                .map(|m| ((m.start, m.end, m.pattern_index), m.similarity))
+                .collect();
+            let filtered_set: HashMap<(usize, usize, usize), f32> = filtered
+                .inner
+                .iter()
+                .map(|m| ((m.start, m.end, m.pattern_index), m.similarity))
+                .collect();
+
+            // Every match either way must be real. This is the invariant that must hold under a
+            // lossy beam, and it is what makes the pre-filter's own re-search trustworthy.
+            for (key, sim) in plain_set.iter().chain(filtered_set.iter()) {
+                assert_eq!(
+                    unbeammed.get(key).copied(),
+                    Some(*sim),
+                    "case {case}: a beamed search reported {key:?} at {sim}, which the un-beamed \
+                     search does not find (beam={beam} sorted={sorted} \
+                     patterns={patterns:?} text={text:?})"
+                );
+            }
+
+            if beam != 0 {
+                // A beam makes results lossy, and *which* states survive depends on the order
+                // windows are visited -- which a pre-filtered search changes, because it visits only
+                // candidate regions. So the two are not expected to agree exactly here. Ordering is
+                // unspecified under `Order::Unsorted` anyway.
+                continue;
+            }
+
+            assert_eq!(
+                plain_set,
+                filtered_set,
+                "case {case}: pre-filter disagrees with plain search on an un-beamed search \
+                 (sorted={sorted} max_edits={max_edits} threshold={threshold} \
+                 case_insensitive={case_insensitive} \
+                 min_symbol_similarity={min_symbol_similarity} active={} \
+                 patterns={patterns:?} text={text:?})\n plain:    {plain:?}\n filtered: {filtered:?}",
+                pf.is_active(),
+            );
+        }
+    }
+    assert!(
+        active > CASES as usize / 2,
+        "a filter was only built for {active} of {CASES} cases, so this proved little"
+    );
+}
