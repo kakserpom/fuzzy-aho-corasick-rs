@@ -1,26 +1,53 @@
-//! Bit-parallel (Bitap / Wu–Manber) **pre-filter** for [`FuzzyAhoCorasick`].
+//! Wu--Manber **pre-filter** for [`FuzzyAhoCorasick`].
 //!
 //! The full engine is exact but pays a per-start-position BFS. This module adds an opt-in fast lane:
-//! a bit-parallel approximate matcher runs first at hundreds of MB/s to locate *candidate regions*,
-//! and the full weighted engine then re-searches only those regions. Results are **identical** to
-//! [`FuzzyAhoCorasick::search`] — the filter is a conservative over-approximation (a necessary
-//! condition), so it never drops a real match; it only saves the engine from scanning text that
-//! cannot contain one.
+//! a cheap approximate matcher runs first to locate *candidate regions*, and the full weighted engine
+//! then re-searches only those regions. Results are **identical** to [`FuzzyAhoCorasick::search`] —
+//! the filter is a conservative over-approximation (a necessary condition), so it never drops a real
+//! match; it only saves the engine from scanning text that cannot contain one.
+//!
+//! # How it works
+//!
+//! Wu--Manber's lemma: split a pattern of length `m` into `k + 1` blocks. If a text window matches it
+//! within `k` unit edits, at least one block matches **exactly**, so a `q = m / (k + 1)`-length
+//! substring of the pattern occurs verbatim in the window. Every pattern's blocks go into one
+//! exact-match lookup table and the text is scanned **once**, so the cost is `O(text)` rather than
+//! `O(text x patterns)` — which is what the per-pattern Bitap scan this replaced cost, and why that
+//! scan made the pre-filter *slower* than a plain search once a corpus had more than a handful of
+//! patterns.
+//!
+//! The keys are exact rather than hashed: pattern symbol ids start at 1, so a block of up to 8 of them
+//! packs into a `u64` with no collisions at all, and a lookup is a load, a mask and a compare.
 //!
 //! # Soundness
-//! The filter admits a region whenever the *unit-cost Levenshtein* distance between a pattern and
-//! some substring is within a budget `k`. `k` is derived so that **every** match the engine could
-//! accept has Levenshtein distance ≤ `k`:
-//! * the score threshold caps the total penalty a kept match may carry (`P_max = N·(1 − θ/weight)`),
+//!
+//! `k` is derived so that **every** match the engine could accept has Levenshtein distance at most
+//! `k`:
+//! * the score threshold caps the total penalty a kept match may carry (`P_max = N(1 - theta/weight)`),
 //! * each edit operation costs at least some minimum penalty, so the op count is bounded, and a
 //!   transposition counts as 2 unit edits (its Levenshtein cost).
 //!
-//! When the configuration can't be reduced to this bit model (mappings present, a pattern longer
-//! than 63 graphemes, a free edit that makes `k` unbounded, or `k` so large the filter stops being
-//! selective), [`Prefiltered`] transparently falls back to the full search — always correct, merely
-//! without the speedup.
+//! The table is shared by all patterns using the *smallest* per-pattern `q`, which is the
+//! conservative choice: a shorter block is a weaker condition, so it admits more candidates and can
+//! never drop a real match. `min_symbol_similarity` needs no handling — it only ever *rejects*
+//! substitutions, so it can shrink the match set, never grow it.
 //!
-//! See `examples/bitap_prototype.rs` for the standalone algorithm + a fuzzed correctness check.
+//! # When it declines to help
+//!
+//! Three configurations fall back to the full search rather than pretending to help:
+//!
+//! * the configuration cannot be reduced to this model at all — mappings present, a pattern longer
+//!   than 63 graphemes, or a free edit that makes `k` unbounded;
+//! * the block length would be 1, which passes almost everywhere and filters nothing;
+//! * the candidate regions end up covering as much text as a plain search would. This is where a
+//!   large pattern set lands: `edits(1)` bounds the block at `m / 3`, and a few hundred patterns
+//!   saturate the 3-gram space of a 26-letter alphabet, so nearly every position looks like a
+//!   candidate. The sliced re-search can then only add overhead on top of the same work.
+//!
+//! In every case the result is the plain search's, exactly — a filter that cannot pay for itself is
+//! removed, not approximated.
+//!
+//! See `examples/bitap_prototype.rs` for the standalone Bitap algorithm + a fuzzed correctness check.
 
 use crate::structs::FxHashMap;
 use crate::{FuzzyAhoCorasick, FuzzyLimits, FuzzyMatch, FuzzyMatches, SearchError, SearchOptions};
@@ -54,7 +81,7 @@ impl Offsets {
     }
 }
 
-/// A [`FuzzyAhoCorasick`] wrapped with an optional bit-parallel pre-filter.
+/// A [`FuzzyAhoCorasick`] wrapped with an optional Wu--Manber pre-filter.
 ///
 /// Obtain one with [`FuzzyAhoCorasick::with_prefilter`]. Its [`search`](Prefiltered::search) returns
 /// exactly what [`FuzzyAhoCorasick::search`] would, but skips the engine over regions the bit-parallel
@@ -65,7 +92,7 @@ pub struct Prefiltered<'e> {
     filter: Option<BitapFilter>,
 }
 
-/// Precomputed, threshold-independent state for the bit-parallel scan.
+/// Precomputed, threshold-independent state for the pre-filter scan.
 struct BitapFilter {
     /// Case-folded grapheme → symbol id in `1..=len`. Id `0` is reserved for "any other symbol",
     /// which matches no pattern position (so it can only ever be consumed as an edit — conservative).
@@ -85,15 +112,18 @@ struct BitapPattern {
     m: usize,
     /// Pattern weight, for the per-pattern penalty budget.
     weight: f32,
-    /// `mask[id]` has bit `i` set iff the pattern's `i`-th symbol is `id`.
-    mask: Vec<u64>,
+    /// The pattern's symbol ids, in order. This is what the `q`-gram filter needs; the filter used to
+    /// run one Bitap scan per pattern over a `mask[id] -> bitmask` table, which cost
+    /// `O(text x patterns)` and made the pre-filter *slower* than a plain search once a corpus had
+    /// more than a handful of patterns.
+    ids: Vec<u8>,
     /// Upper bound on Levenshtein distance implied by this pattern's edit limits, if any. Used to
     /// tighten `k` below the penalty-derived bound; `None` means limits don't bound it.
     k_limit: Option<usize>,
 }
 
 impl FuzzyAhoCorasick {
-    /// Wrap this engine with a bit-parallel pre-filter (see [`Prefiltered`]).
+    /// Wrap this engine with a Wu--Manber pre-filter (see [`Prefiltered`]).
     ///
     /// Building the filter is cheap and done once; reuse the returned wrapper across searches. If the
     /// configuration can't be reduced to the bit model, the wrapper still works — it just performs a
@@ -119,7 +149,7 @@ impl FuzzyAhoCorasick {
 }
 
 impl Prefiltered<'_> {
-    /// Whether a usable bit-parallel filter was built. When `false`, [`search`](Self::search) is a
+    /// Whether a usable pre-filter was built. When `false`, [`search`](Self::search) is a
     /// plain full search (the configuration wasn't reducible to the bit model).
     #[must_use]
     pub fn is_active(&self) -> bool {
@@ -198,14 +228,13 @@ impl BitapFilter {
                 if id as usize > MAX_ALPHABET {
                     return None; // more distinct symbols than the u8 id stream can hold
                 }
-                ids.push(id);
+                ids.push(id as u8);
             }
             let applicable = pat.limits.as_ref().or(engine.limits.as_ref());
             patterns.push(BitapPattern {
                 m,
                 weight: pat.weight,
-                // Mask sizing is deferred until the alphabet is fully known (below).
-                mask: ids.iter().map(|&id| u64::from(id)).collect(), // temp: store ids, rebuilt below
+                ids,
                 k_limit: applicable.and_then(k_from_limits),
             });
         }
@@ -225,15 +254,11 @@ impl BitapFilter {
         }
 
         let alphabet = symbol_ids.len();
-        // Rebuild masks now that the alphabet size is final: mask[id] gets bit i for the i-th symbol.
-        for bp in &mut patterns {
-            let ids = std::mem::take(&mut bp.mask); // temp id list stashed above
-            let mut mask = vec![0u64; alphabet + 1];
-            for (i, &id) in ids.iter().enumerate() {
-                mask[id as usize] |= 1u64 << i;
-            }
-            bp.mask = mask;
-        }
+        debug_assert!(
+            (1..=alphabet).all(|a| a <= MAX_ALPHABET),
+            "symbol ids must fit the u8 id stream"
+        );
+        let _ = alphabet;
 
         Some(Self {
             symbol_ids,
@@ -319,10 +344,13 @@ impl BitapFilter {
         let (ids, offsets) = self.transcode(haystack);
         let n = ids.len();
 
-        // Collect candidate windows (grapheme ranges) from every pattern's bit-parallel scan.
+        // Collect candidate windows (grapheme ranges).
         let mut windows: Vec<(usize, usize)> = Vec::new();
-        for (pat, &k) in self.patterns.iter().zip(&ks) {
-            bitap_windows(&pat.mask, pat.m, k, &ids, &mut windows);
+        match self.qgram_filter(&ks) {
+            Some((set, q, reach)) => qgram_windows(&set, q, reach, &ids, &mut windows),
+            // Not selective enough to be worth running: a full search is the honest answer, and
+            // saying so beats a filter that costs more than the thing it filters.
+            None => return engine.search_raw(haystack, threshold),
         }
         if windows.is_empty() {
             return Ok(FuzzyMatches {
@@ -339,6 +367,17 @@ impl BitapFilter {
                 Some(last) if s <= last.1 => last.1 = last.1.max(e),
                 _ => merged.push((s, e)),
             }
+        }
+
+        // If the candidates end up covering as much text as a plain search would, the filter has
+        // bought nothing and the sliced re-search -- one `search_raw` call, one `best` map and one
+        // BFS queue per window -- can only add overhead on top. This is the regime a large pattern
+        // set lands in: the edit budget bounds the block length at `m / (2 * edits + 1)`, so with
+        // `edits(1)` it is a 3-gram, and a few hundred patterns saturate the 3-gram space of a
+        // 26-letter alphabet. There the honest answer is to do the search.
+        let covered: usize = merged.iter().map(|(s, e)| e - s).sum();
+        if covered >= n {
+            return engine.search_raw(haystack, threshold);
         }
 
         // Run the full engine on each window slice; collect the best match per (span, pattern).
@@ -404,33 +443,189 @@ fn k_from_limits(lim: &FuzzyLimits) -> Option<usize> {
     Some(i + d + s + 2 * w)
 }
 
-/// Bit-parallel approximate scan (Wu–Manber, shift-AND). For every grapheme end position where some
-/// start gives `levenshtein(pattern, window) <= k`, push the candidate window `[end-m-k, end]` (in
-/// grapheme indices) onto `out`.
-fn bitap_windows(mask: &[u64], m: usize, k: usize, ids: &[u8], out: &mut Vec<(usize, usize)>) {
-    let match_bit = 1u64 << (m - 1);
-    let mut r = vec![0u64; k + 1];
-    let mut nr = vec![0u64; k + 1];
-    // Init: d deletions of the pattern prefix are free at the start (low d bits set).
-    for (d, slot) in r.iter_mut().enumerate() {
-        *slot = (1u64 << d) - 1;
+/// A set of packed `q`-grams, open-addressed with linear probing.
+///
+/// The keys are *exact*, not hashed. Pattern symbol ids start at 1 (`0` is reserved for "a haystack
+/// grapheme that is in no pattern"), so every `q`-gram taken from a pattern has all `q` bytes
+/// non-zero, and `q <= 8` means the whole thing fits in a `u64` with no collisions at all. That
+/// leaves a plain `u64` table with `0` as the empty sentinel — no hash function, no false positives
+/// from collisions, and a lookup that is a load, a mask and a compare.
+struct QGramSet {
+    mask: usize,
+    slots: Vec<u64>,
+}
+
+impl QGramSet {
+    fn with_capacity(n: usize) -> Self {
+        // Power of two, at least 2x the entries so linear probing stays short.
+        let cap = (n.max(8) * 2).next_power_of_two();
+        Self {
+            mask: cap - 1,
+            slots: vec![0u64; cap],
+        }
     }
-    let span = m + k;
-    for (i, &c) in ids.iter().enumerate() {
-        let bc = mask[c as usize];
-        nr[0] = ((r[0] << 1) | 1) & bc;
-        for d in 1..=k {
-            nr[d] = ((r[d] << 1) & bc)            // match / exact extension
-                | ((r[d - 1] | nr[d - 1]) << 1)   // substitution (prev) + deletion (current)
-                | r[d - 1]                        // insertion
-                | 1; // start state stays active at every error level (begin with an edit)
+
+    #[inline]
+    fn insert(&mut self, key: u64) {
+        debug_assert!(key != 0, "0 is the empty sentinel");
+        let mut i = (key as usize) & self.mask;
+        loop {
+            let slot = self.slots[i];
+            if slot == 0 {
+                self.slots[i] = key;
+                return;
+            }
+            if slot == key {
+                return;
+            }
+            i = (i + 1) & self.mask;
         }
-        // R[k] subsumes all lower error levels, so one test suffices.
-        if nr[k] & match_bit != 0 {
-            let end = i + 1;
-            out.push((end.saturating_sub(span), end));
+    }
+
+    #[inline]
+    fn contains(&self, key: u64) -> bool {
+        let mut i = (key as usize) & self.mask;
+        loop {
+            let slot = self.slots[i];
+            if slot == 0 {
+                return false;
+            }
+            if slot == key {
+                return true;
+            }
+            i = (i + 1) & self.mask;
         }
-        std::mem::swap(&mut r, &mut nr);
+    }
+}
+
+/// Largest `q` that still packs into the exact-`u64` key. Above this the key would need hashing,
+/// and a longer block is a *stronger* filter, so capping is the conservative direction.
+const MAX_Q: usize = 8;
+
+/// Shortest `q` worth filtering on. Below this the "does any pattern share 2-grams with this text"
+/// test passes almost everywhere, and the re-search costs more than the filter saved.
+const MIN_Q: usize = 2;
+
+impl BitapFilter {
+    /// Build the multi-pattern `q`-gram filter, or `None` when the pattern set cannot be filtered
+    /// selectively.
+    ///
+    /// # Why a `q`-gram is a sound necessary condition
+    ///
+    /// Wu--Manber's lemma: split a pattern of length `m` into `k + 1` blocks. If a text window
+    /// matches it within `k` unit edits, at least one block matches **exactly**, so that block -- a
+    /// `q = floor(m / (k + 1))`-length substring of the pattern -- appears verbatim in the window.
+    ///
+    /// `k` here is the budget `k_for` already derives from the threshold: the penalty a kept match
+    /// may carry, divided by the cheapest penalty per edit, with a transposition charged two units
+    /// so an alignment within `k` unit edits is within Levenshtein `k` and the lemma applies. A
+    /// per-pattern `k_limit` only shrinks it, which keeps the lemma valid.
+    ///
+    /// One table serves every pattern, so the scan is `O(n)` rather than `O(n x patterns)`. Using
+    /// the *smallest* per-pattern `q` is the conservative choice: a smaller block is a weaker
+    /// condition, so it admits more candidates and can never drop a real match.
+    ///
+    /// `min_symbol_similarity` needs no handling: it only ever *rejects* substitutions, so it can
+    /// shrink the match set, never grow it. Mappings are already excluded in `build`.
+    ///
+    /// Returns the set, the block length, and the reach: the furthest a match starting at `s` can
+    /// extend, which is how wide a re-search window around a hit has to be.
+    fn qgram_filter(&self, ks: &[usize]) -> Option<(QGramSet, usize, usize)> {
+        debug_assert_eq!(ks.len(), self.patterns.len());
+        let mut q = MAX_Q;
+        let mut reach = 0usize;
+        for (pat, &k) in self.patterns.iter().zip(ks) {
+            // floor(m / (k + 1)), at least 1 so the division is always meaningful.
+            let q_pat = (pat.m / (k + 1)).max(1);
+            q = q.min(q_pat);
+            reach = reach.max(pat.m + k);
+        }
+        if q < MIN_Q {
+            return None;
+        }
+        // Every `q`-gram of every pattern: `m + 1 - q` of them. Counted exactly, because
+        // `QGramSet` is sized from this and an undercount would fill the table and spin the probe
+        // loop forever.
+        let grams: usize = self.patterns.iter().map(|pat| pat.m + 1 - q).sum();
+        let mut set = QGramSet::with_capacity(grams);
+        for (pat, &k) in self.patterns.iter().zip(ks) {
+            let q_pat = (pat.m / (k + 1)).max(1).min(q);
+            let mut key = 0u64;
+            for (t, &id) in pat.ids.iter().take(q_pat).enumerate() {
+                key |= u64::from(id) << (8 * t);
+            }
+            set.insert(key);
+            for t in q_pat..pat.m {
+                key = (key >> 8) | (u64::from(pat.ids[t]) << (8 * (q_pat - 1)));
+                set.insert(key);
+            }
+        }
+        Some((set, q, reach))
+    }
+}
+
+/// Low `q` bytes set, for masking a packed 8-byte load down to the block length.
+#[inline]
+fn q_mask(q: usize) -> u64 {
+    if q >= 8 {
+        u64::MAX
+    } else {
+        (1u64 << (8 * q)) - 1
+    }
+}
+
+/// Scan once, pushing a re-search window around every position where a pattern `q`-gram occurs.
+fn qgram_windows(
+    set: &QGramSet,
+    q: usize,
+    reach: usize,
+    ids: &[u8],
+    out: &mut Vec<(usize, usize)>,
+) {
+    let n = ids.len();
+    if n < q {
+        return;
+    }
+    let mask = q_mask(q);
+    // A match containing a hit at `i` starts at `s` with `s > i - reach` (the hit is inside the
+    // window) and consumes at most `reach` graphemes, so `end <= s + reach <= i + reach`. The window
+    // has to cover the match *whole* on both sides: a slice that clipped one would report a truncated
+    // span, or miss it entirely when the head fell outside.
+    //
+    // Hits are collected first and merged into runs before being extended, because extending each hit
+    // separately spends `2 * reach` graphemes of re-search per hit. Two hits closer together than
+    // that are cheaper to cover with one window than two, so a run is grown across gaps up to
+    // `2 * reach` and only extended once at its ends.
+    let gap = 2 * reach;
+    let mut run: Option<(usize, usize)> = None; // (first hit, last hit), inclusive
+    for i in 0..=(n - q) {
+        // One 8-byte load covers every position with at least 8 symbols to spare; the tail is rare
+        // enough to assemble the key a byte at a time.
+        let key = if i + 8 <= n {
+            let chunk: [u8; 8] = ids[i..i + 8].try_into().expect("8 bytes");
+            u64::from_le_bytes(chunk) & mask
+        } else {
+            let mut k = 0u64;
+            for (t, &id) in ids[i..i + q].iter().enumerate() {
+                k |= u64::from(id) << (8 * t);
+            }
+            k
+        };
+        if !set.contains(key) {
+            continue;
+        }
+        match &mut run {
+            // `i - last` cannot overflow: `i` only ever increases and both are bounded by `n`.
+            Some((_, last)) if i - *last <= gap => *last = i,
+            Some((first, last)) => {
+                out.push((first.saturating_sub(reach), *last + 1 + reach));
+                run = Some((i, i));
+            }
+            None => run = Some((i, i)),
+        }
+    }
+    if let Some((first, last)) = run {
+        out.push((first.saturating_sub(reach), last + 1 + reach));
     }
 }
 

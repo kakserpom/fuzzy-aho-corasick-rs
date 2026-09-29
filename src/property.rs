@@ -1277,3 +1277,83 @@ fn order_and_overlap_change_only_presentation() {
          non_overlapping_unique was barely exercised"
     );
 }
+
+/// The pre-filter must stay exact as the pattern set grows, across the whole range of its behaviour.
+///
+/// The filter's selectivity depends on how many patterns there are, and the new `q`-gram filter makes
+/// that dependence explicit rather than incidental. A small set leaves the block space sparse, so
+/// candidates are rare and the filter earns its keep; a few hundred patterns saturate it, candidates
+/// cover the text, and the search deliberately falls back to a plain one. Both regimes, and the
+/// boundary between them, have to produce the plain search's answer exactly.
+///
+/// Pattern lengths vary deliberately: the block length is `m / (k + 1)`, so a set mixing lengths
+/// 1..=14 exercises the block-length computation, the `MIN_Q` refusal that fires when a
+/// single-character pattern drags the block down to 1, and the "covered too much, just search" path.
+#[test]
+fn prefilter_stays_exact_as_the_pattern_set_grows() {
+    const ALPHABET: &[char] = &['a', 'b', 'c', 'd', 'x', 'y', 'z'];
+    const CASES: u32 = 250;
+
+    let fx = Fixture::new();
+    let mut rng = Rng(0x9A9A_0000_1234_5678);
+    let mut active = 0usize;
+
+    for case in 0..CASES {
+        let threshold = [0.5f32, 0.7, 0.8, 0.9, 1.0][rng.below(5)];
+        let max_edits = [0u8, 1, 2][rng.below(3)];
+        // Spread across the regimes: a handful of patterns, a few dozen, and a few hundred.
+        let n_patterns = [2usize, 8, 40, 200][rng.below(4)];
+
+        let mut patterns: Vec<String> = Vec::new();
+        for _ in 0..n_patterns {
+            // Lengths 1..=14 so a single short pattern can force the `MIN_Q` refusal.
+            let len = 1 + rng.below(14);
+            patterns.push(seq(ALPHABET, &mut rng, len));
+        }
+        let text: String = (0..(6 + rng.below(40)))
+            .map(|_| ALPHABET[rng.below(ALPHABET.len())])
+            .collect();
+
+        let engine = FuzzyAhoCorasickBuilder::new()
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone())
+            .fuzzy(FuzzyLimits::new().edits(max_edits))
+            .build(
+                patterns
+                    .iter()
+                    .map(|p| Pattern::from(p.as_str()))
+                    .collect::<Vec<_>>(),
+            );
+
+        let pf = engine.with_prefilter();
+        if pf.is_active() {
+            active += 1;
+        }
+        let opts = SearchOptions::new().threshold(threshold);
+        let plain: std::collections::HashMap<(usize, usize, usize), f32> = engine
+            .search(&text, &opts)
+            .unwrap()
+            .inner
+            .iter()
+            .map(|m| ((m.start, m.end, m.pattern_index), m.similarity))
+            .collect();
+        let filtered: std::collections::HashMap<(usize, usize, usize), f32> = pf
+            .search(&text, &opts)
+            .unwrap()
+            .inner
+            .iter()
+            .map(|m| ((m.start, m.end, m.pattern_index), m.similarity))
+            .collect();
+        assert_eq!(
+            plain,
+            filtered,
+            "case {case}: pre-filter differs at {n_patterns} patterns, edits={max_edits}, \
+             threshold={threshold} (active={}) patterns={patterns:?} text={text:?}",
+            pf.is_active(),
+        );
+    }
+    assert!(
+        active > CASES as usize / 2,
+        "a filter was only built for {active} of {CASES} cases, so this proved little"
+    );
+}

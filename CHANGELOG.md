@@ -81,6 +81,23 @@ All notable changes to this project are documented here. The format is based on
 
 ### Performance
 
+- **The pre-filter is no longer slower than a plain search on a large pattern set.** It ran one Bitap
+  scan *per pattern*, so its cost was `O(text x patterns)`: with 500 patterns on a 24 KiB corpus it
+  took **95 ms against 26 ms for the plain search it was supposed to accelerate** -- the documented
+  ~13x was only ever true for a handful of patterns, where the per-pattern scans are cheap. The scan
+  is now a single Wu-Manber pass: every pattern's blocks go into one lookup table, so the cost is
+  `O(text)`. Measured on identical input, median of 11 paired rounds, instrument self-consistency
+  under 1%:
+  - 4 patterns, sparse corpus: **7.9 ms -> 3.4 ms**, i.e. 5.0x faster than a plain search
+  - 500 patterns, sparse corpus: **95.0 ms -> 26.2 ms**, i.e. back to parity with a plain search
+- The block keys are exact rather than hashed. Pattern symbol ids start at 1, so a block of up to 8
+  of them packs into a `u64` with no collisions, making a lookup a load, a mask and a compare.
+- The pre-filter now **declines** when it cannot pay for itself, instead of approximating: if the
+  block length would be 1, or if the candidate regions end up covering as much text as a plain search
+  would, it transparently runs the plain search. Results are identical either way -- a filter that
+  cannot pay for itself is removed, not approximated. The 500-pattern case above is exactly this:
+  `edits(1)` bounds the block at `m / 3`, and a few hundred patterns saturate the 3-gram space of a
+  26-letter alphabet, so there is nothing left to reject.
 - **Exact search is ~6x faster** (15.8 → 2.6 ns/byte on 250 KiB with 4 patterns; −85% end-to-end on
   the full `search` call). A search with no edit budget no longer restarts a BFS at every start
   position — it makes a single left-to-right Aho–Corasick pass, using the failure links the builder
