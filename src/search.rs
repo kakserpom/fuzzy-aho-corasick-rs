@@ -12,17 +12,20 @@ use unicode_segmentation::UnicodeSegmentation;
 type NodeIndex = u32;
 /// Current position (grapheme index) in the haystack.
 type HaystackPos = u32;
-/// Start grapheme index of the matched span in the haystack.
-type MatchStart = u32;
 /// End grapheme index of the matched span in the haystack. Not derivable from the other state
 /// fields — see [`VisitedKey`].
 type MatchEnd = u32;
 
-/// Key for the per-window state-dedup map: automaton position, both ends of the matched span, and
-/// the four per-edit-type counts packed into one `u32` (one byte each). Two states with equal keys
-/// behave identically going forward, so only the lowest-penalty one needs expanding.
+/// Key for the per-window state-dedup map: automaton position, the end of the matched span, and the
+/// four per-edit-type counts packed into one `u32` (one byte each). Two states with equal keys behave
+/// identically going forward, so only the lowest-penalty one needs expanding.
 ///
-/// `matched_end` has to be in the key, and it is *not* recoverable from the other fields. The
+/// The span *start* is absent because it carries no information: it is always the current window's
+/// start, so every state in a window agrees on it. The table is reset per window by epoch stamping,
+/// so entries from another window cannot collide with it. See the `debug_assert` where
+/// `matched_start_next` is computed, which is what makes that claim checkable rather than believed.
+///
+/// The span *end* has to be in the key, and it is *not* recoverable from the other fields. The
 /// tempting shortcut is that it is a function of `j` and the insertion count, since `matched_end`
 /// advances on exact / substitution / swap / mapping but not on an insertion. That is wrong: it
 /// equals `j` minus the insertions taken *after* the last alignment, so two paths can reach the same
@@ -31,13 +34,12 @@ type MatchEnd = u32;
 /// key identically without it — collapsing them silently drops one of the two matches. (A property
 /// test against a brute-force reference caught this; the invariant it was justified by is false.)
 ///
-/// The custom `Hash` impl packs pairs of `u32`s into `u64`s, so five fields cost three `FxHash`
-/// rounds rather than one per field.
+/// The custom `Hash` impl packs the four fields into two `u64`s, so the whole key costs two
+/// `FxHash` rounds (two dependent multiply chains) instead of one per field.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct VisitedKey {
     node: NodeIndex,
     j: HaystackPos,
-    matched_start: MatchStart,
     matched_end: MatchEnd,
     packed_counts: u32,
 }
@@ -46,8 +48,7 @@ impl Hash for VisitedKey {
     #[inline]
     fn hash<H: Hasher>(&self, hasher: &mut H) {
         hasher.write_u64(u64::from(self.node) | (u64::from(self.j) << 32));
-        hasher.write_u64(u64::from(self.matched_start) | (u64::from(self.matched_end) << 32));
-        hasher.write_u32(self.packed_counts);
+        hasher.write_u64(u64::from(self.matched_end) | (u64::from(self.packed_counts) << 32));
     }
 }
 
@@ -157,7 +158,7 @@ impl DedupTable {
     #[inline]
     fn hash_key(key: &VisitedKey) -> u64 {
         let a = u64::from(key.node) | (u64::from(key.j) << 32);
-        let b = u64::from(key.matched_start) | (u64::from(key.packed_counts) << 32);
+        let b = u64::from(key.matched_end) | (u64::from(key.packed_counts) << 32);
         (a ^ b.rotate_left(29)).wrapping_mul(Self::K)
     }
 
@@ -242,7 +243,6 @@ impl DedupTable {
                 key: VisitedKey {
                     node: 0,
                     j: 0,
-                    matched_start: 0,
                     matched_end: 0,
                     packed_counts: 0,
                 },
@@ -1008,7 +1008,6 @@ impl FuzzyAhoCorasick {
                             VisitedKey {
                                 node,
                                 j,
-                                matched_start,
                                 matched_end,
                                 packed_counts,
                             },
@@ -1160,6 +1159,18 @@ impl FuzzyAhoCorasick {
                     } else {
                         matched_start
                     };
+                    // `matched_start` is always this window's start position, so it carries no
+                    // information within a window and is left out of the dedup key. The argument:
+                    // it equals `matched_end` exactly while nothing has been aligned yet, and while
+                    // that holds an insertion is refused, so `j` cannot have moved either — which
+                    // makes `matched_start_next = j` equal the window start. Once something has been
+                    // aligned, `matched_end > matched_start` and the value is carried forward
+                    // unchanged. Asserted rather than assumed: an invariant asserted in a comment and
+                    // never checked is how the `matched_end` key field went missing once already.
+                    debug_assert_eq!(
+                        matched_start_next, start,
+                        "matched_start must stay at the window start"
+                    );
 
                     // Exact transition: for ASCII storage, `gs_find_transition` goes straight
                     // to the char-based edge scan, skipping `&str` creation and byte-length check.
@@ -1516,7 +1527,6 @@ mod dedup_table_tests {
         VisitedKey {
             node: a,
             j: a.wrapping_mul(7),
-            matched_start: a.wrapping_mul(13),
             matched_end: a.wrapping_mul(11),
             packed_counts: a.wrapping_mul(3),
         }

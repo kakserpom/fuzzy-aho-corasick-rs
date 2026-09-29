@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **The unstartable-haystack skip no longer misreads non-ASCII bytes.** It probes a 128-bit bitmap of
+  candidate bytes by shifting it by the haystack byte, but a byte at or above 128 shifts past the
+  width of a `u128`: debug builds panic, and release builds mask the shift to 7 bits and read bit
+  `b & 127` instead. The candidate set only ever covers ASCII, so any byte ≥ 128 is simply not a
+  candidate — a UTF-8 lead or continuation byte could therefore be mistaken for one and the skip
+  would stop early. That costs a wasted search window per false positive rather than a wrong answer,
+  which is why it went unnoticed in release; running the suite without `--release` is what surfaced
+  it. The test meant to catch it had the same shift in its own reference, so the two agreed and it
+  could not fail.
 - **A pattern's own limits no longer gate longer patterns that share its prefix.** The search gates
   each step of a walk on the limits of *the pattern ending at the current automaton node*. A walk
   there may instead be on its way to a longer pattern whose trie path runs through that node, and

@@ -158,7 +158,7 @@ impl EdgeSkip {
         let probe_end = from.saturating_add(Self::PROBE).min(hay.len());
         let mut i = from;
         while i < probe_end {
-            if (self.bits >> u32::from(hay[i])) & 1 != 0 {
+            if self.is_candidate(hay[i], case_insensitive) {
                 return i;
             }
             i += 1;
@@ -198,17 +198,31 @@ impl EdgeSkip {
     fn next_scalar(&self, hay: &[u8], from: usize, case_insensitive: bool) -> usize {
         let mut i = from;
         while i < hay.len() {
-            let b = if case_insensitive {
-                hay[i].to_ascii_lowercase()
-            } else {
-                hay[i]
-            };
-            if (self.bits >> u32::from(b)) & 1 != 0 {
+            if self.is_candidate(hay[i], case_insensitive) {
                 break;
             }
             i += 1;
         }
         i
+    }
+
+    /// Whether `b` is one of the match-starting bytes.
+    ///
+    /// `bits` only ever has bits set below 128 -- a multi-byte grapheme cannot start a match against
+    /// an ASCII candidate set -- so a byte at or above 128 is never a candidate. Testing that
+    /// *first* is not an optimisation, it is the whole point: shifting the 128-bit bitmap by a raw
+    /// byte panics on overflow in debug builds, and in release the shift amount is masked to 7 bits
+    /// so a UTF-8 lead or continuation byte reads bit `b & 127` and can be mistaken for a candidate.
+    /// That costs a wasted window per false positive rather than a wrong answer, which is why it
+    /// survived every release-mode test.
+    #[inline]
+    fn is_candidate(&self, b: u8, case_insensitive: bool) -> bool {
+        let b = if case_insensitive {
+            b.to_ascii_lowercase()
+        } else {
+            b
+        };
+        b < 128 && (self.bits >> u32::from(b)) & 1 != 0
     }
 }
 
@@ -282,6 +296,11 @@ mod tests {
     use super::EdgeSkip;
 
     /// The reference implementation: the first position whose folded byte is a candidate.
+    ///
+    /// A byte at or above 128 is never a candidate, because the bitmap only covers ASCII. The
+    /// comparison is written as a filter *before* the shift, for the same reason the real code does:
+    /// a raw `bits >> b` with `b >= 128` overflows the 128-bit shift in a debug build, and is masked
+    /// to `b & 127` in a release one. This reference had that bug too, and hid it from the test.
     fn naive(bits: u128, hay: &[u8], from: usize, case_insensitive: bool) -> usize {
         (from..hay.len())
             .find(|&i| {
@@ -290,13 +309,18 @@ mod tests {
                 } else {
                     hay[i]
                 };
-                (bits >> u32::from(b)) & 1 != 0
+                b < 128 && (bits >> u32::from(b)) & 1 != 0
             })
             .unwrap_or(hay.len())
     }
 
     fn bits_of(set: &[u8]) -> u128 {
-        set.iter().fold(0u128, |acc, &b| acc | (1u128 << b))
+        set.iter().fold(
+            0u128,
+            |acc, &b| {
+                if b < 128 { acc | (1u128 << b) } else { acc }
+            },
+        )
     }
 
     /// `EdgeSkip` has three distinct paths -- the grouped `memchr` scan, the too-many-candidates
