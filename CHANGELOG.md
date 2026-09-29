@@ -6,8 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-29
+
 ### Changed
 
+- **Three behaviour changes worth knowing about when upgrading.** Everything else below is either a
+  fix for something that was outright wrong or a pure speedup; these three can change what a program
+  *observes*, so they are called out here rather than left for the reader to assemble:
+  - *Ranking counts pattern length in grapheme clusters, not bytes.* A multi-byte pattern can now
+    rank differently against an otherwise equal candidate. ASCII is unaffected. See **Fixed**.
+  - *A pattern that sets no limits of its own is now exact*, even in a set where other patterns do
+    set limits. Previously it inherited a permissive set derived from its neighbours and could match
+    with unbounded edits. Engines that relied on that inheritance should set limits explicitly. See
+    **Fixed**.
+  - *The pre-filter now declines to run* when it cannot pay for itself, transparently falling back to
+    the plain search. Results are identical either way, so this is only observable as a difference in
+    timing. See **Performance**.
 - **Documented what the streaming search entry points actually return.** `search_stream`,
   `stream_matches` and `search_stream_parallel` resolve overlapping matches per window, as
   `sorted().non_overlapping()` does, and offer no option to ask for anything else — a match set is
@@ -208,4 +222,5 @@ Releases before 0.5.0 are not itemized here; see the
 [`Order`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/enum.Order.html
 [`Overlap`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/enum.Overlap.html
 [`SearchError`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/enum.SearchError.html
+[0.5.1]: https://github.com/kakserpom/fuzzy-aho-corasick-rs/releases/tag/v0.5.1
 [0.5.0]: https://github.com/kakserpom/fuzzy-aho-corasick-rs/releases/tag/v0.5.0
