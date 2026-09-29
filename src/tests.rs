@@ -4,6 +4,7 @@
 use crate::{
     FuzzyAhoCorasick, FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, Pattern, SearchOptions,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 fn make_engine() -> FuzzyAhoCorasick {
     FuzzyAhoCorasickBuilder::new()
@@ -2053,4 +2054,201 @@ fn streaming_matches_whole_input_on_multibyte_text() {
             whole.len()
         );
     }
+}
+
+/// The parallel streaming forms must agree with their serial counterparts across many windows.
+///
+/// The existing parallel test says so in a comment: "Even with 1 window and 8 threads, output order
+/// and bytes must be exact." With a single window there is no producer handing work to workers and
+/// no ordered reassembly — the whole concurrent part of these APIs is bypassed. Everything
+/// interesting about them lives in exactly that machinery, and it was only ever exercised with one
+/// window.
+///
+/// So: an input several windows long, a range of thread counts (including one, which must reduce to
+/// the serial path, and more threads than windows, which must not deadlock or drop work), and
+/// needles placed to straddle boundaries. The docs claim `replace_stream_parallel` is byte-identical
+/// to `replace_stream`, and that output is *ordered*, so that is asserted exactly. Matches from the
+/// parallel search are compared as a set, since their arrival order is documented as arbitrary.
+#[test]
+fn parallel_streaming_agrees_with_serial_across_many_windows() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["needle", "thistle"]);
+
+    let filler = "the quick brown fox jumps over the lazy dog. ".repeat(40);
+    let mut input = String::new();
+    let mut needles = 0usize;
+    let mut thistles = 0usize;
+    while input.len() < 900_000 {
+        input.push_str(&filler);
+        input.push_str("needle ");
+        needles += 1;
+        // A second pattern immediately after the first, so the two land adjacent and some of them
+        // straddle a window boundary depending on where the 256 KiB cut falls.
+        input.push_str("thistle");
+        thistles += 1;
+    }
+    let total = needles + thistles;
+    let bytes = input.as_bytes();
+
+    // 900 KiB over a 256 KiB window is three or four windows, so the ranges below cover
+    // "one thread, still many windows" through "far more threads than windows".
+    for threads in [1usize, 2, 3, 8, 64] {
+        // --- replace: byte-identical, and in order ---
+        let mut serial = Vec::new();
+        engine
+            .replace_stream(bytes, &mut serial, 0.8, |m| {
+                Some(if m.pattern_index == 0 { "N" } else { "T" })
+            })
+            .unwrap();
+        let mut parallel = Vec::new();
+        engine
+            .replace_stream_parallel(bytes, &mut parallel, threads, 0.8, |m| {
+                Some(if m.pattern_index == 0 { "N" } else { "T" })
+            })
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(serial.clone()).unwrap(),
+            String::from_utf8(parallel.clone()).unwrap(),
+            "replace_stream_parallel diverged from replace_stream with {threads} threads"
+        );
+        // The output must actually contain work, or the comparison is vacuous.
+        assert_eq!(
+            String::from_utf8(serial.clone())
+                .unwrap()
+                .matches('N')
+                .count(),
+            needles,
+            "the serial replace should have substituted every needle, at {threads} threads"
+        );
+
+        // --- search: same matches, order not guaranteed ---
+        let mut serial_hits: Vec<(u64, u64, usize)> = Vec::new();
+        engine
+            .search_stream(bytes, 0.8, |m| {
+                serial_hits.push((m.start, m.end, m.pattern_index));
+            })
+            .expect("reading from a slice cannot fail");
+        let mut parallel_hits: Vec<(u64, u64, usize)> = Vec::new();
+        engine
+            .search_stream_parallel(bytes, 0.8, threads, |m| {
+                parallel_hits.push((m.start, m.end, m.pattern_index));
+            })
+            .expect("reading from a slice cannot fail");
+        assert_eq!(
+            serial_hits.len(),
+            total,
+            "the serial search should have found every needle, at {threads} threads"
+        );
+        assert_eq!(
+            parallel_hits.len(),
+            total,
+            "the parallel search found {} of {total} needles with {threads} threads",
+            parallel_hits.len()
+        );
+        // No window emitted twice: matches are owned by exactly one window, so duplicates would
+        // mean a window was reprocessed or its overlap region double-counted.
+        let mut dedup = parallel_hits.clone();
+        dedup.sort_unstable();
+        dedup.dedup();
+        assert_eq!(
+            dedup.len(),
+            parallel_hits.len(),
+            "the parallel search emitted duplicate matches at {threads} threads"
+        );
+        serial_hits.sort_unstable();
+        parallel_hits.sort_unstable();
+        assert_eq!(
+            serial_hits, parallel_hits,
+            "the parallel search found a different match set at {threads} threads"
+        );
+    }
+}
+
+/// Ranking must use grapheme count, not byte count.
+///
+/// Scoring is explicitly measured in grapheme clusters -- `Pattern::grapheme_len` is what divides the
+/// penalty -- and the docs say the same: "Pattern length N, which drives scoring, is measured in
+/// grapheme clusters." The ranking comparators used `Pattern::len()`, which is documented as
+/// *bytes*. For ASCII the two agree and nobody notices; for anything else the ranking depends on how
+/// the pattern happens to be encoded rather than on what it contains.
+///
+/// It is worst in `Order::CoverageWeighted`, whose score is `similarity² × pattern.len()`. Similarity
+/// is a per-grapheme fraction, so multiplying it by a byte count mixes units: a 4-grapheme Cyrillic
+/// pattern scores as if it were twice as long as a 4-grapheme Latin one and wins every comparison
+/// against it at equal similarity. That is not a tiebreaker, it decides which match is selected.
+#[test]
+fn ranking_uses_grapheme_length_not_byte_length() {
+    // Same grapheme count (4), same similarity (1.0), different byte length.
+    let latin = "abcd"; // 4 graphemes, 4 bytes
+    let cyrillic = "\u{430}\u{431}\u{432}\u{433}"; // а б в г — 4 graphemes, 8 bytes
+    assert_eq!(
+        latin.graphemes(true).count(),
+        cyrillic.graphemes(true).count()
+    );
+    assert!(
+        cyrillic.len() > latin.len(),
+        "the fixture must differ in bytes"
+    );
+
+    // A haystack where both appear adjacent, so they compete for the same span under
+    // non-overlapping resolution and the ranking decides the winner.
+    let text = format!("{latin} {cyrillic}");
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(0))
+        .build([latin, cyrillic]);
+
+    let hits = engine
+        .search(
+            &text,
+            &SearchOptions::new()
+                .threshold(0.8)
+                .sorted()
+                .non_overlapping(),
+        )
+        .unwrap();
+    assert!(
+        !hits.is_empty(),
+        "the fixture should produce matches, got {hits:?}"
+    );
+
+    // Under any order, the first match must be the one whose *pattern* is longer in graphemes --
+    // and since they are equal in graphemes, that is decided by the documented tiebreakers
+    // (longer matched text, then earlier span) rather than by encoding.
+    let first = &hits[0];
+    let expected_first_len = 4;
+    assert_eq!(
+        first.pattern.grapheme_len,
+        expected_first_len,
+        "unexpected fixture shape: first match is {:?} at [{},{})",
+        first.pattern.as_str(),
+        first.start,
+        first.end
+    );
+
+    // The decisive check. Note `Overlap::Keep` rather than `NonOverlapping`: overlap resolution
+    // re-sorts the kept matches by `start`, which throws the ranking away, so the order can only be
+    // observed where the order survives.
+    let coverage = engine
+        .search(
+            &text,
+            &SearchOptions::new().threshold(0.8).coverage_weighted(),
+        )
+        .unwrap();
+    let winner = &coverage[0];
+    assert_eq!(
+        coverage.len(),
+        2,
+        "the fixture should produce one match per pattern, got {coverage:?}"
+    );
+    let by_bytes_longer = winner.pattern.as_str() == cyrillic;
+    assert!(
+        !by_bytes_longer,
+        "coverage weighting ranked {:?} above {:?} purely because it is longer in bytes \
+         (similarities {:?}); pattern length must be counted in graphemes",
+        winner.pattern.as_str(),
+        latin,
+        coverage.iter().map(|m| m.similarity).collect::<Vec<_>>()
+    );
 }

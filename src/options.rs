@@ -12,11 +12,14 @@ pub enum Order {
     /// No ranking — the raw best-per-span matches in no particular order (fastest).
     #[default]
     Unsorted,
-    /// Higher similarity first, then longer pattern, then longer matched text, then earlier span.
+    /// Higher similarity first, then longer pattern (in grapheme clusters), then longer matched text,
+    /// then earlier span.
     Default,
-    /// Longer pattern first, then higher similarity — favors covering more text with larger patterns.
+    /// Longer pattern first (in grapheme clusters), then higher similarity — favors covering more
+    /// text with larger patterns.
     Greedy,
-    /// By `similarity² × pattern length` — a longer good match can beat a short perfect one.
+    /// By `similarity² × pattern length` in grapheme clusters — a longer good match can beat a short
+    /// perfect one.
     CoverageWeighted,
 }
 

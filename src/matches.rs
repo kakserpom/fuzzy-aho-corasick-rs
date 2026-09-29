@@ -26,7 +26,7 @@ impl<'a> FuzzyMatches<'a> {
             right
                 .similarity
                 .total_cmp(&left.similarity)
-                .then_with(|| right.pattern.len().cmp(&left.pattern.len()))
+                .then_with(|| right.pattern.grapheme_len.cmp(&left.pattern.grapheme_len))
                 .then_with(|| right.text.len().cmp(&left.text.len()))
                 .then_with(|| left.start.cmp(&right.start))
                 // Total-order tiebreakers: `(start, end, pattern_index)` uniquely identifies a
@@ -37,7 +37,7 @@ impl<'a> FuzzyMatches<'a> {
         });
     }
 
-    /// Greedy ranking: prefers longer pattern first, then higher similarity,
+    /// Greedy ranking: prefers longer pattern first (in grapheme clusters), then higher similarity,
     /// then earlier position. Used when one wants to favor breadth of match over
     /// score tie-breaking.
     #[inline]
@@ -45,8 +45,8 @@ impl<'a> FuzzyMatches<'a> {
         self.inner.sort_unstable_by(|left, right| {
             right
                 .pattern
-                .len()
-                .cmp(&left.pattern.len())
+                .grapheme_len
+                .cmp(&left.pattern.grapheme_len)
                 .then_with(|| right.similarity.total_cmp(&left.similarity))
                 .then_with(|| left.start.cmp(&right.start))
                 // Total-order tiebreakers: `(start, end, pattern_index)` uniquely identifies a
@@ -57,17 +57,23 @@ impl<'a> FuzzyMatches<'a> {
         });
     }
 
-    /// Coverage-weighted ranking: uses `similarity² * pattern.len()` as primary criterion.
+    /// Coverage-weighted ranking: uses `similarity² * pattern.grapheme_len()` as primary criterion.
     /// This prefers matches where longer patterns match well, but heavily penalizes
     /// lower-similarity matches to avoid greedy over-matching.
     /// Useful when short high-similarity matches should not beat longer good matches.
+    ///
+    /// The length is counted in **grapheme clusters**, like the rest of the engine. Similarity is a
+    /// per-grapheme fraction, so the two have to share a unit: multiplying it by a byte count would
+    /// score a 4-grapheme Cyrillic pattern as twice the length of a 4-grapheme Latin one and hand it
+    /// every comparison at equal similarity.
     #[inline]
     pub fn coverage_weighted_sort(&mut self) {
         self.inner.sort_unstable_by(|left, right| {
             // Use similarity squared to heavily penalize lower-similarity matches
             // Use pattern length (not text length) to avoid preferring over-matched text
-            let left_score = left.similarity * left.similarity * left.pattern.len() as f32;
-            let right_score = right.similarity * right.similarity * right.pattern.len() as f32;
+            let left_score = left.similarity * left.similarity * left.pattern.grapheme_len as f32;
+            let right_score =
+                right.similarity * right.similarity * right.pattern.grapheme_len as f32;
             right_score
                 .total_cmp(&left_score)
                 .then_with(|| right.similarity.total_cmp(&left.similarity))

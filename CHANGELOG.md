@@ -18,6 +18,18 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **Match ranking counts pattern length in grapheme clusters, not bytes.** Ranking used
+  `Pattern::len()`, which is documented as a *byte* count, while scoring uses `grapheme_len` — the
+  crate's stated unit throughout ("Pattern length N, which drives scoring, is measured in grapheme
+  clusters"). For ASCII the two agree, so the inconsistency was invisible; for anything else the
+  ranking depended on how a pattern happened to be encoded rather than on what it contains. It was
+  most consequential in `Order::CoverageWeighted`, whose score is `similarity² × pattern length`:
+  similarity is a per-grapheme fraction, so multiplying by bytes scores a 4-grapheme Cyrillic
+  pattern as twice the length of a 4-grapheme Latin one and hands it every comparison at equal
+  similarity. `Order::Default`, `Order::Greedy` and the tiebreakers are now consistent, and the
+  relevant doc comments say which unit is meant. **This changes ranking order for multi-byte
+  patterns**; ASCII result sets are unaffected. (Note that `Overlap::NonOverlapping` re-sorts the kept
+  matches by `start`, so the ranking decides *which* matches survive, not their output order.)
 - **The unstartable-haystack skip no longer misreads non-ASCII bytes.** It probes a 128-bit bitmap of
   candidate bytes by shifting it by the haystack byte, but a byte at or above 128 shifts past the
   width of a `u128`: debug builds panic, and release builds mask the shift to 7 bits and read bit
