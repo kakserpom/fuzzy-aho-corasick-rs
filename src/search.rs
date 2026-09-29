@@ -881,7 +881,11 @@ impl FuzzyAhoCorasick {
         // to assume those writes might alias the engine, so each access would otherwise be a
         // re-load from memory — once per expanded state, for a handful of fields the loop reads
         // repeatedly. Binding them up front keeps them in registers.
-        let nodes = &self.nodes;
+        //
+        // Named `trie` rather than `nodes` because the debug-only `notes` bindings below shadow
+        // closely enough to trip `clippy::similar_names`, and `trie` is what the automaton is
+        // called everywhere else anyway.
+        let trie = &self.nodes;
         let pen = &self.penalties;
         let similarity = self.similarity;
 
@@ -899,7 +903,7 @@ impl FuzzyAhoCorasick {
                 let mut second = 0u128;
                 let mut child_output = false;
                 for edge in &root.edges {
-                    let child = &nodes[edge.next() as usize];
+                    let child = &trie[edge.next() as usize];
                     let child_bits = child.single_char_edge_bits();
                     second |= child_bits;
                     first |= child_bits;
@@ -1018,7 +1022,7 @@ impl FuzzyAhoCorasick {
                     continue;
                 }
 
-                let node_ref = &nodes[node as usize];
+                let node_ref = &trie[node as usize];
 
                 // Early pruning against this node's own (tight) ceiling: a state whose penalties
                 // exceed what the longest/heaviest pattern still reachable from here allows cannot
@@ -1240,7 +1244,7 @@ impl FuzzyAhoCorasick {
                             // only do exact match and output check. If the child has no
                             // output and no edge matching text[j+1], skip the push.
                             if is_last_edit {
-                                let child = &nodes[next_node as usize];
+                                let child = &trie[next_node as usize];
                                 if child.output.is_empty()
                                     && next_ch_opt
                                         .is_none_or(|ch| !child.has_matching_edge_char(ch))
@@ -1359,7 +1363,7 @@ impl FuzzyAhoCorasick {
                             node_ref
                                 .find_transition_char_no_mappings(next_ch)
                                 .and_then(|x| {
-                                    nodes[x as usize].find_transition_char_no_mappings(current_ch)
+                                    trie[x as usize].find_transition_char_no_mappings(current_ch)
                                 })
                         } && (MAX_EDITS_FAST != 255
                             || self.within_limits_swap_ahead(
