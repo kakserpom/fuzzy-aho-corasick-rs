@@ -238,7 +238,19 @@ pub(crate) struct AsciiGraphemes<'a> {
 impl<'a> AsciiGraphemes<'a> {
     /// `skip` is the automaton's precomputed set of match-starting bytes (see [`EdgeSkip::new`]),
     /// so building the storage costs one copy regardless of haystack or pattern count.
+    ///
+    /// The haystack must be all-ASCII. That is what makes one byte one grapheme here, and it is what
+    /// keeps every accessor inside `ascii_byte_to_str`'s single-byte domain — the precondition of
+    /// the crate's only `unsafe` block. Callers establish it with `str::is_ascii` before getting
+    /// here; this assertion localises the invariant to the type that actually depends on it, so a
+    /// future caller cannot quietly break it and only find out as a bounds panic in a release build.
+    /// Debug-only, so it costs nothing in release — and it duplicates a check the caller has already
+    /// made rather than adding a new scan.
     pub(crate) fn new(haystack: &'a str, case_insensitive: bool, skip: EdgeSkip) -> Self {
+        debug_assert!(
+            haystack.is_ascii(),
+            "AsciiGraphemes requires an all-ASCII haystack"
+        );
         Self {
             bytes: haystack.as_bytes(),
             case_insensitive,
@@ -399,7 +411,40 @@ mod tests {
 
 #[cfg(test)]
 mod boundary_tests {
+    use super::{ASCII_BYTES, ascii_byte_to_str};
     use unicode_segmentation::UnicodeSegmentation;
+
+    /// The one `unsafe` block in the crate: `from_utf8_unchecked` over a slice of a static table.
+    /// Its contract is that every byte it accepts is a single valid UTF-8 character, so the result
+    /// is a one-character `&str` equal to that byte.
+    ///
+    /// Checked for the whole domain rather than a few samples, because the table is indexed by raw
+    /// byte and a single wrong entry would be a silently wrong character in every search that used
+    /// it. `Miri` in CI covers the aliasing and validity rules; this covers the *values*, which
+    /// Miri cannot see.
+    #[test]
+    fn ascii_byte_table_yields_the_right_character() {
+        for b in 0u8..128 {
+            let s = ascii_byte_to_str(b);
+            assert_eq!(s.len(), 1, "byte {b} produced a {}-byte string", s.len());
+            assert_eq!(
+                s.as_bytes(),
+                &[b],
+                "byte {b} produced the wrong string {s:?}"
+            );
+            assert_eq!(
+                s.chars().next(),
+                Some(b as char),
+                "byte {b} produced the wrong char"
+            );
+            // And the checked version agrees, which is what makes the unchecked call sound.
+            assert_eq!(s, std::str::from_utf8(&[b]).unwrap());
+        }
+        assert_eq!(ASCII_BYTES.len(), 128);
+        for (i, &b) in ASCII_BYTES.iter().enumerate() {
+            assert_eq!(b as usize, i, "ASCII_BYTES[{i}] holds {b}");
+        }
+    }
 
     /// The streaming commit boundary is computed *backwards* from the end of a window:
     /// `text.grapheme_indices(true).rev().nth(overlap - 1)` is the byte offset where the retained

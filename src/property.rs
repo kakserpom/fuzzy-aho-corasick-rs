@@ -1097,3 +1097,183 @@ fn prefilter_agrees_with_plain_search() {
         "a filter was only built for {active} of {CASES} cases, so this proved little"
     );
 }
+
+/// Ranking and overlap resolution are presentational; the found-match set may not depend on them.
+///
+/// The `Order`/`Overlap` matrix is twelve combinations with intricate tie-breaking, and one real bug
+/// lived in it (ranking counted pattern length in bytes rather than graphemes). What that bug had in
+/// common with any other is that it changed *which* match was selected, so the invariant worth
+/// sweeping is the strong one:
+///
+/// * the set of matches found is **identical across all four orders** — ranking may only reorder,
+///   never add or drop. (`Overlap::Keep` is what makes this observable: the other two resolve
+///   overlaps, which selects.)
+/// * `NonOverlapping` and `NonOverlappingUnique` are subsets of that set — resolving may only drop.
+/// * `NonOverlapping` spans are pairwise disjoint, and `NonOverlappingUnique` additionally keeps at
+///   most one match per pattern identity, where identity is `custom_unique_id` when set and the
+///   pattern index otherwise.
+/// * every reported match meets the threshold and has a valid span on the haystack.
+/// * searching twice gives identical results, in every combination.
+///
+/// Patterns carry a shared `custom_unique_id` so `NonOverlappingUnique` has something real to
+/// collapse, and some are multi-byte so length is counted in the unit the engine uses.
+#[test]
+fn order_and_overlap_change_only_presentation() {
+    const ALPHABET: &[char] = &['a', 'b', 'c', 'd', 'x', 'y'];
+    const CASES: u32 = 300;
+
+    let fx = Fixture::new();
+    let mut rng = Rng(0x0A0E_0A0E_1234_5678);
+    let mut with_shared_identity = 0usize;
+
+    for case in 0..CASES {
+        let max_edits = rng.below(3) as u8;
+        let threshold = [0.0f32, 0.3, 0.6, 0.85][rng.below(4)];
+        let n_patterns = 2 + rng.below(3);
+        let word_len = 1 + rng.below(4);
+
+        let patterns: Vec<String> = (0..n_patterns)
+            .map(|_| seq(ALPHABET, &mut rng, word_len))
+            .collect();
+        // Give every third pattern a shared identity, so `NonOverlappingUnique` has distinct
+        // patterns competing for one slot.
+        let identities: Vec<Option<usize>> = (0..n_patterns)
+            .map(|i| if i % 3 == 2 { Some(7) } else { None })
+            .collect();
+        if identities.iter().any(Option::is_some) {
+            with_shared_identity += 1;
+        }
+
+        let text: String = (0..(3 + rng.below(8)))
+            .map(|_| ALPHABET[rng.below(ALPHABET.len())])
+            .collect();
+
+        let built: Vec<Pattern> = patterns
+            .iter()
+            .zip(&identities)
+            .map(|(p, id)| {
+                let pat = Pattern::from(p.as_str());
+                match id {
+                    Some(i) => pat.custom_unique_id(*i),
+                    None => pat,
+                }
+            })
+            .collect();
+        let engine = FuzzyAhoCorasickBuilder::new()
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone())
+            .fuzzy(FuzzyLimits::new().edits(max_edits))
+            .build(built);
+
+        // `Overlap::Keep` under each order: this is where the raw found set is observable.
+        let orders: [(&str, SearchOptions); 4] = [
+            ("unsorted", SearchOptions::new().threshold(threshold)),
+            (
+                "default",
+                SearchOptions::new().threshold(threshold).sorted(),
+            ),
+            ("greedy", SearchOptions::new().threshold(threshold).greedy()),
+            (
+                "coverage_weighted",
+                SearchOptions::new()
+                    .threshold(threshold)
+                    .coverage_weighted(),
+            ),
+        ];
+
+        // Similarity goes in as its bit pattern so the key is `Ord`; the same float has one bit
+        // pattern, and a NaN would never sort equal to a real score anyway.
+        let key =
+            |m: &crate::FuzzyMatch<'_>| (m.start, m.end, m.pattern_index, m.similarity.to_bits());
+        let mut baseline: Option<Vec<_>> = None;
+        for (name, opts) in orders {
+            let hits = engine.search(&text, &opts).unwrap();
+            // Determinism: the same call twice must give the same answer.
+            let again = engine.search(&text, &opts).unwrap();
+            assert_eq!(
+                hits.inner.iter().map(key).collect::<Vec<_>>(),
+                again.inner.iter().map(key).collect::<Vec<_>>(),
+                "case {case}: {name} is not deterministic"
+            );
+            for m in hits.iter() {
+                assert!(
+                    m.similarity >= threshold - 1e-6,
+                    "case {case}: {name} reported similarity {} below the threshold {threshold}",
+                    m.similarity
+                );
+                assert!(
+                    m.start <= m.end && m.end <= text.len(),
+                    "case {case}: {name} reported an out-of-range span [{},{}) for {text:?}",
+                    m.start,
+                    m.end
+                );
+            }
+            // Compare as a *set*: `Unsorted` returns matches in an unspecified order and `Default`
+            // returns them ranked, so the sequences legitimately differ even when the found set is
+            // identical. That difference is the whole point of `Order`.
+            let mut found: Vec<_> = hits.inner.iter().map(key).collect();
+            found.sort_unstable();
+            match &baseline {
+                None => baseline = Some(found),
+                Some(first) => assert_eq!(
+                    *first, found,
+                    "case {case}: order {name} changed *which* matches were found, not just their \
+                     order ({patterns:?} text={text:?})"
+                ),
+            }
+        }
+        let baseline = baseline.expect("at least one order is always run");
+
+        // Overlap resolution may only drop, and must respect its two contracts.
+        for (name, opts) in [
+            (
+                "non_overlapping",
+                SearchOptions::new()
+                    .threshold(threshold)
+                    .sorted()
+                    .non_overlapping(),
+            ),
+            (
+                "non_overlapping_unique",
+                SearchOptions::new()
+                    .threshold(threshold)
+                    .sorted()
+                    .non_overlapping_unique(),
+            ),
+        ] {
+            let hits = engine.search(&text, &opts).unwrap();
+            let got: Vec<_> = hits.inner.iter().map(key).collect();
+            for m in &got {
+                assert!(
+                    baseline.contains(m),
+                    "case {case}: {name} reported {m:?}, which no order found under Keep"
+                );
+            }
+            // Pairwise disjoint.
+            let mut spans: Vec<(usize, usize)> = hits.iter().map(|m| (m.start, m.end)).collect();
+            spans.sort_unstable();
+            for pair in spans.windows(2) {
+                assert!(
+                    pair[0].1 <= pair[1].0,
+                    "case {case}: {name} left overlapping spans {pair:?} in {text:?} \
+                     ({patterns:?})"
+                );
+            }
+            if name == "non_overlapping_unique" {
+                let mut seen = std::collections::HashSet::new();
+                for m in hits.iter() {
+                    let id = m.pattern.custom_unique_id.unwrap_or(m.pattern_index);
+                    assert!(
+                        seen.insert(id),
+                        "case {case}: {name} kept two matches for identity {id}"
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        with_shared_identity > CASES as usize / 2,
+        "only {with_shared_identity} of {CASES} cases had a shared custom_unique_id, so \
+         non_overlapping_unique was barely exercised"
+    );
+}

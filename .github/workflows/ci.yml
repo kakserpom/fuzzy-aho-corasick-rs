@@ -39,7 +39,17 @@ jobs:
       # tiny tests that still exercise the `unsafe` grapheme paths (ASCII + Unicode
       # `from_utf8_unchecked`) under fuzzy search — enough to catch UB there. Doctests aren't run
       # under Miri.
-      - run: cargo miri test -- exact_match extra_letter missing_letter substitution swap case_insensitive unicode
+      #
+      # The two table/boundary tests are here for the same reason and are cheap enough not to matter:
+      # `ascii_byte_table` walks the whole input domain of the crate's only `unsafe` block, and
+      # `reverse_grapheme_iteration` checks the backwards grapheme walk the streaming commit
+      # boundary depends on. Neither runs a search, so neither is affected by Miri's slowdown. The
+      # heavier property sweeps are deliberately left out — they would blow the timeout, and the code
+      # they exercise is already covered here through the search tests above.
+      - run: >-
+          cargo miri test --
+          exact_match extra_letter missing_letter substitution swap
+          case_insensitive unicode ascii_byte_table reverse_grapheme_iteration
 
   clippy:
     name: Clippy
