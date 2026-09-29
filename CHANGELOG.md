@@ -81,6 +81,40 @@ All notable changes to this project are documented here. The format is based on
 
 ### Performance
 
+- **The pre-filter's scan was ~6x slower than it should have been, which made the whole feature a net
+  loss; it is now a large win.** The q-gram table indexed on the *raw low bits* of the packed block
+  key. Symbol ids are small and densely numbered from 1, so a 3-gram key
+  (`id0 | id1 << 8 | id2 << 16`) against a 256-slot table was indexed by `id0` alone, and every block
+  starting with the same symbol shared one probe chain. Real text is exactly the case that breaks it:
+  on a corpus with a handful of distinct leading graphemes, around a hundred blocks collapsed into a
+  few chains, and since almost every lookup is a *miss* — and a miss must walk its chain to an empty
+  slot — the scan spent its time on dependent loads. Isolated at 24 patterns, the scan cost **~60 ns
+  per grapheme against ~40 ns for the entire plain fuzzy search it exists to accelerate**. Mixing the
+  key with a golden-ratio multiply first drops it to **~9.6 ns**, a 6x improvement.
+
+  This is why the pre-filter has been reading as a loss. Paired against a plain search on identical
+  data, both lanes timed back to back in one process, median of 21 reps — it was a *net loss almost
+  everywhere*, including the 4-pattern case its own documentation cites as the win:
+
+  | shape | before | after |
+  |---|---|---|
+  | 8 patterns / sparse 96K | 1.63 | **0.18** |
+  | 12 patterns / sparse 96K | 1.54 | **0.17** |
+  | 4 patterns / prose 96K | 1.50 | **0.34** |
+  | 30 patterns / long patterns | 1.18 | **0.066** |
+  | 500 patterns / sparse 96K | 1.12 | **1.00** |
+  | 30 patterns / short patterns | 1.39 | 1.03 |
+
+  (ratio of pre-filtered to plain search; below 1.0 is the pre-filter winning. Results were identical
+  to a plain search throughout — this was never a correctness problem, only a cost one.) Cumulative
+  against the tree before the dedup work, median of 9 paired A/B rounds: 4 patterns on a sparse
+  250 KiB corpus **0.38**, 500 patterns **0.57**.
+
+  Answers are unaffected — a badly distributed slot still finds every key. What was untested was the
+  distribution itself, and it is now
+  `prefilter::tests::qgram_slots_depend_on_the_whole_block`, which fails on the old hash with "only 1
+  of 100 blocks got distinct slots".
+
 - **The fuzzy search is ~1.7x faster on a many-pattern corpus, and no slower anywhere.** The
   per-window state-dedup table is the hottest structure in the search — one hash probe per expanded
   state, ~36% of the fuzzy path on 500 patterns — and at a one-edit budget it is not needed, so it is

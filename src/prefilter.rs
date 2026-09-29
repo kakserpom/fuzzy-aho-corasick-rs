@@ -455,6 +455,26 @@ struct QGramSet {
     slots: Vec<u64>,
 }
 
+/// Pick a slot for `key`. The key is mixed first, and it has to be.
+///
+/// The packed q-gram key is not well distributed in its low bits, which is what `key & mask`
+/// silently assumes. Symbol ids are small and densely numbered from 1, so a 3-gram key
+/// (`id0 | id1 << 8 | id2 << 16`) against a 256-slot table is indexed by `id0` *alone*: every block
+/// that starts with the same symbol lands in the same probe chain. On a corpus with few distinct
+/// leading letters -- which is exactly the sparse, non-matching text a pre-filter is for -- that put
+/// around a hundred blocks into a handful of chains, and because almost every lookup is a *miss*,
+/// and a miss has to walk its chain all the way to an empty slot, the scan spent its time on chains
+/// of dependent loads instead of on filtering.
+///
+/// Measured on a 24-pattern / 192 KiB sparse corpus, the scan cost ~60 ns per grapheme -- more than
+/// the entire plain fuzzy search it exists to accelerate, which is why the pre-filter read as a
+/// net loss almost everywhere. Taking the high bits of a golden-ratio multiply makes the slot depend
+/// on all `q` symbols, and the scan drops to a couple of ns per grapheme.
+#[inline]
+fn slot_of(key: u64, mask: usize) -> usize {
+    ((key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize) & mask
+}
+
 impl QGramSet {
     fn with_capacity(n: usize) -> Self {
         // Power of two, at least 2x the entries so linear probing stays short.
@@ -468,7 +488,7 @@ impl QGramSet {
     #[inline]
     fn insert(&mut self, key: u64) {
         debug_assert!(key != 0, "0 is the empty sentinel");
-        let mut i = (key as usize) & self.mask;
+        let mut i = slot_of(key, self.mask);
         loop {
             let slot = self.slots[i];
             if slot == 0 {
@@ -484,7 +504,7 @@ impl QGramSet {
 
     #[inline]
     fn contains(&self, key: u64) -> bool {
-        let mut i = (key as usize) & self.mask;
+        let mut i = slot_of(key, self.mask);
         loop {
             let slot = self.slots[i];
             if slot == 0 {
@@ -631,6 +651,7 @@ fn qgram_windows(
 
 #[cfg(test)]
 mod tests {
+    use super::{QGramSet, slot_of};
     use crate::{FuzzyAhoCorasickBuilder, FuzzyLimits, FuzzyPenalties, SearchOptions};
 
     /// Deterministic xorshift so the fuzz is reproducible.
@@ -753,5 +774,73 @@ mod tests {
             .fuzzy(FuzzyLimits::new().edits(1))
             .build(["caesar"]);
         assert!(engine.with_prefilter().is_active());
+    }
+
+    /// The q-gram slot must depend on the whole block, not just its low bytes.
+    ///
+    /// This is a performance property, not a correctness one -- a badly distributed slot still
+    /// returns the right answer -- but it is worth a test because the cost was invisible in the
+    /// output and severe in the time. Symbol ids are small and densely numbered from 1, so packing a
+    /// 3-gram as `id0 | id1 << 8 | id2 << 16` and indexing a 256-slot table on the raw low bits
+    /// selects on `id0` alone. Every block that began with the same symbol then shared one probe
+    /// chain, and since a miss has to walk its chain to an empty slot, real text spent its time on
+    /// dependent loads: the scan measured ~60 ns per grapheme, more than the entire plain search it
+    /// exists to accelerate, which made the pre-filter a net loss in every shape measured.
+    ///
+    /// The keys below are the adversarial case -- a hundred blocks that all share their lowest byte,
+    /// which is what a corpus with few distinct leading graphemes produces. Indexing on the low bits
+    /// puts all hundred in one chain; mixing first spreads them.
+    #[test]
+    fn qgram_slots_depend_on_the_whole_block() {
+        // Shared low byte, distinct bytes above it.
+        let keys: Vec<u64> = (1..=100u64).map(|k| (k << 8) | 7).collect();
+
+        let mut set = QGramSet::with_capacity(keys.len());
+        for &k in &keys {
+            set.insert(k);
+        }
+
+        // Correctness first: the table still answers correctly for every key, hit or miss.
+        for &k in &keys {
+            assert!(set.contains(k), "inserted key {k} was not found");
+        }
+        assert!(
+            !set.contains(0),
+            "the empty sentinel must never be reported as present"
+        );
+        assert!(
+            !set.contains((101 << 8) | 7),
+            "an absent key was reported present"
+        );
+
+        // Now the property: the starting slots have to be spread out.
+        let distinct: std::collections::HashSet<usize> =
+            keys.iter().map(|&k| slot_of(k, set.mask)).collect();
+        assert!(
+            distinct.len() * 2 >= keys.len(),
+            "only {} of {} blocks got distinct slots -- the slot is still being taken from the low \
+             bits, so blocks sharing a leading symbol collide into one probe chain",
+            distinct.len(),
+            keys.len()
+        );
+
+        // A miss must not have to walk a long chain, which is what made the scan slow.
+        let longest = (0..4096u64)
+            .map(|t| (t << 16) | (t & 0xFF))
+            .map(|k| {
+                let mut i = slot_of(k, set.mask);
+                let mut steps = 0;
+                while set.slots[i] != 0 {
+                    steps += 1;
+                    i = (i + 1) & set.mask;
+                }
+                steps
+            })
+            .max()
+            .unwrap();
+        assert!(
+            longest <= 8,
+            "a miss walked {longest} slots; a well-distributed table at this load factor stays short"
+        );
     }
 }
