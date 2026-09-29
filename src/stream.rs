@@ -299,6 +299,16 @@ impl FuzzyAhoCorasick {
     /// Search a byte stream of any size, invoking `on_match` for each match with absolute offsets.
     /// Single-threaded. Returns the total number of bytes read from `reader`.
     ///
+    /// # Which matches you get
+    ///
+    /// Overlapping matches are resolved per window, exactly as
+    /// `SearchOptions::new().sorted().non_overlapping()` resolves them, and there is no option to
+    /// ask for anything else: a match set is handed to the caller in pieces, and resolving overlaps
+    /// is what makes the pieces disjoint. So this does **not** return what
+    /// [`search`](Self::search) returns under the default
+    /// `Order::Unsorted` + `Overlap::Keep` — that returns every overlapping match, this returns a
+    /// disjoint subset. To compare against a whole-input search, use the same options.
+    ///
     /// ```
     /// use fuzzy_aho_corasick::{FuzzyAhoCorasickBuilder, FuzzyLimits};
     /// let engine = FuzzyAhoCorasickBuilder::new()
@@ -350,6 +360,15 @@ impl FuzzyAhoCorasick {
     /// assert_eq!(found.len(), 2);
     /// assert!(found[0].start < found[1].start);
     /// ```
+    ///
+    /// # Which matches you get
+    ///
+    /// Overlapping matches are resolved per window, exactly as
+    /// `SearchOptions::new().sorted().non_overlapping()` resolves them, and there is no option to
+    /// ask for anything else. So this does **not** return what [`search`](Self::search) returns
+    /// under the default `Order::Unsorted` + `Overlap::Keep` — that returns every overlapping match,
+    /// this returns a disjoint subset. To compare against a whole-input search, use the same options.
+    ///
     pub fn stream_matches<R: Read>(&self, reader: R, threshold: f32) -> StreamMatches<'_, R> {
         StreamMatches {
             engine: self,
@@ -368,6 +387,14 @@ impl FuzzyAhoCorasick {
     ///
     /// `threads` is clamped to at least 1; pass
     /// [`std::thread::available_parallelism`] for "all cores".
+    ///
+    /// # Which matches you get
+    ///
+    /// Overlapping matches are resolved per window, exactly as
+    /// `SearchOptions::new().sorted().non_overlapping()` resolves them, and there is no option to
+    /// ask for anything else. So this does **not** return what [`search`](Self::search) returns
+    /// under the default `Order::Unsorted` + `Overlap::Keep` — that returns every overlapping match,
+    /// this returns a disjoint subset. To compare against a whole-input search, use the same options.
     ///
     /// # Errors
     /// Propagates any [`io::Error`] from `reader`.

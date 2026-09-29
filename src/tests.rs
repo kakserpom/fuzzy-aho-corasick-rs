@@ -1967,3 +1967,90 @@ fn suffix_pattern_is_scored_on_its_own_alignment() {
         );
     }
 }
+
+/// Streaming must return exactly the whole-input matches, once each, for multi-grapheme text.
+///
+/// The existing streaming test uses one pattern and ASCII filler that cannot fuzzy-match it, so
+/// per-window and whole-input selection agree by construction. This exercises the parts that make
+/// windowing non-trivial and that the above sidesteps:
+///
+/// * the window is a *byte* target but the retained overlap is counted in *graphemes*, so with
+///   multi-byte clusters a 256 KiB window holds far fewer than 256 KiB graphemes and the commit
+///   boundary is pushed back by byte amount, not grapheme count;
+/// * several patterns of different lengths, so the overlap is set by the longest and the shorter
+///   ones must not be split either;
+/// * a needle straddling a window boundary, which is the whole reason the overlap exists.
+///
+/// Both orderings that are supposed to agree with a whole-input search are checked, and each match
+/// must appear exactly once -- a duplicated or dropped boundary match is the characteristic failure
+/// here, and it is invisible unless the input is larger than one window.
+#[test]
+fn streaming_matches_whole_input_on_multibyte_text() {
+    let engine = FuzzyAhoCorasickBuilder::new()
+        .fuzzy(FuzzyLimits::new().edits(1))
+        .case_insensitive(true)
+        .build(["naïve", "café", "straße"]);
+
+    // Multi-byte clusters throughout, so bytes and graphemes differ by a wide margin, with the
+    // needles separated by filler that cannot fuzzy-match any of them.
+    let filler = "the quick bröwn föx jumps ovér the lazy dög. ".repeat(40);
+    let mut input = String::new();
+    let mut expected = 0usize;
+    while input.len() < 700_000 {
+        input.push_str(&filler);
+        input.push_str("Naïve Café ");
+        input.push_str(&filler);
+        input.push_str("STRASSE ");
+        expected += 2;
+    }
+
+    // Streaming selects non-overlapping matches per window and offers no option to ask for
+    // anything else -- a match set is handed to the caller in pieces, and overlap resolution is
+    // what makes the pieces disjoint. So the yardstick is the whole-input search under those same
+    // options, not the default `Unsorted + Keep` primitive.
+    let opts = SearchOptions::new()
+        .threshold(0.8)
+        .sorted()
+        .non_overlapping();
+    {
+        let mut whole: Vec<(u64, u64, usize)> = engine
+            .search(&input, &opts)
+            .unwrap()
+            .iter()
+            .map(|m| (m.start as u64, m.end as u64, m.pattern_index))
+            .collect();
+        whole.sort_unstable();
+        assert!(
+            whole.len() >= expected,
+            "the fixture should contain at least {expected} matches, found {}",
+            whole.len()
+        );
+
+        // The iterator form: each match exactly once, at absolute offsets.
+        let mut streamed: Vec<(u64, u64, usize)> = engine
+            .stream_matches(input.as_bytes(), 0.8)
+            .map(|m| {
+                let m = m.expect("reading from a slice cannot fail");
+                (m.start, m.end, m.pattern_index)
+            })
+            .collect();
+        streamed.sort_unstable();
+
+        // Every match exactly once: a duplicate or a gap means the boundary logic dropped or
+        // re-emitted one.
+        let mut dedup = streamed.clone();
+        dedup.dedup();
+        assert_eq!(
+            dedup.len(),
+            streamed.len(),
+            "streaming reported duplicate matches: {streamed:?}"
+        );
+        assert_eq!(
+            streamed,
+            whole,
+            "streaming disagrees with a whole-input search ({} vs {} matches)",
+            streamed.len(),
+            whole.len()
+        );
+    }
+}

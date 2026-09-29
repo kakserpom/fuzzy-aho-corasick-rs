@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Documented what the streaming search entry points actually return.** `search_stream`,
+  `stream_matches` and `search_stream_parallel` resolve overlapping matches per window, as
+  `sorted().non_overlapping()` does, and offer no option to ask for anything else — a match set is
+  handed to the caller in pieces, and resolving overlaps is what makes those pieces disjoint. That
+  was not written down anywhere, so comparing their output against `search` under the default
+  `Unsorted + Keep` options — which returns every overlapping match — looks like a dropped-match bug
+  when it is in fact the intended selection. All three doc comments now say so.
+
 ### Fixed
 
 - **The unstartable-haystack skip no longer misreads non-ASCII bytes.** It probes a 128-bit bitmap of

@@ -396,3 +396,72 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod boundary_tests {
+    use unicode_segmentation::UnicodeSegmentation;
+
+    /// The streaming commit boundary is computed *backwards* from the end of a window:
+    /// `text.grapheme_indices(true).rev().nth(overlap - 1)` is the byte offset where the retained
+    /// overlap begins, and everything before it is committed.
+    ///
+    /// That leans entirely on `GraphemeIndices`' `DoubleEndedIterator` impl agreeing with forward
+    /// iteration, for every shape of input. If it ever disagrees, the window commits the wrong
+    /// number of bytes and a match spanning a boundary is silently lost -- with no local symptom,
+    /// because each window in isolation is searched perfectly. unicode-segmentation 1.13 backs
+    /// `rev()` on this type, and the streaming tests only ever feed it ASCII, so nothing else in the
+    /// suite covers it.
+    #[test]
+    fn reverse_grapheme_iteration_agrees_with_forward() {
+        // Shapes that make a backwards scan non-trivial: combining marks, Hangul Jamo, ZWJ emoji,
+        // regional indicators, CRLF, and text that is one cluster long.
+        let samples: &[&str] = &[
+            "",
+            "a",
+            "abc",
+            "ab\u{301}c",
+            "\u{e9}",
+            "e\u{301}",
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} tail",
+            "\u{1F1EC}\u{1F1E7}\u{1F1EC}\u{1F1E7} tail",
+            "\u{1112}\u{1161}\u{11AB}\u{1100}\u{1161} tail",
+            "line one\r\nline two",
+            "caf\u{e9} \u{FB01} \u{DF} \u{AC00} end",
+            "\u{1F469}\u{1F3FD}",
+            "x\u{0301}\u{0302}\u{0303}",
+        ];
+
+        for text in samples {
+            let count = text.graphemes(true).count();
+            // The empty string has no grapheme to anchor either scan, and both return `None`, so it
+            // is checked once here rather than through a subtraction that would underflow.
+            if count == 0 {
+                assert_eq!(
+                    text.grapheme_indices(true).next_back(),
+                    None,
+                    "an empty string should yield no backwards grapheme"
+                );
+                continue;
+            }
+            // Every possible retained-overlap size, from 1 grapheme up to the whole string.
+            for overlap in 1..=count {
+                let backwards = text
+                    .grapheme_indices(true)
+                    .rev()
+                    .nth(overlap - 1)
+                    .map(|(off, _)| off);
+                // The same thing computed forwards: skip the last `overlap` graphemes and take the
+                // offset of the one before them.
+                let forwards = text
+                    .grapheme_indices(true)
+                    .nth(count - overlap)
+                    .map(|(off, _)| off);
+                assert_eq!(
+                    backwards, forwards,
+                    "text {text:?}: backwards scan for overlap {overlap} of {count} graphemes \
+                     disagrees with the forward scan"
+                );
+            }
+        }
+    }
+}
