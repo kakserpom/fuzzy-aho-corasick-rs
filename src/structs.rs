@@ -167,7 +167,10 @@ pub type NumEdits = u8;
 pub(crate) struct State {
     pub(crate) node: u32,
     pub(crate) j: u32,
-    pub(crate) matched_start: u32,
+    /// End of the matched span. The *start* is not carried: it is always the current window's start
+    /// position, so it is the same for every state in a window and is held in the search loop
+    /// instead. Shrinking `State` matters because the BFS writes and reads one of these per
+    /// transition.
     pub(crate) matched_end: u32,
     pub(crate) penalties: f32,
     pub(crate) edits: NumEdits,

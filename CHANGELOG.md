@@ -86,10 +86,16 @@ All notable changes to this project are documented here. The format is based on
   state, ~36% of the fuzzy path on 500 patterns — and at a one-edit budget it is not needed, so it is
   now folded away at compile time the way it already was for an exact search. Median of 9 paired A/B
   rounds, instrument self-consistency median 1.00 / IQR 0.006:
-  - 500 patterns, one edit: **0.60** (1.7x)
-  - 200 patterns, sorted + non-overlapping: **0.71** (1.4x)
-  - 4 patterns, one edit: **0.90** (1.1x)
+  - 500 patterns, one edit: **0.56** (1.8x)
+  - 200 patterns, sorted + non-overlapping: **0.66** (1.5x)
+  - 4 patterns, one edit: **0.91** (1.1x)
   - exact search, and the Unicode path: unchanged
+
+  The same invariant, applied to `State` rather than to the dedup key, removes a field: the matched
+  span's *start* is always the current window's start, so it is the same for every state in a window
+  and now lives in the search loop instead of being written and read on every BFS transition. That
+  takes `State` from 28 to 24 bytes, and hoists the span's start byte offset out of the per-state
+  report path entirely. Worth about a further 7% on the many-pattern cases.
 
   Two things make this safe, and they are different things. Collapsing duplicate states is a *pure
   optimisation* — two states agreeing on node, span and per-type edit counts have identical futures,

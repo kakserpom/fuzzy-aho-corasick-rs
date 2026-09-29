@@ -1009,10 +1009,13 @@ impl FuzzyAhoCorasick {
                 visited.next_window();
             }
             let start = start as u32;
+            // Every state in this window starts its span here, so the span's start byte offset is
+            // fixed for the window: computed once instead of per reporting state. The old code
+            // carried a `matched_start` field in `State` purely to be able to recompute this.
+            let start_byte = graphemes.gs_byte_offset(start as usize);
             queue.push(State {
                 node: 0,
                 j: start,
-                matched_start: start,
                 matched_end: start,
                 penalties: 0.,
                 edits: 0,
@@ -1039,7 +1042,6 @@ impl FuzzyAhoCorasick {
                 let State {
                     node,
                     j,
-                    matched_start,
                     matched_end,
                     penalties,
                     edits,
@@ -1112,14 +1114,9 @@ impl FuzzyAhoCorasick {
                     let deletions = ((packed_counts >> 8) & 0xFF) as NumEdits;
                     let substitutions = ((packed_counts >> 16) & 0xFF) as NumEdits;
                     let swaps = ((packed_counts >> 24) & 0xFF) as NumEdits;
-                    // The matched span (and hence its byte offsets and text slice) is a property of
-                    // the state, not of the individual pattern ending here, so compute it once for
-                    // the whole `output` list instead of per pattern.
-                    let start_byte = if (matched_start as usize) < text_chars.len() {
-                        graphemes.gs_byte_offset(matched_start as usize)
-                    } else {
-                        0
-                    };
+                    // `start_byte` is fixed for the window (see above); the end still depends on
+                    // the state, and both are properties of the state rather than of the individual
+                    // pattern ending here, so each is computed once for the whole `output` list.
                     let end_byte = if (matched_end as usize) < text_chars.len() {
                         graphemes.gs_byte_offset(matched_end as usize)
                     } else {
@@ -1214,23 +1211,11 @@ impl FuzzyAhoCorasick {
                     } else {
                         None
                     };
-                    let matched_start_next = if matched_end == matched_start {
-                        j
-                    } else {
-                        matched_start
-                    };
-                    // `matched_start` is always this window's start position, so it carries no
-                    // information within a window and is left out of the dedup key. The argument:
-                    // it equals `matched_end` exactly while nothing has been aligned yet, and while
-                    // that holds an insertion is refused, so `j` cannot have moved either — which
-                    // makes `matched_start_next = j` equal the window start. Once something has been
-                    // aligned, `matched_end > matched_start` and the value is carried forward
-                    // unchanged. Asserted rather than assumed: an invariant asserted in a comment and
-                    // never checked is how the `matched_end` key field went missing once already.
-                    debug_assert_eq!(
-                        matched_start_next, start,
-                        "matched_start must stay at the window start"
-                    );
+                    // Whether anything has been aligned yet, i.e. the engine's original
+                    // `matched_start != matched_end || matched_start != j` with `matched_start`
+                    // replaced by this window's `start`. See the window loop for why that field is
+                    // gone.
+                    let aligned = matched_end != start || start != j;
 
                     // Exact transition: for ASCII storage, `gs_find_transition` goes straight
                     // to the char-based edge scan, skipping `&str` creation and byte-length check.
@@ -1250,7 +1235,6 @@ impl FuzzyAhoCorasick {
                         queue.push(State {
                             node: next_node,
                             j: j + 1,
-                            matched_start: matched_start_next,
                             matched_end: j + 1,
                             penalties,
                             edits,
@@ -1326,7 +1310,6 @@ impl FuzzyAhoCorasick {
                             queue.push(State {
                                 node: next_node,
                                 j: j + 1,
-                                matched_start: matched_start_next,
                                 matched_end: j + 1,
                                 penalties: penalties + penalty,
                                 edits: edits + 1,
@@ -1374,7 +1357,6 @@ impl FuzzyAhoCorasick {
                                 queue.push(State {
                                     node: mt.next,
                                     j: j + hlen,
-                                    matched_start: matched_start_next,
                                     matched_end: j + hlen,
                                     penalties: new_penalties,
                                     edits: edits + 1,
@@ -1439,7 +1421,6 @@ impl FuzzyAhoCorasick {
                             queue.push(State {
                                 node: node2,
                                 j: j + 2,
-                                matched_start,
                                 matched_end: j + 2,
                                 penalties: penalties + pen.swap,
                                 edits: edits + 1,
@@ -1453,7 +1434,7 @@ impl FuzzyAhoCorasick {
                     //
                     // 3a) Insertion (skip a haystack character)
                     //
-                    if (matched_start != matched_end || matched_start != j)
+                    if aligned
                         && pen.insertion <= remaining
                         && if MAX_EDITS_FAST == 255 {
                             self.within_limits_insertion_ahead(
@@ -1480,7 +1461,6 @@ impl FuzzyAhoCorasick {
                         queue.push(State {
                             node,
                             j: j + 1,
-                            matched_start,
                             matched_end,
                             penalties: penalties + pen.insertion,
                             edits: edits + 1,
@@ -1536,7 +1516,6 @@ impl FuzzyAhoCorasick {
                         queue.push(State {
                             node: next_node2,
                             j,
-                            matched_start,
                             matched_end,
                             penalties: penalties + pen.deletion,
                             edits: edits + 1,
