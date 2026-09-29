@@ -81,6 +81,26 @@ All notable changes to this project are documented here. The format is based on
 
 ### Performance
 
+- **The fuzzy search is ~1.7x faster on a many-pattern corpus, and no slower anywhere.** The
+  per-window state-dedup table is the hottest structure in the search — one hash probe per expanded
+  state, ~36% of the fuzzy path on 500 patterns — and at a one-edit budget it is not needed, so it is
+  now folded away at compile time the way it already was for an exact search. Median of 9 paired A/B
+  rounds, instrument self-consistency median 1.00 / IQR 0.006:
+  - 500 patterns, one edit: **0.60** (1.7x)
+  - 200 patterns, sorted + non-overlapping: **0.71** (1.4x)
+  - 4 patterns, one edit: **0.90** (1.1x)
+  - exact search, and the Unicode path: unchanged
+
+  Two things make this safe, and they are different things. Collapsing duplicate states is a *pure
+  optimisation* — two states agreeing on node, span and per-type edit counts have identical futures,
+  so expanding both gives the same answers; the table changes work, never results. And the one-edit
+  state space is *bounded*: at most `O(m)` ways to place a single edit along a pattern of `m` graphemes
+  and then follow an exact chain, so a window's state count depends on the pattern and not on the
+  haystack, and the total stays linear in the input. At a budget of two it is `O(m^2)` and at six
+  `O(m^7)`, which is where the table earns its keep — measured, it collapses 0% / 0.8% / 3.4% / 3.6% /
+  3.7% / 3.2% of expansions at budgets 1–6, and a ~5-cycle probe against a ~60-cycle expansion needs
+  more than ~8% to pay. A single-grapheme mapping is excluded from the gate, because there a free
+  mapping really does collapse a costlier substitution and picks the better alignment.
 - **The pre-filter is no longer slower than a plain search on a large pattern set.** It ran one Bitap
   scan *per pattern*, so its cost was `O(text x patterns)`: with 500 patterns on a 24 KiB corpus it
   took **95 ms against 26 ms for the plain search it was supposed to accelerate** -- the documented

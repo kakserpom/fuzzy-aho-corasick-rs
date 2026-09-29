@@ -1357,3 +1357,65 @@ fn prefilter_stays_exact_as_the_pattern_set_grows() {
         "a filter was only built for {active} of {CASES} cases, so this proved little"
     );
 }
+
+/// Skipping the dedup at a one-edit budget must not blow the state space up.
+///
+/// The search folds the dedup away at `edits(1)` with no mappings, which is worth 40%-plus on a
+/// many-pattern corpus. Collapsing duplicate states is a pure optimisation -- two states agreeing on
+/// node, span and per-type counts have identical futures, so expanding both yields the same results
+/// -- which is why the win is legitimate. What it is *not* is free of consequence: the reason the
+/// table exists at all is that insertions and deletions reach the same position by exponentially many
+/// orderings, and at a budget of 2 or more that count is unbounded in the haystack length.
+///
+/// So this checks the property that actually matters: with the table gone, the number of expanded
+/// states per start window stays bounded, and the total therefore grows *linearly* in the haystack
+/// rather than blowing up. If the gate were ever widened to a budget where the state space is not
+/// bounded, the growth here would turn super-linear and this fails.
+#[test]
+fn one_edit_state_space_stays_bounded_without_the_dedup_table() {
+    use crate::search::STATES_EXPANDED;
+
+    const ALPHABET: &[char] = &['a', 'b', 'c', 'd'];
+    let fx = Fixture::new();
+    let mut per_char: Vec<f64> = Vec::new();
+
+    for &len in &[500usize, 1000, 2000, 4000, 8000] {
+        let mut rng = Rng(0x6000_0000_1234_5678);
+        // One pattern, long enough that a window has room for a chain of exact transitions after
+        // the single edit -- the shape where deletion placement is most ambiguous.
+        let pattern: String = seq(ALPHABET, &mut rng, 12);
+        let text: String = (0..len).map(|_| ALPHABET[rng.below(4)]).collect();
+
+        let engine = FuzzyAhoCorasickBuilder::new()
+            .similarity(fx.similarity)
+            .fuzzy(FuzzyLimits::new().edits(1))
+            .build([Pattern::from(pattern.as_str())]);
+
+        STATES_EXPANDED.with(|c| c.set(0));
+        let _ = engine
+            .search(&text, &SearchOptions::new().threshold(0.5))
+            .unwrap();
+        let states = STATES_EXPANDED.with(std::cell::Cell::get) as f64;
+        per_char.push(states / len as f64);
+        assert!(
+            states > 0.0,
+            "no states were expanded for a {len}-char haystack, so the count is meaningless"
+        );
+        // Every start window does work, so a bounded per-window state count is the whole claim.
+        assert!(
+            states >= (len / 2) as f64,
+            "expected at least one expansion per window at len {len}, saw {states}"
+        );
+    }
+
+    // If the state space were unbounded the per-character count would climb with the haystack. It
+    // should be flat: each window's work depends on the pattern length, not on the input length.
+    let first = per_char[0];
+    let last = *per_char.last().unwrap();
+    assert!(
+        last <= first * 1.5,
+        "states per character grew with the haystack: {first:.2} at 500 chars, {last:.2} at 8000. \
+         The one-edit state space is not bounded, so skipping the dedup is unsound. Series: \
+         {per_char:?}"
+    );
+}

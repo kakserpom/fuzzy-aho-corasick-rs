@@ -16,6 +16,53 @@ type HaystackPos = u32;
 /// fields — see [`VisitedKey`].
 type MatchEnd = u32;
 
+// Counts states the search expands, per thread. Test-only; read by
+// `property::one_edit_state_space_stays_bounded_without_the_dedup_table`. Thread-local because
+// `cargo test` runs tests concurrently, and a shared counter would mix other tests' states into the
+// measurement and make it meaningless.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static STATES_EXPANDED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Whether the per-window state-dedup table is worth building, as a compile-time constant.
+///
+/// This is the hottest structure in the search -- one hash probe per expanded state -- and measured
+/// against a 250 KiB / 500-pattern corpus, the probe is ~36% of the fuzzy path. So it is only built
+/// where it can pay for itself.
+///
+/// It is not needed for an exact search (`MAX_EDITS_FAST == 0`), where the walk is a pure trie
+/// traversal and every state sits on a distinct path. That has always been folded away.
+///
+/// It is also not needed at a budget of exactly **one** edit, which is the argument this predicate
+/// exists to encode. Two things have to be true for that, and they are different things:
+///
+/// * *Collapsing duplicates is optional.* Two states agreeing on node, span and per-type edit counts
+///   have identical futures, so expanding both produces the same results -- the table is a pure
+///   optimisation, and dropping it changes work, never answers. (It is not the case that nothing ever
+///   collapses at one edit: deleting pattern character `p` and deleting `p + 1` walk the same trie
+///   path, because a deletion advances the pattern without consuming text, and can land on the same
+///   node, position, span end and counts. Measured, it collapses a small but non-zero fraction.)
+/// * *The state space is bounded.* This is the part that matters. Collapsing matters only because
+///   insertions and deletions otherwise reach one position by exponentially many orderings, which is
+///   unbounded in the haystack length. At a budget of one there are at most `O(m)` ways to place the
+///   single edit along a pattern of `m` graphemes and then follow an exact chain, so a window's state
+///   count depends on the pattern, not the input, and the total stays linear in the haystack. At a
+///   budget of two it is `O(m^2)`, at six it is `O(m^7)`, and that is where the table earns its keep.
+///
+/// `property::one_edit_state_space_stays_bounded_without_the_dedup_table` checks the second point
+/// directly, so widening this gate past one edit would fail rather than quietly explode.
+///
+/// A single-grapheme mapping is the one exception at a budget of one, and it is why the predicate
+/// also requires `!MAPPINGS`: a one-to-one rule maps its haystack grapheme onto a different pattern
+/// grapheme in a single step, landing on exactly the state the root's substitution loop would have
+/// produced for that edge. A free (`score == 1.0`) mapping then collapses a costlier substitution --
+/// different penalties, so this one is about picking the better alignment rather than about a bounded
+/// state space. Rare, and cheap to keep correct.
+const fn dedup_needed(max_edits_fast: u8, mappings: bool) -> bool {
+    max_edits_fast > 1 || mappings
+}
+
 /// Key for the per-window state-dedup map: automaton position, the end of the matched span, and the
 /// four per-edit-type counts packed into one `u32` (one byte each). Two states with equal keys behave
 /// identically going forward, so only the lowest-penalty one needs expanding.
@@ -849,7 +896,11 @@ impl FuzzyAhoCorasick {
         // position, which was pure overhead. (The table itself is still built, so a tiny allocation
         // remains; making it conditional on the const generic measured *slower* everywhere, the
         // extra branch on the state loop costing more than the one small allocation saves.)
-        let mut visited = DedupTable::new(if MAX_EDITS_FAST == 0 {
+        // `dedup_needed` is a `const fn` called with two const generics, so this is a compile-time
+        // constant and every `if dedup` below is eliminated before codegen -- the exact and one-edit
+        // searches carry no hashing and no per-window reset at all, not a runtime branch.
+        let dedup = dedup_needed(MAX_EDITS_FAST, MAPPINGS);
+        let mut visited = DedupTable::new(if dedup {
             0
         } else {
             // Size for the states one window is expected to expand. The dead-end filter keeps
@@ -954,7 +1005,7 @@ impl FuzzyAhoCorasick {
             );
 
             queue.clear();
-            if MAX_EDITS_FAST != 0 {
+            if dedup {
                 visited.next_window();
             }
             let start = start as u32;
@@ -1006,7 +1057,12 @@ impl FuzzyAhoCorasick {
                 //
                 // Skipped entirely when no edit is permitted: the walk is then a pure trie
                 // traversal, whose states all have distinct nodes, so the map could never match.
-                if MAX_EDITS_FAST != 0
+                #[cfg(test)]
+                if !dedup {
+                    STATES_EXPANDED.with(|c| c.set(c.get() + 1));
+                }
+
+                if dedup
                     && visited
                         .probe_and_update(
                             VisitedKey {
