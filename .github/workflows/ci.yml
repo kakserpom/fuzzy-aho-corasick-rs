@@ -22,6 +22,28 @@ jobs:
         with:
           toolchain: ${{ matrix.rust }}
       - run: cargo test --all-features
+      # Fail loudly if the mdBook chapters stopped being compile-checked.
+      #
+      # `build.rs` enables those doctests via a `book_present` cfg, gated on `book/src` existing so
+      # the packaged crate -- which excludes `/book` -- can still compile. But `cargo package` and
+      # `cargo publish` verify the packaged crate in the *same* `target/` directory, so they leave
+      # behind a second execution of this build script whose output lacks `book_present`, and cargo
+      # will happily reuse that one afterwards. The symptom is silent: the suite still passes, it
+      # just runs 21 doctests instead of 48, and the book examples stop being checked against the
+      # API. This bit twice locally before it was noticed, so it is asserted rather than assumed.
+      #
+      # Keyed on a book path rather than a count, so adding a doctest does not break the check.
+      - name: Book examples are compile-checked
+        run: |
+          cargo test --doc -- --list > doctests.txt
+          if ! grep -q 'book/src/' doctests.txt; then
+            echo "::error::no mdBook chapter doctests were collected."
+            echo "The book examples are not being compile-checked (build.rs's 'book_present' cfg"
+            echo "did not survive). Try 'cargo clean -p fuzzy-aho-corasick' and re-run."
+            echo "Doctests collected: $(grep -c ': test$' doctests.txt)"
+            exit 1
+          fi
+          echo "$(grep -c 'book/src/' doctests.txt) book doctests collected"
 
   miri:
     name: Miri
