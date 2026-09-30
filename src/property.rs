@@ -1419,3 +1419,107 @@ fn one_edit_state_space_stays_bounded_without_the_dedup_table() {
          {per_char:?}"
     );
 }
+
+/// Transpositions at a one-edit budget, checked against the brute-force reference.
+///
+/// Transpositions are the reason this test exists separately. A swap spends the whole budget in one
+/// step and consumes *two* text graphemes, so it is the one budget-spending transition whose
+/// inlined walk resumes at a different position (`j + 2`) than the others. The general sweep builds
+/// patterns and text independently at random, so a swap may simply never arise across all of its
+/// cases — which would leave that walk unexercised while every test still passed.
+///
+/// So this constructs them deliberately: each pattern is transposed into the text, so a swap is
+/// always available, and the assertion below additionally requires that swaps were actually
+/// *reported*. Without that last check the test could pass by finding nothing, which is the failure
+/// mode a coverage test is supposed to rule out.
+#[test]
+fn search_matches_reference_for_transpositions_at_one_edit() {
+    const ALPHABET: &[char] = &['a', 'b', 'c', 'd', 'x', 'y'];
+    let fx = Fixture::new();
+    let mut rng = Rng(0x5715_0000_1234_5678);
+    let mut swaps_seen = 0usize;
+
+    for case in 0..600 {
+        let len = 2 + rng.below(5);
+        let patterns: Vec<String> = (0..=rng.below(3))
+            .map(|_| {
+                (0..len)
+                    .map(|_| ALPHABET[rng.below(ALPHABET.len())])
+                    .collect()
+            })
+            .collect();
+
+        // Text is built by transposing a pattern's graphemes, optionally with a light mutation,
+        // so a transposition is nearly always present.
+        let mut text = String::new();
+        for _ in 0..=rng.below(3) {
+            let src = &patterns[rng.below(patterns.len())];
+            let gs: Vec<char> = src.chars().collect();
+            let i = rng.below(gs.len().saturating_sub(1).max(1));
+            let j = i + 1;
+            let mut swapped: String = if j < gs.len() {
+                let mut v = gs.clone();
+                v.swap(i, j);
+                v.into_iter().collect()
+            } else {
+                gs.clone().into_iter().collect()
+            };
+            if rng.below(3) == 0 && !swapped.is_empty() {
+                // A substitution on top, which must not hide the swap from the engine's ranking.
+                let mut v: Vec<char> = swapped.chars().collect();
+                let k = rng.below(v.len());
+                v[k] = ALPHABET[rng.below(ALPHABET.len())];
+                swapped = v.into_iter().collect();
+            }
+            text.push_str(&swapped);
+            text.push(' ');
+        }
+
+        let threshold = [0.0f32, 0.5, 0.8][case % 3];
+        let engine = FuzzyAhoCorasickBuilder::new()
+            .similarity(fx.similarity)
+            .penalties(fx.penalties.clone())
+            .fuzzy(FuzzyLimits::new().edits(1))
+            .build(
+                patterns
+                    .iter()
+                    .map(|p| Pattern::from(p.as_str()))
+                    .collect::<Vec<_>>(),
+            );
+
+        // Counted from the engine's own matches, since `engine_matches` reduces them to tuples.
+        // A transposition is reported as a swap only when it is the *cheapest* alignment for that
+        // span, so this undercounts; it just has to be non-zero for the test to prove anything.
+        for m in engine
+            .search(&text, &SearchOptions::new().threshold(threshold))
+            .expect("haystack is small")
+            .iter()
+        {
+            if m.swaps > 0 {
+                swaps_seen += 1;
+            }
+        }
+
+        let got = engine_matches(&engine, &text, threshold);
+
+        let refs: Vec<RefPattern<'_>> = patterns
+            .iter()
+            .map(|p| RefPattern {
+                text: p.as_str(),
+                weight: 1.0,
+                limits: None,
+            })
+            .collect();
+        let expected = reference_search(&text, &refs, &fx.sim_map, fx.total(1, threshold, false));
+
+        assert_eq!(
+            got, expected,
+            "case {case}: threshold={threshold} patterns={patterns:?} text={text:?}"
+        );
+    }
+
+    assert!(
+        swaps_seen > 0,
+        "no transposition was reported in 600 cases, so this test proved nothing"
+    );
+}

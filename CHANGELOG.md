@@ -95,6 +95,35 @@ All notable changes to this project are documented here. The format is based on
 
 ### Performance
 
+- **The fuzzy search is 1.1-1.4x faster at a one-edit budget, by walking budget-exhausted states
+  instead of queueing them.** A state that has spent its whole edit budget can only report and
+  follow exact transitions, yet each one was still built into a 24-byte `State`, appended to the
+  queue, and read back out — for the bulk of the states, since at `edits(1)` the substitution,
+  deletion, insertion and swap children of the unsaturated chain are *all* saturated and each then
+  runs a short exact chain of its own. Those chains are now followed in place, which takes the queue
+  from roughly sixty entries per start position down to the handful of unsaturated states. Median of
+  9 paired rounds against 0.5.1:
+  - 500 patterns: **0.73** (1.37x)
+  - 500 patterns, pre-filtered: **0.72** (1.39x)
+  - 200 patterns, sorted + non-overlapping: **0.80** (1.26x)
+  - 4 patterns: **0.89**, sparse corpus: **0.90**
+  - exact search: **0.97**, Unicode path: unchanged
+
+  **Results are identical.** The only order-sensitive part of this search is the beam, which keeps
+  the lowest-penalty states in the frontier and breaks ties by position, so the walk is enabled only
+  when neither beam is configured (both are opt-in and default to `None`) and the traversal order is
+  then exactly what it was. It is also restricted to a budget of one, which is the only budget where
+  these states are the bulk of the work — and the one budget at which the dedup table is already
+  folded away, so there is no interaction with it. Multi-grapheme mappings are excluded, since a
+  mapping lands a state somewhere a plain exact chain does not model.
+
+  Each of the four call sites was checked by deliberately breaking it and confirming the suite
+  notices: the substitution and insertion sites fail 8 and 5 tests respectively, and a transposition
+  site — the one transition that consumes *two* text graphemes and so resumes at `j + 2` rather than
+  `j + 1` — is not reliably reached by the general sweep, whose patterns and text are built
+  independently at random and may never produce one. It now has a dedicated test that builds
+  transposed text on purpose and additionally asserts a swap was actually reported, since otherwise
+  it could pass by finding nothing.
 - **The fuzzy search is ~2-3% faster everywhere, by taking the scoring code out of the state loop.**
   Reporting a match is a 74-line block — per-pattern limit check, similarity, hash-map update — that
   was written inline in the middle of the BFS's per-state body. It is also, for a long-pattern set,

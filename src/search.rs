@@ -1138,6 +1138,78 @@ impl FuzzyAhoCorasick {
             similarity_threshold,
         };
 
+        // Whether a state that has spent its whole edit budget can be walked in place instead of
+        // being pushed onto the queue.
+        //
+        // At a budget of one, such a state can only report and follow exact transitions, so the
+        // queue round-trip — build a 24-byte `State`, append, index it back out, re-read it — is
+        // most of what it costs. And at a budget of one they are the *bulk* of the states: the
+        // substitution and deletion children of the unsaturated chain are all saturated, and each
+        // then runs a short exact chain of its own. Walking those inline shrinks the queue from
+        // roughly sixty entries per start position to the handful of unsaturated ones.
+        //
+        // Three conditions, each for a different reason:
+        //
+        // * `MAX_EDITS_FAST == 1` — the only budget where this is a large enough share to pay for
+        //   the extra code. It is also the budget at which the dedup table is already folded away
+        //   (see `dedup_needed`), so there is no interaction with it: a saturated chain is walked
+        //   exactly once and never needs deduplicating.
+        // * `!MAPPINGS` — a mapping transition costs an edit, so a saturated state cannot take one,
+        //   but the *entry* into the walk happens on the transition that spends the budget, and a
+        //   multi-grapheme mapping lands the state somewhere a plain exact chain would not model.
+        // * No beam configured — the only order-sensitive part of this search. `select_nth` on the
+        //   frontier keeps the lowest-penalty states and breaks ties by position, so re-ordering
+        //   the walk can change which of several equal-penalty candidates survives. Both beams are
+        //   opt-in and default to `None`; when either is set, this stays off and the traversal
+        //   order is exactly what it was.
+        let inline_saturated = MAX_EDITS_FAST == 1
+            && !MAPPINGS
+            && self.beam_width.is_none()
+            && self.auto_beam.is_none();
+
+        // Walk a saturated state to the end of its exact chain, reporting as it goes.
+        //
+        // `best` is an argument rather than a capture, for the same reason as in `ReportCtx`: held
+        // by the closure it stops being a promotable local in the caller.
+        let walk_saturated = |best: &mut FxHashMap<(usize, usize, usize), FuzzyMatch<'a>>,
+                              mut node: u32,
+                              mut j: u32,
+                              mut matched_end: u32,
+                              penalties: f32,
+                              edits: NumEdits,
+                              packed_counts: u32,
+                              start_byte: usize| {
+            loop {
+                let n = &trie[node as usize];
+                // Same ceiling test the BFS applies, in the same order: a state over its node's
+                // budget is dropped before it can report, and the rest of the chain is dropped
+                // with it since penalties only grow.
+                if penalties > n.prune_len - n.prune_len_over_weight * similarity_threshold {
+                    return;
+                }
+                rctx.report::<MAX_EDITS_FAST>(
+                    best,
+                    &n.output,
+                    start_byte,
+                    matched_end,
+                    penalties,
+                    edits,
+                    packed_counts,
+                );
+                // The budget is spent, so an exact transition is the only one left.
+                if j >= text_len {
+                    return;
+                }
+                let ch = text_chars[j as usize];
+                let Some(next) = graphemes.gs_find_transition(n, j as usize, ch) else {
+                    return;
+                };
+                node = next;
+                j += 1;
+                matched_end = j;
+            }
+        };
+
         let mut effective_beam = self.beam_width;
         let mut states_expanded = 0usize;
 
@@ -1409,16 +1481,30 @@ impl FuzzyAhoCorasick {
                             #[cfg(debug_assertions)]
                             notes.push(format!("sub {:?} -> {current_ch:?} (sim={sim:.2}, pen={penalty:.2}) (subst->{}, edits->{})", edge.first_char, ((packed_counts >> 16) & 0xFF) + 1, edits + 1));
 
-                            queue.push(State {
-                                node: next_node,
-                                j: j + 1,
-                                matched_end: j + 1,
-                                penalties: penalties + penalty,
-                                edits: edits + 1,
-                                packed_counts: packed_counts + 0x1_0000,
-                                #[cfg(debug_assertions)]
-                                notes,
-                            });
+                            if inline_saturated {
+                                // Spends the budget, so the child cannot edit again: walk it here.
+                                walk_saturated(
+                                    &mut best,
+                                    next_node,
+                                    j + 1,
+                                    j + 1,
+                                    penalties + penalty,
+                                    edits + 1,
+                                    packed_counts + 0x1_0000,
+                                    start_byte,
+                                );
+                            } else {
+                                queue.push(State {
+                                    node: next_node,
+                                    j: j + 1,
+                                    matched_end: j + 1,
+                                    penalties: penalties + penalty,
+                                    edits: edits + 1,
+                                    packed_counts: packed_counts + 0x1_0000,
+                                    #[cfg(debug_assertions)]
+                                    notes,
+                                });
+                            }
                         }
 
                         //
@@ -1520,16 +1606,32 @@ impl FuzzyAhoCorasick {
                                 ((packed_counts >> 24) & 0xFF) + 1,
                                 edits + 1
                             ));
-                            queue.push(State {
-                                node: node2,
-                                j: j + 2,
-                                matched_end: j + 2,
-                                penalties: penalties + pen.swap,
-                                edits: edits + 1,
-                                packed_counts: packed_counts + 0x100_0000,
-                                #[cfg(debug_assertions)]
-                                notes,
-                            });
+                            if inline_saturated {
+                                // Spends the budget, so the child cannot edit again: walk it here.
+                                // A swap consumes two text graphemes, so it resumes two positions
+                                // on.
+                                walk_saturated(
+                                    &mut best,
+                                    node2,
+                                    j + 2,
+                                    j + 2,
+                                    penalties + pen.swap,
+                                    edits + 1,
+                                    packed_counts + 0x100_0000,
+                                    start_byte,
+                                );
+                            } else {
+                                queue.push(State {
+                                    node: node2,
+                                    j: j + 2,
+                                    matched_end: j + 2,
+                                    penalties: penalties + pen.swap,
+                                    edits: edits + 1,
+                                    packed_counts: packed_counts + 0x100_0000,
+                                    #[cfg(debug_assertions)]
+                                    notes,
+                                });
+                            }
                         }
                     }
 
@@ -1560,16 +1662,33 @@ impl FuzzyAhoCorasick {
                             (packed_counts & 0xFF) + 1,
                             edits + 1
                         ));
-                        queue.push(State {
-                            node,
-                            j: j + 1,
-                            matched_end,
-                            penalties: penalties + pen.insertion,
-                            edits: edits + 1,
-                            packed_counts: packed_counts + 1,
-                            #[cfg(debug_assertions)]
-                            notes,
-                        });
+                        if inline_saturated {
+                            // Spends the budget, so the child cannot edit again: walk it here.
+                            // The node and `matched_end` carry over unchanged — an insertion skips
+                            // a *text* grapheme, not a pattern one — so the walk resumes on the
+                            // same pattern at the next text position.
+                            walk_saturated(
+                                &mut best,
+                                node,
+                                j + 1,
+                                matched_end,
+                                penalties + pen.insertion,
+                                edits + 1,
+                                packed_counts + 1,
+                                start_byte,
+                            );
+                        } else {
+                            queue.push(State {
+                                node,
+                                j: j + 1,
+                                matched_end,
+                                penalties: penalties + pen.insertion,
+                                edits: edits + 1,
+                                packed_counts: packed_counts + 1,
+                                #[cfg(debug_assertions)]
+                                notes,
+                            });
+                        }
                     }
                 }
 
@@ -1615,16 +1734,41 @@ impl FuzzyAhoCorasick {
                             edge.first_char,
                             ((packed_counts >> 8) & 0xFF) + 1
                         ));
-                        queue.push(State {
-                            node: next_node2,
-                            j,
-                            matched_end,
-                            penalties: penalties + pen.deletion,
-                            edits: edits + 1,
-                            packed_counts: packed_counts + 0x100,
-                            #[cfg(debug_assertions)]
-                            notes,
-                        });
+                        if inline_saturated {
+                            // Spends the budget, so the child cannot edit again: walk it here.
+                            // `j` and `matched_end` are carried over unchanged -- a deletion skips a
+                            // *pattern* grapheme, not a text one -- which is why the walk starts at
+                            // the parent's position rather than an advanced one.
+                            //
+                            // At this budget those two are in fact the same value: every unsaturated
+                            // state is either the window's root or reached from it by exact
+                            // transitions only, and both set `matched_end = j`. So passing `j` here
+                            // would behave identically, and does -- deliberately not asserted, since
+                            // there is nothing to assert. `matched_end` is passed because it is what
+                            // the child actually carries, so this stays correct if that invariant
+                            // ever stops holding.
+                            walk_saturated(
+                                &mut best,
+                                next_node2,
+                                j,
+                                matched_end,
+                                penalties + pen.deletion,
+                                edits + 1,
+                                packed_counts + 0x100,
+                                start_byte,
+                            );
+                        } else {
+                            queue.push(State {
+                                node: next_node2,
+                                j,
+                                matched_end,
+                                penalties: penalties + pen.deletion,
+                                edits: edits + 1,
+                                packed_counts: packed_counts + 0x100,
+                                #[cfg(debug_assertions)]
+                                notes,
+                            });
+                        }
                     }
                 }
             }
