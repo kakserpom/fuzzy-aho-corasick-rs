@@ -95,6 +95,29 @@ All notable changes to this project are documented here. The format is based on
 
 ### Performance
 
+- **The fuzzy search is ~2-3% faster everywhere, by taking the scoring code out of the state loop.**
+  Reporting a match is a 74-line block — per-pattern limit check, similarity, hash-map update — that
+  was written inline in the middle of the BFS's per-state body. It is also, for a long-pattern set,
+  *never executed*: a node carries `output` only if some pattern is exactly as long as its depth, so
+  with patterns of length 11 every node above depth 10 reports nothing and the block is dead weight
+  sitting in the hottest loop in the crate. It now lives in a `ReportCtx` whose `report` inlines just
+  the emptiness test and leaves the scoring in an out-of-line `report_slow`. Median of 13 paired
+  rounds: 500 patterns **0.97**, 200 sorted **0.97**, 4 patterns **0.98**, exact search **0.98**.
+
+  Getting there took two failures worth recording, because both were *refactors that should have
+  been free* and both were slower:
+
+  - Hoisting the block into a closure capturing `&mut best` cost **9.3%**. The capture stopped the
+    caller's local being promotable and the map's internals spilled.
+  - Moving it into an `#[inline]` method on a context struct was worse still, **12.0%**: the body is
+    far too large for LLVM's inliner, so `report` stopped being inlined *at all* and every state paid
+    a real call. Only splitting the cold part out made the wrapper small enough to inline.
+
+  And clippy's own suggestion for the resulting eight-argument method cost another **4.4%** (13
+  paired rounds, 0/13 in favour). Bundling the per-state arguments into a `ReportState` struct is
+  exactly what `too_many_arguments` asks for, and it is slower: the struct is built and immediately
+  destructured at the call site, where the flat form stays in registers. The arguments stay flat and
+  the lint is silenced with that reason rather than obeyed.
 - **The pre-filter's scan was ~6x slower than it should have been, which made the whole feature a net
   loss; it is now a large win.** The q-gram table indexed on the *raw low bits* of the packed block
   key. Symbol ids are small and densely numbered from 1, so a 3-gram key

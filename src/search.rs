@@ -16,6 +16,162 @@ type HaystackPos = u32;
 /// fields — see [`VisitedKey`].
 type MatchEnd = u32;
 
+/// Everything the report path needs that does not vary per state or per window.
+///
+/// Bundled so that reporting is one `#[inline]` method callable from more than one place — the BFS
+/// and the exact-chain walk both report, and the logic has to stay identical between them — without
+/// duplicating 70-odd lines of scoring that would then be free to drift apart.
+///
+/// `best` is deliberately *not* a field. Held as one, it moved behind a `&mut` and cost 9% on a
+/// 500-pattern corpus: the caller's local stopped being promotable and the map's internals spilled.
+/// Passing it as an argument keeps it an ordinary local in the caller.
+struct ReportCtx<'a, 't, 'g, G> {
+    engine: &'a FuzzyAhoCorasick,
+    haystack: &'a str,
+    /// Separate lifetime from `'a` on purpose: `text_chars` does not outlive the search, and
+    /// forcing it to `'a` would tie it to the returned matches' lifetime and fail to borrow-check.
+    text_chars: &'t [char],
+    graphemes: &'g G,
+    similarity_threshold: f32,
+}
+
+// `too_many_arguments` is allowed on both report methods deliberately. Bundling the per-state
+// arguments into a `ReportState` struct is what clippy asks for, and it measured **4.4% slower** on
+// a 500-pattern corpus (13 paired rounds, 0/13 pairs in favour): at this call site the struct is
+// built and immediately destructured, and the scalar form stays in registers where the struct form
+// does not. A lint suggestion is not automatically an improvement, so the arguments stay flat and
+// the warning is silenced with this reason rather than obeyed.
+#[allow(clippy::too_many_arguments)]
+impl<'a, G: GraphemeStorage> ReportCtx<'a, '_, '_, G> {
+    /// Offer the patterns ending at a state to `best`, keeping the best-scoring one per span.
+    ///
+    /// A no-op when the state ends no pattern. `start_byte` is fixed for the window rather than
+    /// taken from the state, because a matched span always begins at the window's start.
+    ///
+    /// Generic over `MAX_EDITS_FAST` so that the limit test below is the same const-folded one the
+    /// inline version had, rather than a runtime branch: at `255` some pattern carries its own
+    /// limits and the per-pattern check applies, and otherwise a state simply cannot have spent
+    /// more than the global budget.
+    #[inline]
+    fn report<const MAX_EDITS_FAST: u8>(
+        &self,
+        best: &mut FxHashMap<(usize, usize, usize), FuzzyMatch<'a>>,
+        output: &[u32],
+        start_byte: usize,
+        matched_end: u32,
+        penalties: f32,
+        edits: NumEdits,
+        packed_counts: u32,
+    ) {
+        // Almost every state ends no pattern — a node only carries `output` if some pattern is
+        // exactly as long as its depth, so with patterns of length 11 every node above depth 10 is
+        // empty — and for a long-pattern set the whole scoring body below is dead code for the
+        // overwhelming majority of states. It is therefore kept out of line, with just the
+        // emptiness test inlined here.
+        //
+        // Both halves matter. Inlining the body into the state loop cost 12% on a 500-pattern
+        // corpus: it is far too large for LLVM's inliner, so `report` stopped being inlined at all
+        // and *every* state paid a call. Splitting it makes this wrapper trivially inlinable, so
+        // the call is only made by states that can actually report something.
+        if output.is_empty() {
+            return;
+        }
+        self.report_slow::<MAX_EDITS_FAST>(
+            best,
+            output,
+            start_byte,
+            matched_end,
+            penalties,
+            edits,
+            packed_counts,
+        );
+    }
+
+    /// The scoring and hash-map update behind [`Self::report`]. Out of line on purpose; see there.
+    fn report_slow<const MAX_EDITS_FAST: u8>(
+        &self,
+        best: &mut FxHashMap<(usize, usize, usize), FuzzyMatch<'a>>,
+        output: &[u32],
+        start_byte: usize,
+        matched_end: u32,
+        penalties: f32,
+        edits: NumEdits,
+        packed_counts: u32,
+    ) {
+        let insertions = (packed_counts & 0xFF) as NumEdits;
+        let deletions = ((packed_counts >> 8) & 0xFF) as NumEdits;
+        let substitutions = ((packed_counts >> 16) & 0xFF) as NumEdits;
+        let swaps = ((packed_counts >> 24) & 0xFF) as NumEdits;
+        // The span's end, and hence the text slice, is a property of the state rather than of the
+        // individual pattern ending here, so it is computed once for the whole `output` list.
+        let end_byte = if (matched_end as usize) < self.text_chars.len() {
+            self.graphemes.gs_byte_offset(matched_end as usize)
+        } else {
+            self.haystack.len()
+        };
+        let text = &self.haystack[start_byte..end_byte];
+        for &pattern_index in output {
+            let pattern_index = pattern_index as usize;
+            if MAX_EDITS_FAST != 255 {
+                if edits > MAX_EDITS_FAST {
+                    continue;
+                }
+            } else if !self.engine.within_limits(
+                self.engine.patterns[pattern_index].limits.as_ref(),
+                edits,
+                insertions,
+                deletions,
+                substitutions,
+                swaps,
+            ) {
+                continue;
+            }
+            let key = (start_byte, end_byte, pattern_index);
+
+            let total = self.engine.patterns[pattern_index].grapheme_len as f32;
+
+            let similarity =
+                (total - penalties) / total * self.engine.patterns[pattern_index].weight;
+
+            if similarity < self.similarity_threshold {
+                continue;
+            }
+
+            best.entry(key)
+                .and_modify(|entry| {
+                    if similarity > entry.similarity {
+                        *entry = FuzzyMatch {
+                            insertions,
+                            deletions,
+                            substitutions,
+                            edits,
+                            swaps,
+                            pattern_index,
+                            start: start_byte,
+                            end: end_byte,
+                            pattern: &self.engine.patterns[pattern_index],
+                            similarity,
+                            text,
+                        };
+                    }
+                })
+                .or_insert_with(|| FuzzyMatch {
+                    insertions,
+                    deletions,
+                    substitutions,
+                    edits,
+                    swaps,
+                    pattern_index,
+                    start: start_byte,
+                    end: end_byte,
+                    pattern: &self.engine.patterns[pattern_index],
+                    similarity,
+                    text,
+                });
+        }
+    }
+}
+
 // Counts states the search expands, per thread. Test-only; read by
 // `property::one_edit_state_space_stays_bounded_without_the_dedup_table`. Thread-local because
 // `cargo test` runs tests concurrently, and a shared counter would mix other tests' states into the
@@ -971,6 +1127,17 @@ impl FuzzyAhoCorasick {
         // `None` (exact) until the automatic-beam budget is exhausted, at which point it drops to the
         // configured width to bound a runaway exploration. `states_expanded` is counted across all
         // start windows so the budget caps total work, not per-window work.
+        // The report path, factored out so that the BFS and the exact-chain walk can share it.
+        // Reporting is shared between the BFS and the exact-chain walk, so it lives in a
+        // `ReportCtx` rather than inline; see its doc comment for why `best` stays a local here.
+        let rctx = ReportCtx {
+            engine: self,
+            haystack,
+            text_chars,
+            graphemes,
+            similarity_threshold,
+        };
+
         let mut effective_beam = self.beam_width;
         let mut states_expanded = 0usize;
 
@@ -1109,80 +1276,15 @@ impl FuzzyAhoCorasick {
                     None
                 };
 
-                if !output.is_empty() {
-                    let insertions = (packed_counts & 0xFF) as NumEdits;
-                    let deletions = ((packed_counts >> 8) & 0xFF) as NumEdits;
-                    let substitutions = ((packed_counts >> 16) & 0xFF) as NumEdits;
-                    let swaps = ((packed_counts >> 24) & 0xFF) as NumEdits;
-                    // `start_byte` is fixed for the window (see above); the end still depends on
-                    // the state, and both are properties of the state rather than of the individual
-                    // pattern ending here, so each is computed once for the whole `output` list.
-                    let end_byte = if (matched_end as usize) < text_chars.len() {
-                        graphemes.gs_byte_offset(matched_end as usize)
-                    } else {
-                        haystack.len()
-                    };
-                    let text = &haystack[start_byte..end_byte];
-                    for &pattern_index in output {
-                        let pattern_index = pattern_index as usize;
-                        if MAX_EDITS_FAST != 255 {
-                            if edits > MAX_EDITS_FAST {
-                                continue;
-                            }
-                        } else if !self.within_limits(
-                            self.patterns[pattern_index].limits.as_ref(),
-                            edits,
-                            insertions,
-                            deletions,
-                            substitutions,
-                            swaps,
-                        ) {
-                            continue;
-                        }
-                        let key = (start_byte, end_byte, pattern_index);
-
-                        let total = self.patterns[pattern_index].grapheme_len as f32;
-
-                        let similarity =
-                            (total - penalties) / total * self.patterns[pattern_index].weight;
-
-                        if similarity < similarity_threshold {
-                            continue;
-                        }
-
-                        best.entry(key)
-                            .and_modify(|entry| {
-                                if similarity > entry.similarity {
-                                    *entry = FuzzyMatch {
-                                        insertions,
-                                        deletions,
-                                        substitutions,
-                                        edits,
-                                        swaps,
-                                        pattern_index,
-                                        start: start_byte,
-                                        end: end_byte,
-                                        pattern: &self.patterns[pattern_index],
-                                        similarity,
-                                        text,
-                                    };
-                                }
-                            })
-                            .or_insert_with(|| FuzzyMatch {
-                                insertions,
-                                deletions,
-                                substitutions,
-                                edits,
-                                swaps,
-                                pattern_index,
-                                start: start_byte,
-                                end: end_byte,
-                                pattern: &self.patterns[pattern_index],
-                                similarity,
-                                text,
-                            });
-                    }
-                }
+                rctx.report::<MAX_EDITS_FAST>(
+                    &mut best,
+                    output,
+                    start_byte,
+                    matched_end,
+                    penalties,
+                    edits,
+                    packed_counts,
+                );
 
                 //
                 // 1) Same or similar symbol — only within the text
