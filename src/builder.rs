@@ -380,7 +380,8 @@ impl FuzzyAhoCorasickBuilder {
                 .transitions
                 .iter()
                 .map(|(g, &next)| Edge::new(g.chars().next().unwrap_or('\0'), next, g.len() == 1))
-                .collect();
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
             // Precompute the ASCII edge-char bitmap the dead-end filter probes (see `Node::edge_bits`).
             // Only single-byte graphemes can have a first `char` < 128, so the bitmap answers every
             // ASCII probe exactly.
@@ -394,6 +395,24 @@ impl FuzzyAhoCorasickBuilder {
                 }
             }
             node.edge_bits = bits;
+
+            // Give wide, all-ASCII nodes a direct-index table so the exact-transition lookup is a
+            // single load instead of a scan (see `Node::dense`). Only worth it above
+            // `DENSE_MIN_DEGREE`: the table is 512 bytes and a short scan is cheaper than the
+            // indirection. Restricted to nodes whose every edge is a single ASCII byte, because the
+            // table is indexed by byte and cannot represent a multi-grapheme edge — those nodes
+            // keep the scan.
+            if node.edges.len() >= Node::DENSE_MIN_DEGREE
+                && node.edges.iter().all(|e| e.is_single_byte())
+            {
+                let mut table = Box::new([0u32; 128]);
+                for edge in &node.edges {
+                    let idx = edge.first_char as usize;
+                    debug_assert!(idx < 128, "single-byte edge has a non-ASCII first char");
+                    table[idx] = edge.next();
+                }
+                node.dense = Some(table);
+            }
         }
 
         // Per-node reachable bounds (longest pattern / heaviest weight reachable from each node).

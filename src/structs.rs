@@ -250,10 +250,29 @@ pub(crate) struct MappingTransition {
 /// Field order is deliberate: the hot-path fields (`edges`, `output`, prune
 /// coefficients) are placed first so they share a single L1 cache line.
 #[derive(Clone, Debug)]
+// Field order is load-bearing, hence `repr(C)`: the five fields read on *every* expanded state --
+// the edge list, the edge bitmap, the output list and the two pruning floats -- occupy the first 64
+// bytes and so share one cache line. Left to its own reordering, adding `dense` shuffled them and
+// cost 3.6% on a 4-pattern corpus (15 paired rounds, 0/15 in favour) even though the struct stayed
+// 128 bytes: `Node` spans two cache lines, and which fields share one matters more here than the
+// total size. `dense` sits just past the boundary because it is only read on a *hit*, after the
+// bitmap has already rejected the misses that dominate a narrow automaton.
+//
+// If a field joins the hot group, check the arithmetic still fits 64 bytes: a `Box<[T]>` is 16 and a
+// `Vec<T>` is 24, which is why `edges` is boxed and `output` is not (it is pushed during trie
+// construction, so boxing it would need the builder to stage outputs in a side vector).
+#[repr(C)]
 pub(crate) struct Node {
     /// Same edges as `transitions`, in a flat layout for hot-path iteration. Derived from
     /// `transitions` in a final build pass; must be kept consistent with it.
-    pub(crate) edges: Vec<Edge>,
+    ///
+    /// A boxed slice rather than a `Vec`: nothing mutates it after the final pass, and the 8 bytes
+    /// it saves are what pay for [`Node::dense`. `Node` is 128 bytes because of the `u128`
+    /// `edge_bits` alignment, and every field that does not fit in that budget costs the whole
+    /// search measurable cache density -- adding `dense` to a `Vec`-based `Node` pushed it to 144
+    /// and gave back 5% on narrow pattern sets, where no table is built at all.
+    pub(crate) edges: Box<[Edge]>,
+
     /// Bitmap of this node's single-byte (ASCII) edge chars: bit `i` set iff `edges` contains an
     /// edge with `first_char == i` and `is_single_byte()`. Derived from `edges` in the same pass.
     ///
@@ -265,6 +284,7 @@ pub(crate) struct Node {
     /// their plain linear scan, since the node they probe is already in cache and its edge list
     /// is usually short — there a bitmap probe measured slower than simply scanning.
     pub(crate) edge_bits: u128,
+
     /// All patterns that end *at* this state — the patterns whose own graphemes are exactly the
     /// path from the root to here.
     ///
@@ -273,6 +293,7 @@ pub(crate) struct Node {
     /// them at the consuming walk's span; the exact scan reaches them by walking the failure chain
     /// itself, and the fuzzy search reaches them from the pattern's own start position.
     pub(crate) output: Vec<u32>,
+
     /// Two precomputed coefficients of this node's pruning ceiling. A state at this node can only
     /// complete a pattern still reachable from here (its own `output` plus its transition subtree);
     /// for the longest/heaviest such pattern `(len - pen) / len * weight >= threshold` rearranges to
@@ -280,20 +301,45 @@ pub(crate) struct Node {
     /// evaluate the ceiling as `prune_len - prune_len_over_weight * threshold` — no division, no
     /// per-search allocation — while pruning short-pattern branches far earlier than a global bound.
     pub(crate) prune_len: f32,
+
     pub(crate) prune_len_over_weight: f32,
+
+    /// Direct-index table for the exact-transition lookup: `ascii_byte -> target node`, 0 for
+    /// absent. Present only on wide nodes — see [`Node::DENSE_MIN_DEGREE`] — and `None` elsewhere.
+    ///
+    /// This exists because the lookup it replaces is the search's hot instruction. Finding an edge
+    /// used to mean scanning the flat `edges` list, which on a 500-pattern automaton lands on a
+    /// degree-9-to-18 node about 43% of the time: those 27 nodes receive 43% of all state visits and
+    /// carry roughly 78% of the scan's work. A u128 bitmap already rejects misses in O(1), but a
+    /// *hit* still walked the list with an unpredictable exit, and a redundant pass over `edges`
+    /// measured 35% of runtime once the saturated walk became the hot loop.
+    ///
+    /// Deliberately additive rather than a reordering of `edges`. Sorting the list by `first_char`
+    /// would allow the same O(1) answer via a popcount rank, with no allocation at all, but it would
+    /// change the order the substitution and deletion scans push states in — and that order is the
+    /// `transitions` map's, chosen precisely so tie-breaking among equal-similarity matches is
+    /// unchanged. `Option` costs 8 bytes here and touches 27 nodes; reordering would have cost
+    /// nothing and changed results for anyone using a beam.
+    pub(crate) dense: Option<Box<[u32; 128]>>,
+
     /// Pre‑computed prefix weight (see [`FuzzyAhoCorasickBuilder::pmf`]).
     pub(crate) weight: f32,
+
     /// Failure link (classic AC fallback state).
     pub(crate) fail: u32,
+
     // ---- cold fields (second cache line) ----
     pub(crate) pattern_index: Option<PatternIndex>,
+
     /// Outgoing edges keyed by the next character (used for O(1) exact/swap lookups).
     pub(crate) transitions: FxHashMap<String, u32>,
+
     /// Index of the parent state – only present in *debug* builds to make
     /// visualising / debugging the trie easier.
     #[cfg(debug_assertions)]
     #[allow(dead_code)]
     pub(crate) parent: u32,
+
     /// Character that leads from `parent` to this node – stored only in
     /// *debug* builds for introspection.
     #[allow(dead_code)]
@@ -494,6 +540,15 @@ impl FuzzyPenalties {
 }
 
 impl Node {
+    /// Out-degree at which a node earns a direct-index [`Node::dense`] table.
+    ///
+    /// Calibrated on measurement, not taste. The table is 512 bytes, so it is only worth building
+    /// where it replaces enough scanning: at 500 patterns over a 26-letter alphabet it is built for
+    /// 27 nodes, costing 13 KiB, and those 27 nodes take 43% of all state visits. Below this degree
+    /// the scan is short enough that the extra indirection is not repaid -- degree 1 alone is 36% of
+    /// visits and is already the cheapest possible lookup.
+    pub(crate) const DENSE_MIN_DEGREE: usize = 8;
+
     /// Helper used by the builder to create a brand‑new node.
     pub(crate) fn new(
         #[cfg(debug_assertions)] parent: u32,
@@ -502,8 +557,9 @@ impl Node {
         Self {
             pattern_index: None,
             transitions: FxHashMap::default(),
-            edges: Vec::new(),
+            edges: Box::default(),
             edge_bits: 0,
+            dense: None,
             fail: 0,
             output: Vec::new(),
             prune_len: 0.0,
@@ -587,8 +643,27 @@ impl Node {
     /// (guaranteed by the caller via `GraphemeStorage::gs_find_transition`).
     #[inline]
     pub(crate) fn find_transition_char(&self, ch: char) -> Option<u32> {
+        // Order matters, and it was measured. The bitmap rejects misses in O(1) for every node, so
+        // running it first means a node with no table never has its `dense` field read at all —
+        // which matters because on a narrow automaton that lookup is the common case (a degree-1
+        // node misses 25 times out of 26) and reading one extra field per lookup measured 2.8% on a
+        // 4-pattern corpus. Consulting the table first instead was ~20% on a wide corpus but cost
+        // that much everywhere else.
         if self.has_no_edge_for(ch) {
             return None;
+        }
+        // A hit. Wide nodes answer from the direct-index table, which is exact for ASCII because it
+        // is only built for nodes whose every edge is a single ASCII byte.
+        if let Some(table) = &self.dense {
+            let idx = ch as usize;
+            if idx < 128 {
+                let next = table[idx];
+                debug_assert_ne!(
+                    next, 0,
+                    "the bitmap reports an edge the dense table does not have"
+                );
+                return Some(next);
+            }
         }
         for edge in &self.edges {
             if edge.first_char == ch && edge.is_single_byte() {
@@ -996,5 +1071,90 @@ impl<'a> std::ops::Deref for FuzzyMatches<'a> {
 impl std::ops::DerefMut for FuzzyMatches<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
+    }
+}
+
+#[cfg(test)]
+mod dense_tests {
+    use super::*;
+    use crate::{FuzzyAhoCorasickBuilder, FuzzyLimits};
+
+    /// The direct-index table must answer exactly what the scan it replaces would have.
+    ///
+    /// `find_transition_char` has two implementations now — one table lookup for wide nodes, one
+    /// bitmap-then-scan for the rest — and only one of them can be exercised by any given corpus, so
+    /// a differential test over *every* node and *every* ASCII character is the only thing that
+    /// covers both on the same engine. It also pins when a table is built at all, since the two
+    /// disagree if that threshold is wrong in either direction.
+    #[test]
+    fn dense_table_agrees_with_the_scan_on_every_node() {
+        const ALPHA: &[u8] = b"abcdefghijklmnopqrstuvwxyz";
+        // A spread of widths, so both the tabled and the scanned branch are populated: 4 patterns
+        // produce no wide node at all, 500 produces many.
+        for count in [4usize, 12, 60, 300] {
+            let mut seed = 0x1234_5678_9ABC_DEF0u64 ^ count as u64;
+            let mut next = move || {
+                seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                (seed >> 33) as usize
+            };
+            let patterns: Vec<String> = (0..count)
+                .map(|_| {
+                    (0..4 + next() % 4)
+                        .map(|_| ALPHA[next() % ALPHA.len()] as char)
+                        .collect()
+                })
+                .collect();
+            let engine = FuzzyAhoCorasickBuilder::new()
+                .fuzzy(FuzzyLimits::new().edits(1))
+                .build(patterns.iter().map(|p| crate::Pattern::from(p.as_str())));
+
+            let mut tabled = 0usize;
+            for (idx, node) in engine.nodes.iter().enumerate() {
+                let expect_table = node.edges.len() >= Node::DENSE_MIN_DEGREE
+                    && node.edges.iter().all(|e| e.is_single_byte());
+                assert_eq!(
+                    node.dense.is_some(),
+                    expect_table,
+                    "node {idx} has {} edges; table presence disagrees with the rule",
+                    node.edges.len()
+                );
+                if node.dense.is_some() {
+                    tabled += 1;
+                }
+
+                for b in 0..128u8 {
+                    let ch = b as char;
+                    // What the scan alone would answer, computed independently of both paths.
+                    let via_scan = node
+                        .edges
+                        .iter()
+                        .find(|e| e.first_char == ch && e.is_single_byte())
+                        .map(|e| e.next());
+                    assert_eq!(
+                        node.find_transition_char(ch),
+                        via_scan,
+                        "node {idx} disagrees for {ch:?}"
+                    );
+                }
+            }
+            // Note the threshold is per *node*, not per pattern set: even a dozen patterns earn a
+            // table if they all start with different letters, because the root then has eight or
+            // more edges. Only a set too narrow to fill the root at all can be sure of none.
+            if count <= 4 {
+                assert_eq!(
+                    tabled,
+                    0,
+                    "{count} patterns cannot give the root {} edges, \
+                     so no node should have earned a table",
+                    Node::DENSE_MIN_DEGREE
+                );
+            }
+            if count >= 60 {
+                assert!(
+                    tabled > 0,
+                    "{count} patterns produced no dense table, so the tabled path went untested"
+                );
+            }
+        }
     }
 }

@@ -95,6 +95,39 @@ All notable changes to this project are documented here. The format is based on
 
 ### Performance
 
+- **Wide pattern sets get an O(1) exact-transition lookup, worth 1.3x on top of everything else
+  here.** Finding an edge meant scanning the node's flat edge list. A u128 bitmap already rejected
+  misses in constant time, but a *hit* still walked the list with an unpredictable exit, and on a
+  500-pattern automaton 43% of states sit on a degree-9-to-18 node: 27 nodes take 43% of all state
+  visits and carry roughly 78% of the scan's work. Those nodes now carry a 128-entry
+  `ascii_byte -> target` table (13 KiB for 27 nodes), and the search is 1.3x faster than it was
+  before this change.
+
+  Two things about it are worth stating because both went the other way first. It is deliberately
+  **additive rather than a reordering** of `edges`: sorting the list by `first_char` would give the
+  same answer from a popcount rank with no allocation at all, but the edge order *is* the
+  `transitions` map's, chosen precisely so tie-breaking among equal-similarity matches is unchanged.
+  And the bitmap test runs **before** the table, not after — a node with no table should never have
+  its `dense` field read, and on a narrow automaton that lookup misses 25 times in 26, so consulting
+  the table first measured 20% on a wide corpus while costing 2.8% everywhere else.
+
+  Getting the table in also meant fixing `Node`'s field order, which turned out to matter more than
+  its size. `Node` spans two cache lines, and leaving the layout to the compiler shuffled the five
+  fields read on every state across both of them: 3.6% on a 4-pattern corpus over 15 paired rounds,
+  0/15 in favour, with the struct's size *unchanged* at 128 bytes. It is now `#[repr(C)]` with those
+  five — edge list, edge bitmap, output list and the two pruning floats — in the first 64 bytes, so
+  they share one line. `edges` became a `Box<[Edge]>` to pay for the new field; a `Box<[T]>` is 16
+  bytes against a `Vec<T>`'s 24, which is exactly the budget. If a field joins the hot group, check
+  the arithmetic still fits.
+
+  `structs::dense_tests::dense_table_agrees_with_the_scan_on_every_node` checks the table against an
+  independently computed scan answer for every node and every ASCII character, because only one of
+  the two lookup paths is ever taken on a given corpus and neither implementation can otherwise be
+  held against the other. Corrupting a table entry by one fails it at node 0.
+
+  Cumulative for the three search changes below, against 0.5.1: 500 patterns **0.58** (1.7x),
+  500 pre-filtered **0.59**, 200 sorted **0.80**, 4 patterns **0.89**, sparse **0.90**, exact
+  **0.98**, Unicode unchanged.
 - **The fuzzy search is 1.1-1.4x faster at a one-edit budget, by walking budget-exhausted states
   instead of queueing them.** A state that has spent its whole edit budget can only report and
   follow exact transitions, yet each one was still built into a 24-byte `State`, appended to the
