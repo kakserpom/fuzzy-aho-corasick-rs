@@ -95,6 +95,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Performance
 
+- **A state that cannot report anything no longer sets up a call to find that out.** `report`
+  already began with `if output.is_empty() { return; }`, but both call sites built the argument list
+  and made the call regardless. Removing the call from the saturated walk entirely — which changes
+  results, purely to price it — showed it cost **16.8%** of the walk, and none of that was the
+  scoring body: with a long-pattern set a node only carries `output` when some pattern is exactly as
+  long as its depth, so nearly every step of nearly every chain reports nothing. Both call sites now
+  test emptiness themselves, so the hot path is a plain branch. Median of 11 paired rounds: 500
+  patterns **0.91**, 200 sorted **0.96**, 4 patterns 0.99, exact unchanged.
 - **Wide pattern sets get an O(1) exact-transition lookup, worth 1.3x on top of everything else
   here.** Finding an edge meant scanning the node's flat edge list. A u128 bitmap already rejected
   misses in constant time, but a *hit* still walked the list with an unpredictable exit, and on a
@@ -125,9 +133,9 @@ All notable changes to this project are documented here. The format is based on
   the two lookup paths is ever taken on a given corpus and neither implementation can otherwise be
   held against the other. Corrupting a table entry by one fails it at node 0.
 
-  Cumulative for the three search changes below, against 0.5.1: 500 patterns **0.58** (1.7x),
-  500 pre-filtered **0.59**, 200 sorted **0.80**, 4 patterns **0.89**, sparse **0.90**, exact
-  **0.98**, Unicode unchanged.
+  Cumulative for the four search changes in this section, against 0.5.1: 500 patterns **0.58**
+  (1.7x), 500 pre-filtered **0.59**, 200 sorted **0.80**, 4 patterns **0.89**, sparse **0.90**,
+  exact and Unicode unchanged.
 - **The fuzzy search is 1.1-1.4x faster at a one-edit budget, by walking budget-exhausted states
   instead of queueing them.** A state that has spent its whole edit budget can only report and
   follow exact transitions, yet each one was still built into a 24-byte `State`, appended to the
