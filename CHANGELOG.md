@@ -6,6 +6,139 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-04
+
+### Fixed
+
+- **Matches whose next grapheme is multi-byte were silently dropped.** The push-time dead-end filter
+  asks a node whether it has an edge for the next grapheme; it asked with that grapheme's first
+  `char` and required the edge to be single-byte. A non-ASCII grapheme's edge never is, so the filter
+  answered "no edge" for `ï` or `日` and discarded chains that would have matched — `naïve` lost its
+  delete-the-first-grapheme match (deleting the *last* grapheme was still found, and that asymmetry is
+  what pointed at the filter rather than at the automaton), and a three-grapheme CJK pattern lost
+  matches outright because every one of its edges is multi-byte. The predicate now takes the whole
+  grapheme: the bitmap for a single byte, and the same `transitions` lookup the walk itself uses
+  otherwise. `first_char == ch` cannot substitute, because it is not injective — `ﬁ` starts with `f`.
+
+  This costs about **19% on a Unicode fuzzy corpus**, and that is the price of the answers being
+  right: the old code was fast on Unicode precisely because it was wrongly pruning chains that could
+  match. Answering "possibly" rather than consulting `transitions` is equally correct and costs the
+  same, so the exact answer is free once it is taken at all.
+
+  Nothing covered it because every other sweep builds patterns and text from ASCII, where a grapheme
+  is a byte and the distinction cannot arise. Two tests are added, both of which fail without the
+  fix.
+
+### Performance
+
+Cumulative for this release against 0.5.1, median of 9 paired rounds: 500 patterns **0.54** (1.9x),
+500 pre-filtered **0.56** (1.8x), 200 sorted **0.77** (1.3x), narrow corpora **0.93**, exact
+unchanged. The one workload that goes backwards is **Unicode at a one-edit budget, 1.20x slower**,
+and that is the multi-byte fix above paying for itself — see there for why it is not avoidable.
+
+- **A chain's second step is now tested before it is walked, worth ~1.2x on a many-pattern corpus.**
+  Instrumenting the walk found that chains run 2.04 steps and the transition succeeds 50.9% of the
+  time — which is 28.5 first steps that all hit, because the dead-end filter guarantees it, plus 1.1
+  later ones. So the second step is nearly always a dead end, and it was paying full price to find
+  that out: loading the grandchild, pruning it, report-checking it, and only then finding no edge.
+  The substitution and deletion loops now take the child's one guaranteed step themselves and test the
+  grandchild for liveness first, which is one load and one compare instead of a node's worth of work.
+  Median of 11 paired rounds: 500 patterns **0.83**, 500 pre-filtered **0.82**, 200 sorted **0.93**,
+  narrow corpora ~1.04.
+- **A state that cannot report anything no longer sets up a call to find that out.** `report`
+  already began with `if output.is_empty() { return; }`, but both call sites built the argument list
+  and made the call regardless. Removing the call from the saturated walk entirely — which changes
+  results, purely to price it — showed it cost **16.8%** of the walk, and none of that was the
+  scoring body: with a long-pattern set a node only carries `output` when some pattern is exactly as
+  long as its depth, so nearly every step of nearly every chain reports nothing. Both call sites now
+  test emptiness themselves, so the hot path is a plain branch. Median of 11 paired rounds: 500
+  patterns **0.91**, 200 sorted **0.96**, 4 patterns 0.99, exact unchanged.
+- **Wide pattern sets get an O(1) exact-transition lookup, worth 1.3x on top of everything else
+  here.** Finding an edge meant scanning the node's flat edge list. A u128 bitmap already rejected
+  misses in constant time, but a *hit* still walked the list with an unpredictable exit, and on a
+  500-pattern automaton 43% of states sit on a degree-9-to-18 node: 27 nodes take 43% of all state
+  visits and carry roughly 78% of the scan's work. Those nodes now carry a 128-entry
+  `ascii_byte -> target` table (13 KiB for 27 nodes), and the search is 1.3x faster than it was
+  before this change.
+
+  Two things about it are worth stating because both went the other way first. It is deliberately
+  **additive rather than a reordering** of `edges`: sorting the list by `first_char` would give the
+  same answer from a popcount rank with no allocation at all, but the edge order *is* the
+  `transitions` map's, chosen precisely so tie-breaking among equal-similarity matches is unchanged.
+  And the bitmap test runs **before** the table, not after — a node with no table should never have
+  its `dense` field read, and on a narrow automaton that lookup misses 25 times in 26, so consulting
+  the table first measured 20% on a wide corpus while costing 2.8% everywhere else.
+
+  Getting the table in also meant fixing `Node`'s field order, which turned out to matter more than
+  its size. `Node` spans two cache lines, and leaving the layout to the compiler shuffled the five
+  fields read on every state across both of them: 3.6% on a 4-pattern corpus over 15 paired rounds,
+  0/15 in favour, with the struct's size *unchanged* at 128 bytes. It is now `#[repr(C)]` with those
+  five — edge list, edge bitmap, output list and the two pruning floats — in the first 64 bytes, so
+  they share one line. `edges` became a `Box<[Edge]>` to pay for the new field; a `Box<[T]>` is 16
+  bytes against a `Vec<T>`'s 24, which is exactly the budget. If a field joins the hot group, check
+  the arithmetic still fits.
+
+  `structs::dense_tests::dense_table_agrees_with_the_scan_on_every_node` checks the table against an
+  independently computed scan answer for every node and every ASCII character, because only one of
+  the two lookup paths is ever taken on a given corpus and neither implementation can otherwise be
+  held against the other. Corrupting a table entry by one fails it at node 0.
+
+  Cumulative for the search changes below, against 0.5.1: 500 patterns **0.58**
+  (1.7x), 500 pre-filtered **0.59**, 200 sorted **0.80**, 4 patterns **0.89**, sparse **0.90**,
+  exact and Unicode unchanged.
+- **The fuzzy search is 1.1-1.4x faster at a one-edit budget, by walking budget-exhausted states
+  instead of queueing them.** A state that has spent its whole edit budget can only report and
+  follow exact transitions, yet each one was still built into a 24-byte `State`, appended to the
+  queue, and read back out — for the bulk of the states, since at `edits(1)` the substitution,
+  deletion, insertion and swap children of the unsaturated chain are *all* saturated and each then
+  runs a short exact chain of its own. Those chains are now followed in place, which takes the queue
+  from roughly sixty entries per start position down to the handful of unsaturated states. Median of
+  9 paired rounds against 0.5.1:
+  - 500 patterns: **0.73** (1.37x)
+  - 500 patterns, pre-filtered: **0.72** (1.39x)
+  - 200 patterns, sorted + non-overlapping: **0.80** (1.26x)
+  - 4 patterns: **0.89**, sparse corpus: **0.90**
+  - exact search: **0.97**, Unicode path: unchanged
+
+  **Results are identical.** The only order-sensitive part of this search is the beam, which keeps
+  the lowest-penalty states in the frontier and breaks ties by position, so the walk is enabled only
+  when neither beam is configured (both are opt-in and default to `None`) and the traversal order is
+  then exactly what it was. It is also restricted to a budget of one, which is the only budget where
+  these states are the bulk of the work — and the one budget at which the dedup table is already
+  folded away, so there is no interaction with it. Multi-grapheme mappings are excluded, since a
+  mapping lands a state somewhere a plain exact chain does not model.
+
+  Each of the four call sites was checked by deliberately breaking it and confirming the suite
+  notices: the substitution and insertion sites fail 8 and 5 tests respectively, and a transposition
+  site — the one transition that consumes *two* text graphemes and so resumes at `j + 2` rather than
+  `j + 1` — is not reliably reached by the general sweep, whose patterns and text are built
+  independently at random and may never produce one. It now has a dedicated test that builds
+  transposed text on purpose and additionally asserts a swap was actually reported, since otherwise
+  it could pass by finding nothing.
+- **The fuzzy search is ~2-3% faster everywhere, by taking the scoring code out of the state loop.**
+  Reporting a match is a 74-line block — per-pattern limit check, similarity, hash-map update — that
+  was written inline in the middle of the BFS's per-state body. It is also, for a long-pattern set,
+  *never executed*: a node carries `output` only if some pattern is exactly as long as its depth, so
+  with patterns of length 11 every node above depth 10 reports nothing and the block is dead weight
+  sitting in the hottest loop in the crate. It now lives in a `ReportCtx` whose `report` inlines just
+  the emptiness test and leaves the scoring in an out-of-line `report_slow`. Median of 13 paired
+  rounds: 500 patterns **0.97**, 200 sorted **0.97**, 4 patterns **0.98**, exact search **0.98**.
+
+  Getting there took two failures worth recording, because both were *refactors that should have
+  been free* and both were slower:
+
+  - Hoisting the block into a closure capturing `&mut best` cost **9.3%**. The capture stopped the
+    caller's local being promotable and the map's internals spilled.
+  - Moving it into an `#[inline]` method on a context struct was worse still, **12.0%**: the body is
+    far too large for LLVM's inliner, so `report` stopped being inlined *at all* and every state paid
+    a real call. Only splitting the cold part out made the wrapper small enough to inline.
+
+  And clippy's own suggestion for the resulting eight-argument method cost another **4.4%** (13
+  paired rounds, 0/13 in favour). Bundling the per-state arguments into a `ReportState` struct is
+  exactly what `too_many_arguments` asks for, and it is slower: the struct is built and immediately
+  destructured at the call site, where the flat form stays in registers. The arguments stay flat and
+  the lint is silenced with that reason rather than obeyed.
+
 ## [0.5.1] - 2026-09-29
 
 ### Changed
@@ -31,25 +164,6 @@ All notable changes to this project are documented here. The format is based on
   when it is in fact the intended selection. All three doc comments now say so.
 
 ### Fixed
-
-- **Matches whose next grapheme is multi-byte were silently dropped.** The push-time dead-end filter
-  asks a node whether it has an edge for the next grapheme; it asked with that grapheme's first
-  `char` and required the edge to be single-byte. A non-ASCII grapheme's edge never is, so the filter
-  answered "no edge" for `ï` or `日` and discarded chains that would have matched — `naïve` lost its
-  delete-the-first-grapheme match (deleting the *last* grapheme was still found, and that asymmetry is
-  what pointed at the filter rather than at the automaton), and a three-grapheme CJK pattern lost
-  matches outright because every one of its edges is multi-byte. The predicate now takes the whole
-  grapheme: the bitmap for a single byte, and the same `transitions` lookup the walk itself uses
-  otherwise. `first_char == ch` cannot substitute, because it is not injective — `ﬁ` starts with `f`.
-
-  This costs about **19% on a Unicode fuzzy corpus**, and that is the price of the answers being
-  right: the old code was fast on Unicode precisely because it was wrongly pruning chains that could
-  match. Answering "possibly" rather than consulting `transitions` is equally correct and costs the
-  same, so the exact answer is free once it is taken at all.
-
-  Nothing covered it because every other sweep builds patterns and text from ASCII, where a grapheme
-  is a byte and the distinction cannot arise. Two tests are added, both of which fail without the
-  fix.
 
 - **Match ranking counts pattern length in grapheme clusters, not bytes.** Ranking used
   `Pattern::len()`, which is documented as a *byte* count, while scoring uses `grapheme_len` — the
@@ -114,108 +228,6 @@ All notable changes to this project are documented here. The format is based on
 
 ### Performance
 
-- **A chain's second step is now tested before it is walked, worth ~1.2x on a many-pattern corpus.**
-  Instrumenting the walk found that chains run 2.04 steps and the transition succeeds 50.9% of the
-  time — which is 28.5 first steps that all hit, because the dead-end filter guarantees it, plus 1.1
-  later ones. So the second step is nearly always a dead end, and it was paying full price to find
-  that out: loading the grandchild, pruning it, report-checking it, and only then finding no edge.
-  The substitution and deletion loops now take the child's one guaranteed step themselves and test the
-  grandchild for liveness first, which is one load and one compare instead of a node's worth of work.
-  Median of 11 paired rounds: 500 patterns **0.83**, 500 pre-filtered **0.82**, 200 sorted **0.93**,
-  narrow corpora ~1.04.
-- **A state that cannot report anything no longer sets up a call to find that out.** `report`
-  already began with `if output.is_empty() { return; }`, but both call sites built the argument list
-  and made the call regardless. Removing the call from the saturated walk entirely — which changes
-  results, purely to price it — showed it cost **16.8%** of the walk, and none of that was the
-  scoring body: with a long-pattern set a node only carries `output` when some pattern is exactly as
-  long as its depth, so nearly every step of nearly every chain reports nothing. Both call sites now
-  test emptiness themselves, so the hot path is a plain branch. Median of 11 paired rounds: 500
-  patterns **0.91**, 200 sorted **0.96**, 4 patterns 0.99, exact unchanged.
-- **Wide pattern sets get an O(1) exact-transition lookup, worth 1.3x on top of everything else
-  here.** Finding an edge meant scanning the node's flat edge list. A u128 bitmap already rejected
-  misses in constant time, but a *hit* still walked the list with an unpredictable exit, and on a
-  500-pattern automaton 43% of states sit on a degree-9-to-18 node: 27 nodes take 43% of all state
-  visits and carry roughly 78% of the scan's work. Those nodes now carry a 128-entry
-  `ascii_byte -> target` table (13 KiB for 27 nodes), and the search is 1.3x faster than it was
-  before this change.
-
-  Two things about it are worth stating because both went the other way first. It is deliberately
-  **additive rather than a reordering** of `edges`: sorting the list by `first_char` would give the
-  same answer from a popcount rank with no allocation at all, but the edge order *is* the
-  `transitions` map's, chosen precisely so tie-breaking among equal-similarity matches is unchanged.
-  And the bitmap test runs **before** the table, not after — a node with no table should never have
-  its `dense` field read, and on a narrow automaton that lookup misses 25 times in 26, so consulting
-  the table first measured 20% on a wide corpus while costing 2.8% everywhere else.
-
-  Getting the table in also meant fixing `Node`'s field order, which turned out to matter more than
-  its size. `Node` spans two cache lines, and leaving the layout to the compiler shuffled the five
-  fields read on every state across both of them: 3.6% on a 4-pattern corpus over 15 paired rounds,
-  0/15 in favour, with the struct's size *unchanged* at 128 bytes. It is now `#[repr(C)]` with those
-  five — edge list, edge bitmap, output list and the two pruning floats — in the first 64 bytes, so
-  they share one line. `edges` became a `Box<[Edge]>` to pay for the new field; a `Box<[T]>` is 16
-  bytes against a `Vec<T>`'s 24, which is exactly the budget. If a field joins the hot group, check
-  the arithmetic still fits.
-
-  `structs::dense_tests::dense_table_agrees_with_the_scan_on_every_node` checks the table against an
-  independently computed scan answer for every node and every ASCII character, because only one of
-  the two lookup paths is ever taken on a given corpus and neither implementation can otherwise be
-  held against the other. Corrupting a table entry by one fails it at node 0.
-
-  Cumulative for the four search changes in this section, against 0.5.1: 500 patterns **0.58**
-  (1.7x), 500 pre-filtered **0.59**, 200 sorted **0.80**, 4 patterns **0.89**, sparse **0.90**,
-  exact and Unicode unchanged.
-- **The fuzzy search is 1.1-1.4x faster at a one-edit budget, by walking budget-exhausted states
-  instead of queueing them.** A state that has spent its whole edit budget can only report and
-  follow exact transitions, yet each one was still built into a 24-byte `State`, appended to the
-  queue, and read back out — for the bulk of the states, since at `edits(1)` the substitution,
-  deletion, insertion and swap children of the unsaturated chain are *all* saturated and each then
-  runs a short exact chain of its own. Those chains are now followed in place, which takes the queue
-  from roughly sixty entries per start position down to the handful of unsaturated states. Median of
-  9 paired rounds against 0.5.1:
-  - 500 patterns: **0.73** (1.37x)
-  - 500 patterns, pre-filtered: **0.72** (1.39x)
-  - 200 patterns, sorted + non-overlapping: **0.80** (1.26x)
-  - 4 patterns: **0.89**, sparse corpus: **0.90**
-  - exact search: **0.97**, Unicode path: unchanged
-
-  **Results are identical.** The only order-sensitive part of this search is the beam, which keeps
-  the lowest-penalty states in the frontier and breaks ties by position, so the walk is enabled only
-  when neither beam is configured (both are opt-in and default to `None`) and the traversal order is
-  then exactly what it was. It is also restricted to a budget of one, which is the only budget where
-  these states are the bulk of the work — and the one budget at which the dedup table is already
-  folded away, so there is no interaction with it. Multi-grapheme mappings are excluded, since a
-  mapping lands a state somewhere a plain exact chain does not model.
-
-  Each of the four call sites was checked by deliberately breaking it and confirming the suite
-  notices: the substitution and insertion sites fail 8 and 5 tests respectively, and a transposition
-  site — the one transition that consumes *two* text graphemes and so resumes at `j + 2` rather than
-  `j + 1` — is not reliably reached by the general sweep, whose patterns and text are built
-  independently at random and may never produce one. It now has a dedicated test that builds
-  transposed text on purpose and additionally asserts a swap was actually reported, since otherwise
-  it could pass by finding nothing.
-- **The fuzzy search is ~2-3% faster everywhere, by taking the scoring code out of the state loop.**
-  Reporting a match is a 74-line block — per-pattern limit check, similarity, hash-map update — that
-  was written inline in the middle of the BFS's per-state body. It is also, for a long-pattern set,
-  *never executed*: a node carries `output` only if some pattern is exactly as long as its depth, so
-  with patterns of length 11 every node above depth 10 reports nothing and the block is dead weight
-  sitting in the hottest loop in the crate. It now lives in a `ReportCtx` whose `report` inlines just
-  the emptiness test and leaves the scoring in an out-of-line `report_slow`. Median of 13 paired
-  rounds: 500 patterns **0.97**, 200 sorted **0.97**, 4 patterns **0.98**, exact search **0.98**.
-
-  Getting there took two failures worth recording, because both were *refactors that should have
-  been free* and both were slower:
-
-  - Hoisting the block into a closure capturing `&mut best` cost **9.3%**. The capture stopped the
-    caller's local being promotable and the map's internals spilled.
-  - Moving it into an `#[inline]` method on a context struct was worse still, **12.0%**: the body is
-    far too large for LLVM's inliner, so `report` stopped being inlined *at all* and every state paid
-    a real call. Only splitting the cold part out made the wrapper small enough to inline.
-
-  And clippy's own suggestion for the resulting eight-argument method cost another **4.4%** (13
-  paired rounds, 0/13 in favour). Bundling the per-state arguments into a `ReportState` struct is
-  exactly what `too_many_arguments` asks for, and it is slower: the struct is built and immediately
-  destructured at the call site, where the flat form stays in registers. The arguments stay flat and
-  the lint is silenced with that reason rather than obeyed.
 - **The pre-filter's scan was ~6x slower than it should have been, which made the whole feature a net
   loss; it is now a large win.** The q-gram table indexed on the *raw low bits* of the packed block
   key. Symbol ids are small and densely numbered from 1, so a 3-gram key
@@ -343,5 +355,6 @@ Releases before 0.5.0 are not itemized here; see the
 [`Order`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/enum.Order.html
 [`Overlap`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/enum.Overlap.html
 [`SearchError`]: https://docs.rs/fuzzy-aho-corasick/latest/fuzzy_aho_corasick/enum.SearchError.html
+[0.5.2]: https://github.com/kakserpom/fuzzy-aho-corasick-rs/releases/tag/v0.5.2
 [0.5.1]: https://github.com/kakserpom/fuzzy-aho-corasick-rs/releases/tag/v0.5.1
 [0.5.0]: https://github.com/kakserpom/fuzzy-aho-corasick-rs/releases/tag/v0.5.0
