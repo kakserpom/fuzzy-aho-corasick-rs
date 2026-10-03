@@ -1523,3 +1523,101 @@ fn search_matches_reference_for_transpositions_at_one_edit() {
         "no transposition was reported in 600 cases, so this test proved nothing"
     );
 }
+
+/// Multi-byte patterns at a one-edit budget, against the brute-force reference.
+///
+/// This exists because the engine was silently wrong here and nothing caught it. The push-time
+/// dead-end filter asks a node whether it has an edge for the next grapheme, via
+/// `Node::has_matching_edge_char`, and that took the *first* `char` of the grapheme and then
+/// required the edge to be single-byte. A non-ASCII grapheme's edge never is, so the filter answered
+/// "no edge" for `ï` or `日` and dropped chains that would have matched -- `naïve` lost its
+/// delete-the-first-grapheme match, and a three-grapheme CJK pattern lost matches outright.
+///
+/// Every other sweep here builds patterns and text from ASCII, where a grapheme is a byte and the
+/// distinction cannot arise, so this is the only coverage of it.
+#[test]
+fn search_matches_reference_for_multi_byte_graphemes() {
+    const WORDS: &[&str] = &[
+        "café",
+        "cafés",
+        "naïve",
+        "résumé",
+        "日本語",
+        "naïveté",
+        "ÅNGSTRÖM",
+        "straße",
+        "æther",
+        "über",
+        "mañana",
+        "ÅNGSTROM",
+    ];
+    const TEXT: &str = "the café and résumé were naïve; 日本語 text; ÅNGSTRÖM and über and æther \
+                        and mañana plus straße and cafés naïve résumé";
+
+    for edits in [1u8, 2] {
+        for threshold in [0.0f32, 0.5, 0.8] {
+            let fx = Fixture::new();
+            let engine = FuzzyAhoCorasickBuilder::new()
+                .similarity(fx.similarity)
+                .fuzzy(FuzzyLimits::new().edits(edits))
+                .build(WORDS.iter().map(|w| Pattern::from(*w)).collect::<Vec<_>>());
+            let got = engine_matches(&engine, TEXT, threshold);
+            let refs: Vec<RefPattern<'_>> = WORDS
+                .iter()
+                .map(|w| RefPattern {
+                    text: w,
+                    weight: 1.0,
+                    limits: None,
+                })
+                .collect();
+            let expected =
+                reference_search(TEXT, &refs, &fx.sim_map, fx.total(edits, threshold, false));
+            assert_eq!(
+                got, expected,
+                "edits={edits} threshold={threshold}: engine disagrees with the reference"
+            );
+        }
+    }
+}
+
+/// Spans, not edit counts, for single patterns over multi-byte text.
+///
+/// The reference reports spans and scores but not the per-type edit breakdown, so comparing more
+/// than `(start, end)` here would compare against zeros. Written separately from the multi-pattern
+/// case above because that one is where the bug showed up as *missing spans*, and a per-pattern
+/// sweep localises a failure to one word instead of one blob of twelve.
+#[test]
+fn search_reports_the_right_spans_for_multi_byte_patterns() {
+    const CASES: &[(&str, &str)] = &[
+        ("naïve", "naïve"),
+        ("naïve", "the naïve"),
+        ("café", "the cafés"),
+        ("café", "the café"),
+        ("日本語", "say 日本語 now"),
+        ("straße", "die Straße hier"),
+        ("ÅNGSTRÖM", "the ÅNGSTRÖM"),
+    ];
+    for (pat, text) in CASES {
+        for edits in [1u8, 2] {
+            let fx = Fixture::new();
+            let engine = FuzzyAhoCorasickBuilder::new()
+                .similarity(fx.similarity)
+                .fuzzy(FuzzyLimits::new().edits(edits))
+                .build([Pattern::from(*pat)]);
+            let refs = vec![RefPattern {
+                text: pat,
+                weight: 1.0,
+                limits: None,
+            }];
+            for threshold in [0.0f32, 0.8] {
+                let got = engine_matches(&engine, text, threshold);
+                let expected =
+                    reference_search(text, &refs, &fx.sim_map, fx.total(edits, threshold, false));
+                assert_eq!(
+                    got, expected,
+                    "pattern={pat:?} text={text:?} edits={edits} threshold={threshold}"
+                );
+            }
+        }
+    }
+}

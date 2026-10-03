@@ -594,19 +594,32 @@ impl Node {
         self.transitions.get(grapheme).copied()
     }
 
-    /// Whether any outgoing single-ASCII-byte edge starts with `ch`. Used by the push-time
-    /// dead-end filter in the substitution/deletion scans, which probes one *child* node per
-    /// candidate transition. Answered in O(1) from the precomputed `edge_bits` bitmap for ASCII
-    /// `ch` (exact — see [`Node::edge_bits`]); only a non-ASCII `ch` needs the linear scan.
+    /// Whether any outgoing edge starts with the grapheme `g` -- the exact answer, for a grapheme
+    /// rather than its first `char`.
+    ///
+    /// This replaces a `char` argument because a `char` is not enough. A non-ASCII `ch` arriving
+    /// from the caller is only the *first* `char` of the next text grapheme, and the walk that
+    /// follows resolves the grapheme whole -- for a multi-byte grapheme it looks the full string up in
+    /// `transitions`. So the edges that can continue a chain are not only the single-byte ones: an
+    /// edge whose grapheme is `ï` or `日` matches, and requiring `is_single_byte()` excluded exactly
+    /// those. Testing `first_char == ch` cannot stand in either, because it is not injective: `ﬁ`
+    /// starts with `f`, so a multi-byte edge and an ASCII `f` edge are indistinguishable that way.
+    ///
+    /// The consequence was that the push-time dead-end filter answered "no edge" for `ï` and `日` and
+    /// dropped chains that would have matched: `naïve` lost its delete-the-first-grapheme match and a
+    /// three-grapheme CJK pattern lost matches outright. Found by a differential test against the
+    /// brute-force reference; every other sweep builds patterns and text from ASCII, where a grapheme
+    /// is a byte and the distinction cannot arise.
+    ///
+    /// Answering "possibly" instead would be correct but costs 18% on a Unicode corpus, because the
+    /// filter then never prunes there. This keeps the pruning.
     #[inline]
-    pub(crate) fn has_matching_edge_char(&self, ch: char) -> bool {
-        let idx = ch as u32;
-        if idx < 128 {
-            return (self.edge_bits >> idx) & 1 != 0;
+    pub(crate) fn has_matching_edge_grapheme(&self, g: &str) -> bool {
+        let bytes = g.as_bytes();
+        if bytes.len() == 1 {
+            return (self.edge_bits >> bytes[0]) & 1 != 0;
         }
-        self.edges
-            .iter()
-            .any(|edge| edge.first_char == ch && edge.is_single_byte())
+        self.transitions.contains_key(g)
     }
 
     /// Bitmap of this node's single-byte (ASCII) edge chars, precomputed at build time. Used by the

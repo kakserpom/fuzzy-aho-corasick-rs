@@ -140,6 +140,8 @@ pub(crate) fn reference_search(
     table: RefSim<'_>,
     cfg: RefConfig,
 ) -> Vec<RefMatch> {
+    use unicode_segmentation::UnicodeSegmentation;
+
     let RefConfig {
         threshold,
         case_insensitive,
@@ -182,6 +184,22 @@ pub(crate) fn reference_search(
         });
     }
 
+    // The DP below runs entirely in grapheme indices, but a match span is a *byte* range into the
+    // haystack, which is what the engine reports and what every caller compares. Those are the same
+    // number only for ASCII, so they are converted here rather than being conflated: with `café`
+    // (five bytes, four graphemes) the unconverted index reports `[0, 4)` -- `caf` plus half of the
+    // `é` -- and the disagreement looks like an engine bug rather than an oracle one.
+    //
+    // Offsets are taken against the *folded* text. That is the same string as `haystack` unless
+    // case folding changed its length, which Rust's `to_lowercase` can do (`İ` lowercases to two
+    // graphemes). The sweeps that run case-insensitively use ASCII, where the two coincide.
+    let folded_haystack = fold(haystack);
+    let byte_offsets: Vec<usize> = folded_haystack
+        .grapheme_indices(true)
+        .map(|(b, _)| b)
+        .chain(std::iter::once(folded_haystack.len()))
+        .collect();
+
     let mut found: Vec<RefMatch> = Vec::new();
     // Start positions are `0..len`, not `0..=len`: the engine's window loop excludes the end
     // offset, so an all-deletion zero-length match sitting exactly at the end of the haystack
@@ -198,7 +216,12 @@ pub(crate) fn reference_search(
                 if similarity < threshold {
                     continue;
                 }
-                found.push((start, end, pi, similarity.to_bits()));
+                found.push((
+                    byte_offsets[start],
+                    byte_offsets[end],
+                    pi,
+                    similarity.to_bits(),
+                ));
             }
         }
     }

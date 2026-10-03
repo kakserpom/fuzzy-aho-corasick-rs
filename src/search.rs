@@ -1470,8 +1470,11 @@ impl FuzzyAhoCorasick {
                             if is_last_edit {
                                 let child = &trie[next_node as usize];
                                 if child.output.is_empty()
-                                    && next_ch_opt
-                                        .is_none_or(|ch| !child.has_matching_edge_char(ch))
+                                    && next_ch_opt.is_none_or(|_| {
+                                        !child.has_matching_edge_grapheme(
+                                            graphemes.gs_text((j + 1) as usize),
+                                        )
+                                    })
                                 {
                                     continue;
                                 }
@@ -1661,7 +1664,10 @@ impl FuzzyAhoCorasick {
                         }
                         && !(is_last_edit
                             && output.is_empty()
-                            && next_ch_opt.is_none_or(|ch| !node_ref.has_matching_edge_char(ch)))
+                            && next_ch_opt.is_none_or(|_| {
+                                !node_ref
+                                    .has_matching_edge_grapheme(graphemes.gs_text((j + 1) as usize))
+                            }))
                     {
                         #[cfg(debug_assertions)]
                         let mut notes = notes.clone();
@@ -1730,7 +1736,9 @@ impl FuzzyAhoCorasick {
                         if is_last_edit {
                             let child = &self.nodes[next_node2 as usize];
                             if child.output.is_empty()
-                                && current_ch_opt.is_none_or(|ch| !child.has_matching_edge_char(ch))
+                                && current_ch_opt.is_none_or(|_| {
+                                    !child.has_matching_edge_grapheme(graphemes.gs_text(j as usize))
+                                })
                             {
                                 continue;
                             }
