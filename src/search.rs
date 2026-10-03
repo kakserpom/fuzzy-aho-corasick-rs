@@ -1395,6 +1395,11 @@ impl FuzzyAhoCorasick {
                     } else {
                         None
                     };
+                    // The *grapheme* at `j + 1`, for the dead-end filters. Held separately from
+                    // `next_ch_opt` because that one is the swap's `char` while the filters need the
+                    // whole grapheme -- and because a closure capturing `graphemes` and `j` measured
+                    // 17% slower in this loop than one capturing nothing.
+                    let next_gs = next_ch_opt.map(|_| graphemes.gs_text((j + 1) as usize));
                     // Whether anything has been aligned yet, i.e. the engine's original
                     // `matched_start != matched_end || matched_start != j` with `matched_start`
                     // replaced by this window's `start`. See the window loop for why that field is
@@ -1470,11 +1475,7 @@ impl FuzzyAhoCorasick {
                             if is_last_edit {
                                 let child = &trie[next_node as usize];
                                 if child.output.is_empty()
-                                    && next_ch_opt.is_none_or(|_| {
-                                        !child.has_matching_edge_grapheme(
-                                            graphemes.gs_text((j + 1) as usize),
-                                        )
-                                    })
+                                    && next_gs.is_none_or(|g| !child.has_matching_edge_grapheme(g))
                                 {
                                     continue;
                                 }
@@ -1495,17 +1496,65 @@ impl FuzzyAhoCorasick {
                             notes.push(format!("sub {:?} -> {current_ch:?} (sim={sim:.2}, pen={penalty:.2}) (subst->{}, edits->{})", edge.first_char, ((packed_counts >> 16) & 0xFF) + 1, edits + 1));
 
                             if inline_saturated {
-                                // Spends the budget, so the child cannot edit again: walk it here.
-                                walk_saturated(
-                                    &mut best,
-                                    next_node,
-                                    j + 1,
-                                    j + 1,
-                                    penalties + penalty,
-                                    edits + 1,
-                                    packed_counts + 0x1_0000,
-                                    start_byte,
-                                );
+                                // Spends the budget, so the child cannot edit again. Rather than
+                                // hand the child straight to the walk, take its one guaranteed exact
+                                // step here and test the *grandchild* for liveness first.
+                                //
+                                // Measured on 500 patterns, chains run 2.04 steps: the dead-end
+                                // filter above guarantees the child's step succeeds, and the step
+                                // after it misses 96% of the time. Left to the walk, every one of
+                                // those dead grandchildren was still loaded, pruned and
+                                // report-checked only to be discarded. A dead-end test here costs one
+                                // load and one compare instead.
+                                let child_pen = penalties + penalty;
+                                let child_counts = packed_counts + 0x1_0000;
+                                let child = &trie[next_node as usize];
+                                if child_pen
+                                    <= child.prune_len
+                                        - child.prune_len_over_weight * similarity_threshold
+                                {
+                                    if !child.output.is_empty() {
+                                        rctx.report::<MAX_EDITS_FAST>(
+                                            &mut best,
+                                            &child.output,
+                                            start_byte,
+                                            j + 1,
+                                            child_pen,
+                                            edits + 1,
+                                            child_counts,
+                                        );
+                                    }
+                                    if j + 1 < text_len {
+                                        let ch2 = text_chars[(j + 1) as usize];
+                                        if let Some(grand) = graphemes.gs_find_transition(
+                                            child,
+                                            (j + 1) as usize,
+                                            ch2,
+                                        ) {
+                                            // The walk's own dead-end test, so a chain dropped
+                                            // here is one the walk would have walked to no effect.
+                                            // Pruning stays with the walk: a grandchild that is
+                                            // pruned but ends a pattern still reports.
+                                            let gnode = &trie[grand as usize];
+                                            let continues = j + 2 < text_len
+                                                && gnode.has_matching_edge_grapheme(
+                                                    graphemes.gs_text((j + 2) as usize),
+                                                );
+                                            if !gnode.output.is_empty() || continues {
+                                                walk_saturated(
+                                                    &mut best,
+                                                    grand,
+                                                    j + 2,
+                                                    j + 2,
+                                                    child_pen,
+                                                    edits + 1,
+                                                    child_counts,
+                                                    start_byte,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                             } else {
                                 queue.push(State {
                                     node: next_node,
@@ -1664,10 +1713,7 @@ impl FuzzyAhoCorasick {
                         }
                         && !(is_last_edit
                             && output.is_empty()
-                            && next_ch_opt.is_none_or(|_| {
-                                !node_ref
-                                    .has_matching_edge_grapheme(graphemes.gs_text((j + 1) as usize))
-                            }))
+                            && next_gs.is_none_or(|g| !node_ref.has_matching_edge_grapheme(g)))
                     {
                         #[cfg(debug_assertions)]
                         let mut notes = notes.clone();
@@ -1731,14 +1777,13 @@ impl FuzzyAhoCorasick {
                     } else {
                         None
                     };
+                    let current_gs = current_ch_opt.map(|_| graphemes.gs_text(j as usize));
                     for edge in edges {
                         let next_node2 = edge.next();
                         if is_last_edit {
                             let child = &self.nodes[next_node2 as usize];
                             if child.output.is_empty()
-                                && current_ch_opt.is_none_or(|_| {
-                                    !child.has_matching_edge_grapheme(graphemes.gs_text(j as usize))
-                                })
+                                && current_gs.is_none_or(|g| !child.has_matching_edge_grapheme(g))
                             {
                                 continue;
                             }
@@ -1753,28 +1798,61 @@ impl FuzzyAhoCorasick {
                             ((packed_counts >> 8) & 0xFF) + 1
                         ));
                         if inline_saturated {
-                            // Spends the budget, so the child cannot edit again: walk it here.
-                            // `j` and `matched_end` are carried over unchanged -- a deletion skips a
-                            // *pattern* grapheme, not a text one -- which is why the walk starts at
-                            // the parent's position rather than an advanced one.
+                            // Spends the budget, so the child cannot edit again. `j` and
+                            // `matched_end` are carried over unchanged -- a deletion skips a
+                            // *pattern* grapheme, not a text one -- so the walk starts at the
+                            // parent's position. Two-step liveness, as in the substitution loop.
                             //
-                            // At this budget those two are in fact the same value: every unsaturated
-                            // state is either the window's root or reached from it by exact
-                            // transitions only, and both set `matched_end = j`. So passing `j` here
-                            // would behave identically, and does -- deliberately not asserted, since
-                            // there is nothing to assert. `matched_end` is passed because it is what
-                            // the child actually carries, so this stays correct if that invariant
-                            // ever stops holding.
-                            walk_saturated(
-                                &mut best,
-                                next_node2,
-                                j,
-                                matched_end,
-                                penalties + pen.deletion,
-                                edits + 1,
-                                packed_counts + 0x100,
-                                start_byte,
-                            );
+                            // At this budget `j` and `matched_end` are in fact the same value:
+                            // every unsaturated state is either the window's root or reached from
+                            // it by exact transitions only, and both set `matched_end = j`. So
+                            // passing `j` would behave identically, and does -- deliberately not
+                            // asserted, since there is nothing to assert. `matched_end` is passed
+                            // because it is what the child actually carries, so this stays correct
+                            // if that invariant ever stops holding.
+                            let child_pen = penalties + pen.deletion;
+                            let child_counts = packed_counts + 0x100;
+                            let child = &trie[next_node2 as usize];
+                            if child_pen
+                                <= child.prune_len
+                                    - child.prune_len_over_weight * similarity_threshold
+                            {
+                                if !child.output.is_empty() {
+                                    rctx.report::<MAX_EDITS_FAST>(
+                                        &mut best,
+                                        &child.output,
+                                        start_byte,
+                                        matched_end,
+                                        child_pen,
+                                        edits + 1,
+                                        child_counts,
+                                    );
+                                }
+                                if j < text_len {
+                                    let ch2 = text_chars[j as usize];
+                                    if let Some(grand) =
+                                        graphemes.gs_find_transition(child, j as usize, ch2)
+                                    {
+                                        let gnode = &trie[grand as usize];
+                                        let continues = j + 1 < text_len
+                                            && gnode.has_matching_edge_grapheme(
+                                                graphemes.gs_text((j + 1) as usize),
+                                            );
+                                        if !gnode.output.is_empty() || continues {
+                                            walk_saturated(
+                                                &mut best,
+                                                grand,
+                                                j + 1,
+                                                j + 1,
+                                                child_pen,
+                                                edits + 1,
+                                                child_counts,
+                                                start_byte,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         } else {
                             queue.push(State {
                                 node: next_node2,
