@@ -32,6 +32,25 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **Matches whose next grapheme is multi-byte were silently dropped.** The push-time dead-end filter
+  asks a node whether it has an edge for the next grapheme; it asked with that grapheme's first
+  `char` and required the edge to be single-byte. A non-ASCII grapheme's edge never is, so the filter
+  answered "no edge" for `ï` or `日` and discarded chains that would have matched — `naïve` lost its
+  delete-the-first-grapheme match (deleting the *last* grapheme was still found, and that asymmetry is
+  what pointed at the filter rather than at the automaton), and a three-grapheme CJK pattern lost
+  matches outright because every one of its edges is multi-byte. The predicate now takes the whole
+  grapheme: the bitmap for a single byte, and the same `transitions` lookup the walk itself uses
+  otherwise. `first_char == ch` cannot substitute, because it is not injective — `ﬁ` starts with `f`.
+
+  This costs about **19% on a Unicode fuzzy corpus**, and that is the price of the answers being
+  right: the old code was fast on Unicode precisely because it was wrongly pruning chains that could
+  match. Answering "possibly" rather than consulting `transitions` is equally correct and costs the
+  same, so the exact answer is free once it is taken at all.
+
+  Nothing covered it because every other sweep builds patterns and text from ASCII, where a grapheme
+  is a byte and the distinction cannot arise. Two tests are added, both of which fail without the
+  fix.
+
 - **Match ranking counts pattern length in grapheme clusters, not bytes.** Ranking used
   `Pattern::len()`, which is documented as a *byte* count, while scoring uses `grapheme_len` — the
   crate's stated unit throughout ("Pattern length N, which drives scoring, is measured in grapheme
@@ -95,6 +114,15 @@ All notable changes to this project are documented here. The format is based on
 
 ### Performance
 
+- **A chain's second step is now tested before it is walked, worth ~1.2x on a many-pattern corpus.**
+  Instrumenting the walk found that chains run 2.04 steps and the transition succeeds 50.9% of the
+  time — which is 28.5 first steps that all hit, because the dead-end filter guarantees it, plus 1.1
+  later ones. So the second step is nearly always a dead end, and it was paying full price to find
+  that out: loading the grandchild, pruning it, report-checking it, and only then finding no edge.
+  The substitution and deletion loops now take the child's one guaranteed step themselves and test the
+  grandchild for liveness first, which is one load and one compare instead of a node's worth of work.
+  Median of 11 paired rounds: 500 patterns **0.83**, 500 pre-filtered **0.82**, 200 sorted **0.93**,
+  narrow corpora ~1.04.
 - **A state that cannot report anything no longer sets up a call to find that out.** `report`
   already began with `if output.is_empty() { return; }`, but both call sites built the argument list
   and made the call regardless. Removing the call from the saturated walk entirely — which changes
